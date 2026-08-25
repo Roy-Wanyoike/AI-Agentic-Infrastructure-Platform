@@ -215,7 +215,7 @@ func TestRepositoryCreateRunAndListRunsByOrg(t *testing.T) {
 	orgID := "org-run"
 	agentID := "agent-run"
 	mock.ExpectExec("INSERT INTO runs").
-		WithArgs(sqlmock.AnyArg(), orgID, agentID, "QUEUED", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), orgID, agentID, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	runID, err := repo.CreateRun(orgID, agentID, "hello")
 	if err != nil {

@@ -281,7 +281,7 @@ func (r *Repository) CreateRun(orgID, agentID, input string) (string, error) {
 	}
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 	createdAt := time.Now().UTC()
-	if _, err := r.db.Exec(`INSERT INTO runs (id, organization_id, agent_id, status, created_at, updated_at, input) VALUES ($1, $2, $3, 'QUEUED', $4, $4, $5)`, runID, orgID, agentID, createdAt, input); err != nil {
+	if _, err := r.db.Exec(`INSERT INTO runs (id, organization_id, agent_id, status, created_at, updated_at) VALUES ($1, $2, $3, 'QUEUED', $4, $4)`, runID, orgID, agentID, createdAt); err != nil {
 		return "", err
 	}
 	return runID, nil

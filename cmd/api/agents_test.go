@@ -8,6 +8,7 @@ import (
 
 	"agentos/internal/agents"
 	"agentos/internal/auth"
+	"agentos/internal/queue"
 )
 
 func TestListAgentsRequiresMatchingOrganization(t *testing.T) {
@@ -75,8 +76,36 @@ func TestCreateRunRequiresMatchingOrganization(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
-	auth.RequireAuth(authService)(createRunHandler()).ServeHTTP(rr, req)
+	auth.RequireAuth(authService)(createRunHandler(queue.NewQueue())).ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected status %d, got %d body=%s", http.StatusForbidden, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateRunEnqueuesQueuedTask(t *testing.T) {
+	authService := auth.NewService("dev-secret")
+	_, user, err := authService.Register("Acme", "queued@example.com", "secret123")
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	token, err := authService.GenerateToken(user)
+	if err != nil {
+		t.Fatalf("GenerateToken returned error: %v", err)
+	}
+
+	q := queue.NewQueue()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(`{"organization_id":"`+user.Organization+`","agent_id":"agent-1","input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	auth.RequireAuth(authService)(createRunHandler(q)).ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	if q.Length() != 1 {
+		t.Fatalf("expected queue length 1 after enqueue, got %d", q.Length())
+	}
+	if task := q.Peek(); task == nil || task.Type != "agent.run" {
+		t.Fatal("expected queued task to be an agent.run task")
 	}
 }

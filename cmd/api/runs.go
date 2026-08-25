@@ -6,9 +6,10 @@ import (
 	"strings"
 
 	"agentos/internal/auth"
+	"agentos/internal/queue"
 )
 
-func createRunHandler() http.HandlerFunc {
+func createRunHandler(workQueue *queue.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -38,7 +39,15 @@ func createRunHandler() http.HandlerFunc {
 			http.Error(w, "agent id is required", http.StatusBadRequest)
 			return
 		}
-		runID := req.OrganizationID + ":" + req.AgentID + ":queued"
+		if workQueue == nil {
+			workQueue = queue.NewQueue()
+		}
+		task := workQueue.Enqueue("agent.run", map[string]any{"organization_id": req.OrganizationID, "agent_id": req.AgentID, "input": req.Input})
+		if task == nil {
+			http.Error(w, "failed to enqueue run", http.StatusInternalServerError)
+			return
+		}
+		runID := task.ID
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": runID, "status": "queued"})
