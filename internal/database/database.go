@@ -3,6 +3,11 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
 	_ "github.com/lib/pq"
 )
@@ -14,6 +19,12 @@ type Config struct {
 	Password string
 	DBName   string
 	SSLMode  string
+}
+
+type Migration struct {
+	Version int
+	Name    string
+	SQL     string
 }
 
 func DefaultConfig() Config {
@@ -56,4 +67,43 @@ func Open(cfg Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("database handle is nil")
 	}
 	return db, nil
+}
+
+func LoadMigrations(dir string) ([]Migration, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	migrations := make([]Migration, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".sql" {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		parts := strings.SplitN(name, "_", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		version, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		sqlBytes, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		migrations = append(migrations, Migration{
+			Version: version,
+			Name:    parts[1],
+			SQL:     string(sqlBytes),
+		})
+	}
+	sort.Slice(migrations, func(i, j int) bool {
+		return migrations[i].Version < migrations[j].Version
+	})
+	if len(migrations) == 0 {
+		return nil, fmt.Errorf("no migrations found in %s", dir)
+	}
+	return migrations, nil
 }

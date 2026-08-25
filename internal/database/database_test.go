@@ -1,6 +1,9 @@
 package database
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBuildDSN(t *testing.T) {
 	cfg := Config{
@@ -32,6 +35,22 @@ func TestOpen(t *testing.T) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close returned error: %v", err)
+	}
+}
+
+func TestLoadMigrations(t *testing.T) {
+	migrations, err := LoadMigrations("../../migrations")
+	if err != nil {
+		t.Fatalf("LoadMigrations returned error: %v", err)
+	}
+	if len(migrations) == 0 {
+		t.Fatal("LoadMigrations should return at least one migration")
+	}
+	if migrations[0].Version != 1 {
+		t.Fatalf("first migration should be version 1, got %d", migrations[0].Version)
+	}
+	if !strings.Contains(migrations[0].SQL, "CREATE TABLE IF NOT EXISTS organizations") {
+		t.Fatal("initial migration should create the organizations table")
 	}
 }
 
