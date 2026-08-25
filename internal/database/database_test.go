@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -197,6 +198,43 @@ func TestRepositoryListAgentsByOrg(t *testing.T) {
 	}
 	if agentsList[0].OrganizationID != orgID {
 		t.Fatalf("expected org %q, got %q", orgID, agentsList[0].OrganizationID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("pending expectations: %v", err)
+	}
+}
+
+func TestRepositoryCreateRunAndListRunsByOrg(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewRepository(db)
+	orgID := "org-run"
+	agentID := "agent-run"
+	mock.ExpectExec("INSERT INTO runs").
+		WithArgs(sqlmock.AnyArg(), orgID, agentID, "QUEUED", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	runID, err := repo.CreateRun(orgID, agentID, "hello")
+	if err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("CreateRun should return a persisted run identifier")
+	}
+
+	mock.ExpectQuery("SELECT id, organization_id, agent_id, status, created_at, updated_at FROM runs WHERE organization_id = \\$1 ORDER BY created_at DESC").
+		WithArgs(orgID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "organization_id", "agent_id", "status", "created_at", "updated_at"}).
+			AddRow(runID, orgID, agentID, "QUEUED", time.Now().UTC(), time.Now().UTC()))
+	runs, err := repo.ListRunsByOrg(orgID)
+	if err != nil {
+		t.Fatalf("ListRunsByOrg returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("pending expectations: %v", err)

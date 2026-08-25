@@ -266,3 +266,55 @@ func (r *Repository) ListAgentsByOrg(orgID string) ([]*agents.Agent, error) {
 	}
 	return out, rows.Err()
 }
+
+func (r *Repository) CreateRun(orgID, agentID, input string) (string, error) {
+	if r == nil || r.db == nil {
+		return "", errors.New("database is nil")
+	}
+	orgID = strings.TrimSpace(orgID)
+	agentID = strings.TrimSpace(agentID)
+	if orgID == "" {
+		return "", errors.New("organization id is required")
+	}
+	if agentID == "" {
+		return "", errors.New("agent id is required")
+	}
+	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
+	createdAt := time.Now().UTC()
+	if _, err := r.db.Exec(`INSERT INTO runs (id, organization_id, agent_id, status, created_at, updated_at, input) VALUES ($1, $2, $3, 'QUEUED', $4, $4, $5)`, runID, orgID, agentID, createdAt, input); err != nil {
+		return "", err
+	}
+	return runID, nil
+}
+
+func (r *Repository) ListRunsByOrg(orgID string) ([]map[string]any, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("database is nil")
+	}
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return nil, errors.New("organization id is required")
+	}
+	rows, err := r.db.Query(`SELECT id, organization_id, agent_id, status, created_at, updated_at FROM runs WHERE organization_id = $1 ORDER BY created_at DESC`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, org, agentID, status string
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&id, &org, &agentID, &status, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"id":         id,
+			"organization_id": org,
+			"agent_id":   agentID,
+			"status":     status,
+			"created_at": createdAt,
+			"updated_at": updatedAt,
+		})
+	}
+	return out, rows.Err()
+}

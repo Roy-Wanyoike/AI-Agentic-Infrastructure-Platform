@@ -59,3 +59,24 @@ func TestCreateAgentRequiresMatchingOrganization(t *testing.T) {
 		t.Fatalf("expected status %d, got %d body=%s", http.StatusForbidden, rr.Code, rr.Body.String())
 	}
 }
+
+func TestCreateRunRequiresMatchingOrganization(t *testing.T) {
+	authService := auth.NewService("dev-secret")
+	_, user, err := authService.Register("Acme", "runs@example.com", "secret123")
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	token, err := authService.GenerateToken(user)
+	if err != nil {
+		t.Fatalf("GenerateToken returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(`{"organization_id":"org-999","agent_id":"agent-1","input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	auth.RequireAuth(authService)(createRunHandler()).ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusForbidden, rr.Code, rr.Body.String())
+	}
+}

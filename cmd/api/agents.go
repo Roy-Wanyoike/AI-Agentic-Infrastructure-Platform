@@ -96,6 +96,9 @@ func agentDetailHandler(service *agents.Service) http.HandlerFunc {
 			http.Error(w, "agent not found", http.StatusNotFound)
 			return
 		}
+		if !requireOrganizationAccess(w, r, agent.OrganizationID) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agent)
 	}
