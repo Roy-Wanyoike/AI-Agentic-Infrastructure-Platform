@@ -1,18 +1,25 @@
 # AgentOS
 
-AgentOS is a Go-based AI agent infrastructure platform foundation. The goal is to provide a reliable, multi-tenant platform for agent lifecycle management, execution, tooling, and observability while staying modular enough to evolve into a production-grade system.
+AgentOS is a Go-based AI-agent infrastructure platform foundation designed for reliable, multi-tenant agent orchestration. The codebase intentionally starts as a modular monolith with clear boundaries so it can evolve into a larger distributed platform without unnecessary early complexity.
 
-## Current scope
+## Current status
 
-This repository contains the Phase 0 foundation:
+The repository now includes a verified platform foundation spanning the first product milestones:
 
-- Go module and application structure
-- API and worker entrypoints
-- environment configuration
-- structured logging
-- local Docker Compose stack for Postgres, Redis, and NATS
-- CI workflow skeleton
-- developer tooling and docs
+- authentication and tenant-aware token validation
+- RBAC permissions for OWNER/ADMIN/MEMBER/VIEWER roles
+- organization and membership management
+- agent creation, versioning, and runtime execution
+- tool registry with calculator tool support
+- queue primitives for async task flow
+- workflow execution skeleton
+- scheduler base model
+- observability metrics
+- API key issuance and revocation
+- audit logging and usage tracking
+- webhook event support
+- notification primitives
+- database and configuration helpers
 
 ## Repository layout
 
@@ -22,8 +29,24 @@ agentos/
 │   ├── api/
 │   └── worker/
 ├── internal/
+│   ├── agents/
+│   ├── apikeys/
+│   ├── audit/
+│   ├── auth/
 │   ├── config/
-│   └── logger/
+│   ├── database/
+│   ├── logger/
+│   ├── notifications/
+│   ├── observability/
+│   ├── organizations/
+│   ├── queue/
+│   ├── runtime/
+│   ├── scheduler/
+│   ├── tenant/
+│   ├── tools/
+│   ├── usage/
+│   ├── webhooks/
+│   └── workflows/
 ├── migrations/
 ├── .github/
 ├── docs/
@@ -33,7 +56,7 @@ agentos/
 ├── Makefile
 ├── README.md
 ├── go.mod
-└── ...
+└── go.sum
 ```
 
 ## Quick start
@@ -65,11 +88,20 @@ make run-worker
 - API: http://localhost:8080/healthz
 - API: http://localhost:8080/readyz
 
+## Verification
+
+The project is validated with:
+
+```bash
+PATH="/tmp/go/bin:$PATH" /tmp/go/bin/go test ./...
+```
+
+This is the current correctness gate for the repository.
+
 ## Roadmap
 
-The project follows the implementation plan in [docs/agentos-implementation-plan.md](docs/agentos-implementation-plan.md). The immediate next milestone is Phase 1: authentication and multi-tenancy.
+The implementation follows the plan in [docs/agentos-implementation-plan.md](docs/agentos-implementation-plan.md). The next milestone is persistence and durable data access, followed by API authorization enforcement for real tenant-isolated resource access.
 
 ## Contributing
 
-Keep the codebase modular and keep behavior explicit. Prefer typed configuration, structured logging, and clear service boundaries.
-# AI-Agentic-Infrastructure-Platform
+Keep the codebase modular, test-driven, and explicit about tenant boundaries, retries, auth, and observability. The project is intentionally designed for gradual evolution from a solid platform foundation into a production-grade system.
