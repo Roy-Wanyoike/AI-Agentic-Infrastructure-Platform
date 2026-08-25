@@ -97,3 +97,56 @@ func (q *Queue) Ack(task *Task) {
 		}
 	}
 }
+func (q *Queue) Dequeue() *Task {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.tasks) == 0 {
+		return nil
+	}
+	task := q.tasks[0]
+	q.tasks = q.tasks[1:]
+	return task
+}
+
+func (q *Queue) Requeue(task *Task) {
+	if task == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	task.Status = "queued"
+	task.UpdatedAt = time.Now().UTC()
+	q.tasks = append(q.tasks, task)
+}
+
+type Worker struct {
+	q      *Queue
+	handle func(*Task) error
+}
+
+func NewWorker(q *Queue, handle func(*Task) error) *Worker {
+	return &Worker{q: q, handle: handle}
+}
+
+func (w *Worker) ProcessNext() error {
+	if w == nil || w.q == nil {
+		return nil
+	}
+	task := w.q.Dequeue()
+	if task == nil {
+		return nil
+	}
+	w.q.MarkStarted(task)
+	if w.handle != nil {
+		if err := w.handle(task); err != nil {
+			w.q.MarkFailed(task, err.Error())
+			if task.Status == "dead_letter" {
+				return nil
+			}
+			w.q.Requeue(task)
+			return err
+		}
+	}
+	w.q.Ack(task)
+	return nil
+}

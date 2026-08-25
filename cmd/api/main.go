@@ -27,9 +27,9 @@ func main() {
 	})
 	mux.HandleFunc("/v1/auth/register", registerHandler(authService))
 	mux.HandleFunc("/v1/auth/login", loginHandler(authService))
-	mux.HandleFunc("/v1/agents", listAgentsHandler(agentService))
-	mux.HandleFunc("/v1/agents/create", createAgentHandler(agentService))
-	mux.HandleFunc("/v1/agents/", agentDetailHandler(agentService))
+	mux.Handle("/v1/agents", auth.RequireAuth(authService)(auth.RequirePermission(authService, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(agentService)))))
+	mux.Handle("/v1/agents/create", auth.RequireAuth(authService)(auth.RequirePermission(authService, auth.PermissionAgentsWrite)(http.HandlerFunc(createAgentHandler(agentService)))))
+	mux.Handle("/v1/agents/", auth.RequireAuth(authService)(auth.RequirePermission(authService, auth.PermissionAgentsRead)(http.HandlerFunc(agentDetailHandler(agentService)))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"service":"agentos-api","status":"running"}`))

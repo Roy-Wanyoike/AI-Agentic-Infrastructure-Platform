@@ -6,7 +6,21 @@ import (
 	"strings"
 
 	"agentos/internal/agents"
+	"agentos/internal/auth"
 )
+
+func requireOrganizationAccess(w http.ResponseWriter, r *http.Request, orgID string) bool {
+	claims, err := auth.ExtractClaims(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return false
+	}
+	if strings.TrimSpace(orgID) != "" && orgID != claims.OrganizationID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
+}
 
 func listAgentsHandler(service *agents.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -15,6 +29,17 @@ func listAgentsHandler(service *agents.Service) http.HandlerFunc {
 			return
 		}
 		orgID := r.URL.Query().Get("organization_id")
+		if orgID == "" {
+			claims, err := auth.ExtractClaims(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			orgID = claims.OrganizationID
+		}
+		if !requireOrganizationAccess(w, r, orgID) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(service.List(orgID))
 	}
@@ -35,6 +60,17 @@ func createAgentHandler(service *agents.Service) http.HandlerFunc {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.OrganizationID == "" {
+			claims, err := auth.ExtractClaims(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			req.OrganizationID = claims.OrganizationID
+		}
+		if !requireOrganizationAccess(w, r, req.OrganizationID) {
 			return
 		}
 		agent, err := service.Create(req.OrganizationID, req.Name, req.Description, req.Instructions, req.Model)
