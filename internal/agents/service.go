@@ -48,11 +48,30 @@ func (s *Service) Create(orgID, name, description, instructions, model string) (
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	agent := &Agent{ID: fmt.Sprintf("agent-%d", len(s.agents)+1), OrganizationID: orgID, Name: name, Description: description, Instructions: instructions, Model: model, Status: "DRAFT", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-	s.agents[agent.ID] = agent
-	if _, err := s.CreateVersion(agent.ID, instructions, model); err != nil {
-		return nil, err
+
+	agent := &Agent{
+		ID:             fmt.Sprintf("agent-%d", len(s.agents)+1),
+		OrganizationID: orgID,
+		Name:           name,
+		Description:    description,
+		Instructions:   instructions,
+		Model:          model,
+		Status:         "DRAFT",
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
 	}
+	currentVersion := &AgentVersion{
+		ID:           fmt.Sprintf("version-%s-%d", agent.ID, len(s.versions[agent.ID])+1),
+		AgentID:      agent.ID,
+		Version:      len(s.versions[agent.ID]) + 1,
+		Instructions: instructions,
+		Model:        model,
+		CreatedAt:    time.Now().UTC(),
+	}
+	s.agents[agent.ID] = agent
+	s.versions[agent.ID] = append(s.versions[agent.ID], currentVersion)
+	agent.CurrentVersionID = currentVersion.ID
+	agent.UpdatedAt = time.Now().UTC()
 	return agent, nil
 }
 
