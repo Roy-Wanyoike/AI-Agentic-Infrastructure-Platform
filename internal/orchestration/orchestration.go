@@ -76,7 +76,10 @@ func (p *Planner) CompleteTask(plan *Plan, phase, taskID, verification string) e
 	return fmt.Errorf("task %s not found in phase %s", taskID, phase)
 }
 
-func (p *Planner) CanAdvance(plan Plan, phase string) bool {
+func (p *Planner) CanAdvance(plan *Plan, phase string) bool {
+	if plan == nil {
+		return false
+	}
 	for _, task := range plan.Tasks {
 		if task.Phase == phase && !task.Completed {
 			return false
