@@ -13,6 +13,7 @@ type Task struct {
 	Attempts  int
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	LastError string
 }
 
 type Queue struct {
@@ -38,6 +39,34 @@ func (q *Queue) Enqueue(taskType string, payload map[string]any) *Task {
 	}
 	q.tasks = append(q.tasks, task)
 	return task
+}
+
+func (q *Queue) MarkStarted(task *Task) {
+	if task == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	task.Attempts++
+	task.Status = "running"
+	task.UpdatedAt = time.Now().UTC()
+}
+
+func (q *Queue) MarkFailed(task *Task, errMsg string) {
+	if task == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	task.LastError = errMsg
+	task.UpdatedAt = time.Now().UTC()
+
+	if task.Attempts >= 4 {
+		task.Status = "dead_letter"
+		return
+	}
+
+	task.Status = "queued"
 }
 
 func (q *Queue) Length() int {

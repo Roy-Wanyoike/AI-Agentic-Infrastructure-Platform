@@ -11,10 +11,11 @@ import (
 type StepType string
 
 const (
-	StepAgent StepType = "agent"
-	StepTool  StepType = "tool"
-	StepDelay StepType = "delay"
-	StepEnd   StepType = "end"
+	StepAgent     StepType = "agent"
+	StepTool      StepType = "tool"
+	StepDelay     StepType = "delay"
+	StepCondition StepType = "condition"
+	StepEnd       StepType = "end"
 )
 
 type Step struct {
