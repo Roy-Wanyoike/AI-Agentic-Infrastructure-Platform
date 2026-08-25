@@ -2,12 +2,17 @@ package database
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"agentos/internal/agents"
+	"agentos/internal/auth"
 
 	_ "github.com/lib/pq"
 )
@@ -151,4 +156,113 @@ func RollbackMigration(db *sql.DB, migration Migration) error {
 	}
 	_, err := db.Exec(`DELETE FROM schema_migrations WHERE version = $1`, migration.Version)
 	return err
+}
+
+type Repository struct {
+	db *sql.DB
+}
+
+func NewRepository(db *sql.DB) *Repository {
+	return &Repository{db: db}
+}
+
+func (r *Repository) CreateOrganization(name string) (*auth.Organization, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("database is nil")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("organization name is required")
+	}
+	orgID := fmt.Sprintf("org-%d", time.Now().UnixNano())
+	if _, err := r.db.Exec(`INSERT INTO organizations (id, name, status, created_at, updated_at) VALUES ($1, $2, 'ACTIVE', NOW(), NOW())`, orgID, name); err != nil {
+		return nil, err
+	}
+	return &auth.Organization{ID: orgID, Name: name}, nil
+}
+
+func (r *Repository) CreateUser(orgID, email, passwordHash, role string) (*auth.User, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("database is nil")
+	}
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil, errors.New("email is required")
+	}
+	if strings.TrimSpace(orgID) == "" {
+		return nil, errors.New("organization id is required")
+	}
+	role = strings.TrimSpace(role)
+	if role == "" {
+		role = "OWNER"
+	}
+	userID := fmt.Sprintf("user-%d", time.Now().UnixNano())
+	if _, err := r.db.Exec(`INSERT INTO users (id, organization_id, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, $5, NOW())`, userID, orgID, email, passwordHash, role); err != nil {
+		return nil, err
+	}
+	return &auth.User{ID: userID, Organization: orgID, Email: email, PasswordHash: passwordHash, Role: role, CreatedAt: time.Now().UTC()}, nil
+}
+
+func (r *Repository) GetUserByEmail(email string) (*auth.User, bool) {
+	if r == nil || r.db == nil {
+		return nil, false
+	}
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil, false
+	}
+	var user auth.User
+	row := r.db.QueryRow(`SELECT id, organization_id, email, password_hash, role, created_at FROM users WHERE email = $1`, email)
+	if err := row.Scan(&user.ID, &user.Organization, &user.Email, &user.PasswordHash, &user.Role, &user.CreatedAt); err != nil {
+		return nil, false
+	}
+	return &user, true
+}
+
+func (r *Repository) CreateAgent(orgID, name, model string) (*agents.Agent, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("database is nil")
+	}
+	orgID = strings.TrimSpace(orgID)
+	name = strings.TrimSpace(name)
+	model = strings.TrimSpace(model)
+	if orgID == "" {
+		return nil, errors.New("organization id is required")
+	}
+	if name == "" {
+		return nil, errors.New("agent name is required")
+	}
+	if model == "" {
+		model = "gpt-4o-mini"
+	}
+	now := time.Now().UTC()
+	agentID := fmt.Sprintf("agent-%d", time.Now().UnixNano())
+	if _, err := r.db.Exec(`INSERT INTO agents (id, organization_id, name, model, status, created_at, updated_at) VALUES ($1, $2, $3, $4, 'DRAFT', $5, $5)`, agentID, orgID, name, model, now); err != nil {
+		return nil, err
+	}
+	return &agents.Agent{ID: agentID, OrganizationID: orgID, Name: name, Model: model, Status: "DRAFT", CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (r *Repository) ListAgentsByOrg(orgID string) ([]*agents.Agent, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("database is nil")
+	}
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return nil, errors.New("organization id is required")
+	}
+	rows, err := r.db.Query(`SELECT id, organization_id, name, model, status, created_at, updated_at FROM agents WHERE organization_id = $1 ORDER BY created_at DESC`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*agents.Agent, 0)
+	for rows.Next() {
+		var agent agents.Agent
+		if err := rows.Scan(&agent.ID, &agent.OrganizationID, &agent.Name, &agent.Model, &agent.Status, &agent.CreatedAt, &agent.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &agent)
+	}
+	return out, rows.Err()
 }

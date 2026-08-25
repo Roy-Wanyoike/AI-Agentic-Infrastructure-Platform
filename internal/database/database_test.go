@@ -128,3 +128,77 @@ func TestDefaultConfig(t *testing.T) {
 		t.Fatal("default port should not be zero")
 	}
 }
+
+func TestRepositoryCreateOrganizationAndUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewRepository(db)
+	mock.ExpectExec("INSERT INTO organizations").
+		WithArgs(sqlmock.AnyArg(), "Acme").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	org, err := repo.CreateOrganization("Acme")
+	if err != nil {
+		t.Fatalf("CreateOrganization returned error: %v", err)
+	}
+	if org == nil || org.ID == "" {
+		t.Fatal("CreateOrganization should return a persisted organization")
+	}
+
+	mock.ExpectExec("INSERT INTO users").
+		WithArgs(sqlmock.AnyArg(), org.ID, "alice@example.com", "hashed-password", "OWNER").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	user, err := repo.CreateUser(org.ID, "alice@example.com", "hashed-password", "OWNER")
+	if err != nil {
+		t.Fatalf("CreateUser returned error: %v", err)
+	}
+	if user == nil || user.Email != "alice@example.com" {
+		t.Fatal("CreateUser should persist a user row")
+	}
+
+	mock.ExpectQuery("SELECT id, organization_id, email, password_hash, role, created_at FROM users WHERE email = \\$1").
+		WithArgs("alice@example.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "organization_id", "email", "password_hash", "role", "created_at"}).
+			AddRow(user.ID, org.ID, user.Email, user.PasswordHash, user.Role, user.CreatedAt))
+	stored, ok := repo.GetUserByEmail("alice@example.com")
+	if !ok || stored == nil {
+		t.Fatal("GetUserByEmail should return the stored user")
+	}
+	if stored.Organization != org.ID {
+		t.Fatalf("expected org %q, got %q", org.ID, stored.Organization)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("pending expectations: %v", err)
+	}
+}
+
+func TestRepositoryListAgentsByOrg(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewRepository(db)
+	orgID := "org-tenant"
+	mock.ExpectQuery("SELECT id, organization_id, name, model, status, created_at, updated_at FROM agents WHERE organization_id = \\$1 ORDER BY created_at DESC").
+		WithArgs(orgID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "organization_id", "name", "model", "status", "created_at", "updated_at"}).
+			AddRow("agent-1", orgID, "Support Agent", "gpt-4o-mini", "DRAFT", time.Now().UTC(), time.Now().UTC()))
+	agentsList, err := repo.ListAgentsByOrg(orgID)
+	if err != nil {
+		t.Fatalf("ListAgentsByOrg returned error: %v", err)
+	}
+	if len(agentsList) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(agentsList))
+	}
+	if agentsList[0].OrganizationID != orgID {
+		t.Fatalf("expected org %q, got %q", orgID, agentsList[0].OrganizationID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("pending expectations: %v", err)
+	}
+}
