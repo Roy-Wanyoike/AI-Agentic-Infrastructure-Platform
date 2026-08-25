@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -152,6 +154,12 @@ func (s *Service) Login(email, password string) (string, error) {
 	return s.GenerateToken(user)
 }
 
+func signJWT(data []byte, secret string) string {
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write(data)
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+}
+
 func (s *Service) GenerateToken(user *User) (string, error) {
 	if user == nil {
 		return "", errors.New("user is required")
@@ -160,7 +168,7 @@ func (s *Service) GenerateToken(user *User) (string, error) {
 		UserID:         user.ID,
 		OrganizationID: user.Organization,
 		Email:          user.Email,
-		Role:           user.Role,
+		Role:           normalizeRole(user.Role),
 		Exp:            time.Now().Add(24 * time.Hour).Unix(),
 	}
 	header, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
@@ -173,8 +181,9 @@ func (s *Service) GenerateToken(user *User) (string, error) {
 	}
 	head64 := base64.RawURLEncoding.EncodeToString(header)
 	payload64 := base64.RawURLEncoding.EncodeToString(payload)
-	signature := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%s.%s.%s", head64, payload64, s.jwtSecret)))
-	return fmt.Sprintf("%s.%s.%s", head64, payload64, signature), nil
+	signingInput := head64 + "." + payload64
+	sig := signJWT([]byte(signingInput), s.jwtSecret)
+	return signingInput + "." + sig, nil
 }
 
 func (s *Service) ValidateToken(token string) (*Claims, error) {
@@ -183,8 +192,8 @@ func (s *Service) ValidateToken(token string) (*Claims, error) {
 		return nil, errors.New("invalid token")
 	}
 	head64, payload64, sig := parts[0], parts[1], parts[2]
-	expected := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%s.%s.%s", head64, payload64, s.jwtSecret)))
-	if sig != expected {
+	expected := signJWT([]byte(head64+"."+payload64), s.jwtSecret)
+	if !hmac.Equal([]byte(sig), []byte(expected)) {
 		return nil, errors.New("invalid token signature")
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(payload64)
@@ -201,11 +210,21 @@ func (s *Service) ValidateToken(token string) (*Claims, error) {
 	return &claims, nil
 }
 
+func normalizeRole(role string) string {
+	switch strings.ToUpper(strings.TrimSpace(role)) {
+	case "OWNER", "ADMIN", "MEMBER", "VIEWER":
+		return strings.ToUpper(strings.TrimSpace(role))
+	default:
+		return "VIEWER"
+	}
+}
+
 func (s *Service) HasPermission(user *User, permission Permission) bool {
 	if user == nil {
 		return false
 	}
-	perms, ok := rolePermissions[user.Role]
+	userRole := normalizeRole(user.Role)
+	perms, ok := rolePermissions[userRole]
 	if !ok {
 		return false
 	}
@@ -215,6 +234,16 @@ func (s *Service) HasPermission(user *User, permission Permission) bool {
 		}
 	}
 	return false
+}
+
+func (s *Service) HasPermissionForOrg(user *User, orgID string, permission Permission) bool {
+	if user == nil || strings.TrimSpace(orgID) == "" {
+		return false
+	}
+	if user.Organization != orgID {
+		return false
+	}
+	return s.HasPermission(user, permission)
 }
 
 func (s *Service) findUserByEmail(email string) (*User, bool) {

@@ -68,7 +68,7 @@ func RequirePermission(service *Service, permission Permission) func(http.Handle
 				http.Error(w, "user not found", http.StatusUnauthorized)
 				return
 			}
-			if !service.HasPermission(user, permission) {
+			if !service.HasPermissionForOrg(user, claims.OrganizationID, permission) {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}

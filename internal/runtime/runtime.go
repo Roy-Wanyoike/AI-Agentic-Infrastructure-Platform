@@ -39,6 +39,27 @@ func NewRunner(agentService *agents.Service, toolRegistry *tools.Registry) *Runn
 	return &Runner{agentService: agentService, toolRegistry: toolRegistry}
 }
 
+func extractMathExpression(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	for _, token := range []string{"what is ", "what's ", "calculate ", "compute ", "evaluate ", "solve "} {
+		lower = strings.ReplaceAll(lower, token, "")
+	}
+	lower = strings.Trim(lower, "? .!:")
+	if lower == "" {
+		return ""
+	}
+	for _, ch := range []string{"+", "-", "*", "/", "%"} {
+		if strings.Contains(lower, ch) {
+			return strings.TrimSpace(lower)
+		}
+	}
+	return ""
+}
+
 func (r *Runner) Run(ctx context.Context, agentID, input string) (*Run, error) {
 	if r == nil || r.agentService == nil {
 		return nil, errors.New("agent service is required")
@@ -52,11 +73,11 @@ func (r *Runner) Run(ctx context.Context, agentID, input string) (*Run, error) {
 	}
 	_ = ctx
 	output := ""
-	if strings.Contains(strings.ToLower(input), "2 + 2") {
+	if expr := extractMathExpression(input); expr != "" {
 		if r.toolRegistry != nil {
 			tool, ok := r.toolRegistry.Get("calculator")
 			if ok {
-				result, err := tool.Execute(map[string]any{"expression": "2 + 2"})
+				result, err := tool.Execute(map[string]any{"expression": expr})
 				if err == nil {
 					switch v := result["result"].(type) {
 					case int64:
@@ -65,8 +86,10 @@ func (r *Runner) Run(ctx context.Context, agentID, input string) (*Run, error) {
 						output = strconv.FormatFloat(v, 'f', -1, 64)
 					case int:
 						output = strconv.Itoa(v)
+					case string:
+						output = v
 					default:
-						output = "4"
+						output = "0"
 					}
 				}
 			}
