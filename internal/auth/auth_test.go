@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"agentos/internal/apikeys"
 )
 
 func TestPasswordHashAndVerify(t *testing.T) {
@@ -114,5 +116,33 @@ func TestRequireOrganizationAccess(t *testing.T) {
 	handler.ServeHTTP(resp, req)
 	if resp.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for org mismatch, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestRequireAuthOrAPIKeyAcceptsAPIKeyHeader(t *testing.T) {
+	authService := NewService("jwt-secret")
+	apiKeyService := apikeys.NewService()
+	key, err := apiKeyService.Create("org-api", "user-api", "integration-key")
+	if err != nil {
+		t.Fatalf("Create API key returned error: %v", err)
+	}
+
+	handler := RequireAuthOrAPIKey(authService, apiKeyService)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, err := ExtractClaims(r.Context())
+		if err != nil {
+			t.Fatalf("ExtractClaims returned error: %v", err)
+		}
+		if claims.OrganizationID != "org-api" {
+			t.Fatalf("expected org-api claims, got %q", claims.OrganizationID)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/with-api-key", nil)
+	req.Header.Set("X-API-Key", key.Value)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 for valid api key, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }

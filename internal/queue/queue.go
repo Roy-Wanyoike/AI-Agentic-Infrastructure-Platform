@@ -1,8 +1,13 @@
 package queue
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
+
+	redis "github.com/redis/go-redis/v9"
 )
 
 type Task struct {
@@ -23,6 +28,147 @@ type Queue struct {
 
 func NewQueue() *Queue {
 	return &Queue{tasks: make([]*Task, 0)}
+}
+
+type RedisQueue struct {
+	client *redis.Client
+	key    string
+}
+
+func NewRedisQueue(addr string) (*RedisQueue, error) {
+	if addr == "" {
+		return nil, fmt.Errorf("redis address is required")
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		return nil, err
+	}
+
+	return &RedisQueue{client: client, key: "agentos:queue"}, nil
+}
+
+func encodeTask(task *Task) (string, error) {
+	if task == nil {
+		return "", fmt.Errorf("task is nil")
+	}
+	b, err := json.Marshal(task)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func decodeTask(raw string) *Task {
+	if raw == "" {
+		return nil
+	}
+	var task Task
+	if err := json.Unmarshal([]byte(raw), &task); err != nil {
+		return nil
+	}
+	return &task
+}
+
+func (q *RedisQueue) Enqueue(taskType string, payload map[string]any) *Task {
+	if q == nil || q.client == nil {
+		return nil
+	}
+
+	task := &Task{
+		ID:        taskType + "-" + time.Now().UTC().Format(time.RFC3339Nano),
+		Type:      taskType,
+		Payload:   payload,
+		Status:    "queued",
+		Attempts:  0,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	encoded, err := encodeTask(task)
+	if err != nil {
+		return nil
+	}
+	if err := q.client.RPush(context.Background(), q.key, encoded).Err(); err != nil {
+		return nil
+	}
+	return task
+}
+
+func (q *RedisQueue) Length() int {
+	if q == nil || q.client == nil {
+		return 0
+	}
+	length, err := q.client.LLen(context.Background(), q.key).Result()
+	if err != nil {
+		return 0
+	}
+	return int(length)
+}
+
+func (q *RedisQueue) Peek() *Task {
+	if q == nil || q.client == nil {
+		return nil
+	}
+	item, err := q.client.LIndex(context.Background(), q.key, 0).Result()
+	if err != nil || item == "" {
+		return nil
+	}
+	return decodeTask(item)
+}
+
+func (q *RedisQueue) Dequeue() *Task {
+	if q == nil || q.client == nil {
+		return nil
+	}
+	item, err := q.client.LPop(context.Background(), q.key).Result()
+	if err != nil || item == "" {
+		return nil
+	}
+	return decodeTask(item)
+}
+
+func (q *RedisQueue) MarkStarted(task *Task) {
+	if task == nil {
+		return
+	}
+	task.Attempts++
+	task.Status = "running"
+	task.UpdatedAt = time.Now().UTC()
+}
+
+func (q *RedisQueue) MarkFailed(task *Task, errMsg string) {
+	if task == nil {
+		return
+	}
+	task.LastError = errMsg
+	task.UpdatedAt = time.Now().UTC()
+	if task.Attempts >= 4 {
+		task.Status = "dead_letter"
+		return
+	}
+	task.Status = "queued"
+}
+
+func (q *RedisQueue) Ack(task *Task) {
+	if task == nil {
+		return
+	}
+	task.Status = "completed"
+	task.UpdatedAt = time.Now().UTC()
+}
+
+func (q *RedisQueue) Requeue(task *Task) {
+	if q == nil || q.client == nil || task == nil {
+		return
+	}
+	task.Status = "queued"
+	task.UpdatedAt = time.Now().UTC()
+	encoded, err := encodeTask(task)
+	if err != nil {
+		return
+	}
+	_ = q.client.RPush(context.Background(), q.key, encoded).Err()
 }
 
 func (q *Queue) Enqueue(taskType string, payload map[string]any) *Task {
