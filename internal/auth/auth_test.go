@@ -1,6 +1,10 @@
 package auth
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestPasswordHashAndVerify(t *testing.T) {
 	hash, err := HashPassword("secret123")
@@ -85,5 +89,30 @@ func TestHasPermission(t *testing.T) {
 	user.Role = "VIEWER"
 	if service.HasPermission(user, PermissionAgentsWrite) {
 		t.Fatal("VIEWER should not have agents.write")
+	}
+}
+
+func TestRequireOrganizationAccess(t *testing.T) {
+	service := NewService("jwt-secret")
+	_, user, err := service.Register("Acme", "tenant@example.com", "secret123")
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	token, err := service.GenerateToken(user)
+	if err != nil {
+		t.Fatalf("GenerateToken returned error: %v", err)
+	}
+
+	handler := RequireAuth(service)(RequireOrganizationAccess("org-999", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	req := httptest.NewRequest(http.MethodGet, "/tenant-check", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for org mismatch, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }

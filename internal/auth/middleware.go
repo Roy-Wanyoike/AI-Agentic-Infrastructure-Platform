@@ -76,3 +76,18 @@ func RequirePermission(service *Service, permission Permission) func(http.Handle
 		})
 	}
 }
+
+func RequireOrganizationAccess(requiredOrgID string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, err := ExtractClaims(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		if strings.TrimSpace(requiredOrgID) != "" && requiredOrgID != claims.OrganizationID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
