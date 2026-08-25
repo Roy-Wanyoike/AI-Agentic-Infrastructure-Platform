@@ -1,6 +1,6 @@
 APP_NAME=agentos
 
-.PHONY: build test run-api run-worker docker-up docker-down help
+.PHONY: build test run-api run-worker docker-up docker-down migrate-up migrate-down help
 
 help:
 	@echo "Available targets:"
@@ -28,3 +28,9 @@ docker-up:
 
 docker-down:
 	@docker compose down
+
+migrate-up:
+	@go run ./cmd/migrate --up
+
+migrate-down:
+	@go run ./cmd/migrate --down

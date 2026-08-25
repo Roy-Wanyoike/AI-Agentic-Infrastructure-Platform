@@ -107,3 +107,48 @@ func LoadMigrations(dir string) ([]Migration, error) {
 	}
 	return migrations, nil
 }
+
+func ApplyMigrations(db *sql.DB, migrations []Migration) error {
+	if db == nil {
+		return fmt.Errorf("database is nil")
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`); err != nil {
+		return err
+	}
+	for _, migration := range migrations {
+		var exists int
+		if err := db.QueryRow(`SELECT version FROM schema_migrations WHERE version = $1`, migration.Version).Scan(&exists); err != nil {
+			if err == sql.ErrNoRows {
+				tx, txErr := db.Begin()
+				if txErr != nil {
+					return txErr
+				}
+				if _, txErr = tx.Exec(migration.SQL); txErr != nil {
+					_ = tx.Rollback()
+					return txErr
+				}
+				if _, txErr = tx.Exec(`INSERT INTO schema_migrations (version, name) VALUES ($1, $2)`, migration.Version, migration.Name); txErr != nil {
+					_ = tx.Rollback()
+					return txErr
+				}
+				if txErr = tx.Commit(); txErr != nil {
+					return txErr
+				}
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func RollbackMigration(db *sql.DB, migration Migration) error {
+	if db == nil {
+		return fmt.Errorf("database is nil")
+	}
+	if migration.Version == 0 {
+		return fmt.Errorf("invalid migration version")
+	}
+	_, err := db.Exec(`DELETE FROM schema_migrations WHERE version = $1`, migration.Version)
+	return err
+}
