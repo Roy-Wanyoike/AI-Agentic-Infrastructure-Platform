@@ -21,6 +21,20 @@ func TestBuildDSN(t *testing.T) {
 	}
 }
 
+func TestOpen(t *testing.T) {
+	cfg := DefaultConfig()
+	db, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	if db == nil {
+		t.Fatal("Open returned nil database handle")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.Host == "" {

@@ -1,6 +1,11 @@
 package database
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+
+	_ "github.com/lib/pq"
+)
 
 type Config struct {
 	Host     string
@@ -31,4 +36,24 @@ func (c Config) BuildDSN() string {
 		c.DBName,
 		c.SSLMode,
 	)
+}
+
+func Open(cfg Config) (*sql.DB, error) {
+	if cfg.Host == "" {
+		cfg = DefaultConfig()
+	}
+	if cfg.DBName == "" || cfg.User == "" {
+		return nil, fmt.Errorf("database config is incomplete")
+	}
+	if cfg.SSLMode == "" {
+		cfg.SSLMode = "disable"
+	}
+	db, err := sql.Open("postgres", cfg.BuildDSN())
+	if err != nil {
+		return nil, err
+	}
+	if db == nil {
+		return nil, fmt.Errorf("database handle is nil")
+	}
+	return db, nil
 }
