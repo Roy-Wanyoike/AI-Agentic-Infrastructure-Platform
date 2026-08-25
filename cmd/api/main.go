@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"agentos/internal/agents"
@@ -12,7 +13,9 @@ import (
 	"agentos/internal/auth"
 	"agentos/internal/config"
 	"agentos/internal/logger"
+	"agentos/internal/observability"
 	"agentos/internal/queue"
+	"agentos/internal/streaming"
 )
 
 func main() {
@@ -31,11 +34,20 @@ func main() {
 	mux.HandleFunc("/v1/auth/register", registerHandler(authService))
 	mux.HandleFunc("/v1/auth/login", loginHandler(authService))
 	queueService := queue.NewQueue()
+	metricsService := observability.NewMetrics()
+	streamService := streaming.NewService()
 	mux.Handle("/v1/agents", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(agentService)))))
 	mux.Handle("/v1/agents/create", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsWrite)(http.HandlerFunc(createAgentHandler(agentService)))))
 	mux.Handle("/v1/agents/", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsRead)(http.HandlerFunc(agentDetailHandler(agentService)))))
 	mux.Handle("/v1/runs", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsExecute)(http.HandlerFunc(createRunHandler(queueService)))))
-	mux.Handle("/v1/runs/", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsRead)(http.HandlerFunc(getRunHandler()))))
+	mux.Handle("/v1/runs/", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsRead)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/events") {
+			runEventsHandler(streamService).ServeHTTP(w, r)
+			return
+		}
+		getRunHandler().ServeHTTP(w, r)
+	}))))
+	mux.Handle("/v1/metrics", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsRead)(http.HandlerFunc(metricsHandler(metricsService, queueService)))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"service":"agentos-api","status":"running"}`))

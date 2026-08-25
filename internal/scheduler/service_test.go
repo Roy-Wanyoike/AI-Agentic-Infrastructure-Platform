@@ -43,3 +43,18 @@ func TestScheduleRejectsInvalidCron(t *testing.T) {
 		t.Fatal("invalid cron should be rejected")
 	}
 }
+
+func TestDueSchedulesAtSpecificTime(t *testing.T) {
+	service := NewService()
+	schedule, err := service.Create("hourly cleanup", "0 * * * *")
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	at := time.Date(2024, time.January, 1, 12, 0, 0, 0, time.UTC)
+	if !service.ShouldRun(schedule, at) {
+		t.Fatal("schedule should match hourly trigger")
+	}
+	if due := service.DueAt(at); len(due) != 1 || due[0].ID != schedule.ID {
+		t.Fatalf("expected schedule %q to be due at %s, got %#v", schedule.ID, at.Format(time.RFC3339), due)
+	}
+}

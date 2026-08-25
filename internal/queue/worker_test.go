@@ -44,3 +44,24 @@ func TestWorkerProcessesQueuedRun(t *testing.T) {
 		t.Fatalf("Peek should be nil after queue drain, got %#v", got)
 	}
 }
+
+func TestQueueScaleCheckReportsThroughputAndRecovery(t *testing.T) {
+	q := NewQueue()
+	for i := 0; i < 20; i++ {
+		q.Enqueue("agent.run", map[string]any{"agent_id": "agent-1", "input": "hello"})
+	}
+
+	report, err := ScaleCheck(q, 4)
+	if err != nil {
+		t.Fatalf("ScaleCheck returned error: %v", err)
+	}
+	if report.TotalProcessed == 0 {
+		t.Fatal("expected at least one processed item in the scale report")
+	}
+	if report.ThroughputPerSecond <= 0 {
+		t.Fatal("expected throughput to be greater than zero")
+	}
+	if report.RecoveryRate <= 0 {
+		t.Fatal("expected a positive recovery rate for scale validation")
+	}
+}

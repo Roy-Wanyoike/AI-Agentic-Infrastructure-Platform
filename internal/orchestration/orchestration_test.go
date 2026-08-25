@@ -63,8 +63,8 @@ func TestPlannerDeploysOneSpecialistPerPhase(t *testing.T) {
 		}
 		seenPhases[specialist.Phase]++
 	}
-	if len(seenPhases) != 4 {
-		t.Fatalf("expected 4 unique phases, got %d", len(seenPhases))
+	if len(seenPhases) != len(plan.PhaseNames()) {
+		t.Fatalf("expected %d unique phases, got %d", len(plan.PhaseNames()), len(seenPhases))
 	}
 	for _, phase := range plan.PhaseNames() {
 		if seenPhases[phase] != 1 {
