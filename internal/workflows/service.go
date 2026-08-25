@@ -72,12 +72,33 @@ func (s *Service) Get(id string) (*Workflow, bool) {
 }
 
 func (s *Service) Execute(id string) (string, error) {
+	return s.ExecuteWithApproval(id, "approved")
+}
+
+func (s *Service) ExecuteWithApproval(id, decision string) (string, error) {
 	wf, ok := s.Get(id)
 	if !ok {
 		return "", errors.New("workflow not found")
 	}
+	if strings.TrimSpace(decision) == "" {
+		return "", errors.New("approval decision is required")
+	}
+	if !strings.EqualFold(decision, "approved") && !strings.EqualFold(decision, "rejected") {
+		return "", errors.New("decision must be approved or rejected")
+	}
+	if strings.EqualFold(decision, "rejected") {
+		wf.Status = "REJECTED"
+		wf.UpdatedAt = time.Now().UTC()
+		return "approval:rejected", nil
+	}
 	trace := make([]string, 0, len(wf.Steps))
 	for _, step := range wf.Steps {
+		if step.Type == StepCondition {
+			if condition, ok := step.Config["value"].(bool); ok && condition {
+				trace = append(trace, fmt.Sprintf("%s:%s:pass", step.Type, step.Name))
+				continue
+			}
+		}
 		trace = append(trace, fmt.Sprintf("%s:%s", step.Type, step.Name))
 	}
 	wf.Status = "RUNNING"
