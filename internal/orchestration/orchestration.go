@@ -31,8 +31,8 @@ type Planner struct{}
 
 func NewPlanner() *Planner { return &Planner{} }
 
-func (p *Planner) BuildDefaultPlan() Plan {
-	return Plan{
+func (p *Planner) BuildDefaultPlan() *Plan {
+	plan := &Plan{
 		Specialists: []Specialist{
 			{ID: "foundation-agent", Name: "Foundation Agent", Phase: "foundation", Focus: "repo scaffold, config, build verification"},
 			{ID: "auth-agent", Name: "Auth Agent", Phase: "auth", Focus: "tenant auth, RBAC, API keys"},
@@ -49,9 +49,10 @@ func (p *Planner) BuildDefaultPlan() Plan {
 			{ID: "observability", Phase: "platform", Description: "Add metrics and telemetry", Verification: "go test ./..."},
 		},
 	}
+	return plan
 }
 
-func (p *Planner) PhaseNames() []string {
+func (p *Plan) PhaseNames() []string {
 	return []string{"foundation", "auth", "runtime", "platform"}
 }
 
