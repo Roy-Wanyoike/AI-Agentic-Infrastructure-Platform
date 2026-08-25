@@ -102,6 +102,16 @@ This is the current correctness gate for the repository.
 
 The implementation follows the plan in [docs/agentos-implementation-plan.md](docs/agentos-implementation-plan.md). The next milestone is persistence and durable data access, followed by API authorization enforcement for real tenant-isolated resource access.
 
+### Product scope and delivery phases
+
+AgentOS is being built as an AI-agent infrastructure platform, not just as a single-agent builder. The project intentionally prioritizes delivery by layer:
+
+- Phase 1: MVP core infrastructure — auth, orgs, RBAC, agent CRUD, versions, model abstraction, runtime, tools, runs, queue, dashboard basics.
+- Phase 2: Production platform — memory, workflows, scheduler, webhooks, evaluation, usage analytics, cost tracking, observability, approval flows.
+- Phase 3: Enterprise platform — billing, secrets, policy engine, deployment environments, governance, multi-agent orchestration, governance and compliance controls.
+
+The core differentiators are reliability, multi-tenancy, observability, and operational safety: agent execution should be production-grade, not just demo-friendly.
+
 ## Contributing
 
 Keep the codebase modular, test-driven, and explicit about tenant boundaries, retries, auth, and observability. The project is intentionally designed for gradual evolution from a solid platform foundation into a production-grade system.

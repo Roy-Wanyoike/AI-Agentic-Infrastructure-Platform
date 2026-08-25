@@ -19,7 +19,111 @@ This delivers serious distributed-systems and backend engineering signal without
 
 The product is not an AI chatbot. It is infrastructure for reliable AI agent execution.
 
-## 3. Proposed architecture
+## 3. Complete feature map and delivery strategy
+
+AgentOS should be understood as a complete AI-agent infrastructure platform. The platform must support operational reliability, safety, cost visibility, governance, and multi-tenant execution, not just agent generation.
+
+### 3.1 Platform feature categories
+
+#### 3.1.1 Core platform
+- dashboard with agent, run, latency, cost, queue, and workflow metrics
+- quick actions for create agent, run agent, create workflow, add tool, review failures, usage, and API keys
+- organization-level visibility and admin operations
+- health, readiness, and operational status surfaces
+
+#### 3.1.2 Agent lifecycle and versioning
+- create, read, update, delete, archive, pause, duplicate, activate, export, and import agents
+- agent states: DRAFT, ACTIVE, PAUSED, DISABLED, ARCHIVED
+- versioned agent configuration with comparisons, deployment history, rollback, and publishing workflows
+- reproducible behavior through immutable versions, notes, authors, timestamps, and config diffing
+
+#### 3.1.3 Agent execution and runtime
+- run lifecycle states: QUEUED, RUNNING, WAITING_APPROVAL, PAUSED, COMPLETED, FAILED, CANCELLED, TIMEOUT
+- execution timeline showing model calls, tool usage, approvals, and final response
+- runtime safeguards: max steps, max runtime, token caps, tool call limits, cancellation, retries, and loop detection
+- trace IDs, model metadata, token usage, and cost attribution for each execution step
+
+#### 3.1.4 Tools and permissions
+- tool registry with name, description, version, schema, timeout, retry policy, and auth requirements
+- built-in tool starting set: calculator, HTTP request, JSON transformation, webhook, and later DB, SaaS and search tools
+- tool permissions, agent permissions, org policies, read/write restrictions, approval requirements, and sensitive-tool controls
+
+#### 3.1.5 Memory and knowledge systems
+- short-term memory: current context, task state, conversation state
+- long-term memory: user preferences, customer notes, important facts, and historical context
+- memory retrieval, updates, expiry, semantic search, and relevance scoring
+- RAG pipeline with document ingestion, parsing, chunking, embeddings, vector retrieval, citations, and metadata filtering
+
+#### 3.1.6 Model abstraction and routing
+- provider-level configuration, model discovery, capabilities, rate limits, pricing, and availability
+- model router for cost, latency, task complexity, fallback behavior, and provider health
+- fallback strategies including retries, model failover, timeout fallback, and circuit breakers
+
+#### 3.1.7 Workflows and automation
+- workflow nodes: agent, tool, condition, delay, approval, webhook, transform, parallel branch, trigger, and end
+- conditional logic and branching for business rules
+- parallel execution and fan-out/fan-in patterns
+- schedule-based and event-based automation
+
+#### 3.1.8 Human-in-the-loop and governance
+- approval queue with approve, reject, request changes, comments, expiration, and audit history
+- policy engine to allow or deny actions by risk and sensitivity
+- governance rules for PII, financial access, external communication, and dangerous tool execution
+
+#### 3.1.9 Platform operations and reliability
+- queue tasks with retries, backoff, priority, cancellation, worker health checks, task recovery, and DLQ handling
+- Postgres/Redis/NATS-backed durable architecture with graceful shutdown and recovery
+- real-time observability via logs, metrics, and traces
+- secret management, API key lifecycle, rate limiting, and usage controls
+
+#### 3.1.10 Enterprise and ecosystem features
+- billing, usage metering, plan management, developer portal, SDKs, CLI, deployment environments, and integration connectors
+- notifications, audit logs, export capabilities, and admin controls
+- multi-agent systems, agent-to-agent delegation, and sandboxing for advanced workloads
+
+### 3.2 Delivery strategy: MVP, production platform, enterprise
+
+#### MVP (must ship first)
+1. Authentication and session management
+2. Organizations and RBAC
+3. Agent CRUD and versioning
+4. Agent runtime and run execution
+5. Tool registry and permissions
+6. Basic model abstraction
+7. Queue and worker execution
+8. Postgres-backed persistence
+9. Redis-backed queue and caching
+10. Basic dashboard and run history
+
+#### Production platform
+1. Memory and long-term state
+2. RAG and knowledge bases
+3. Workflow engine and approvals
+4. Scheduler and webhooks
+5. Usage analytics and cost management
+6. Model routing and fallback
+7. Observability, traces, and audit trails
+8. API keys, rate limiting, quotas, and developer controls
+9. Evaluation and regression testing
+
+#### Enterprise / advanced platform
+1. Billing and subscriptions
+2. Deployment environments and release controls
+3. CLI and SDKs
+4. Integrations and connectors framework
+5. Secrets management and governance
+6. Agent marketplace and templates
+7. Multi-agent orchestration
+8. Sandbox execution and isolated tooling
+9. Enterprise SSO/SCIM and compliance controls
+
+### 3.3 Product thesis
+
+The strongest differentiator for AgentOS is that it should not merely help someone build an AI agent. It should make that agent operationally reliable enough to function as a durable production service with proper governance, observability, retry semantics, and cost controls.
+
+This product vision aligns with the backend and platform-first architecture already present in this repository: Go services, modular internals, queue-based worker execution, and tenant-aware boundaries.
+
+## 4. Proposed architecture
 
 ```text
                        ┌──────────────────────┐
