@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,7 +9,9 @@ import (
 
 	"agentos/internal/agents"
 	"agentos/internal/auth"
+	"agentos/internal/observability"
 	"agentos/internal/queue"
+	"agentos/internal/streaming"
 )
 
 func TestListAgentsRequiresMatchingOrganization(t *testing.T) {
@@ -107,5 +110,53 @@ func TestCreateRunEnqueuesQueuedTask(t *testing.T) {
 	}
 	if task := q.Peek(); task == nil || task.Type != "agent.run" {
 		t.Fatal("expected queued task to be an agent.run task")
+	}
+}
+
+func TestMetricsHandlerReportsQueueAndCounters(t *testing.T) {
+	metrics := observability.NewMetrics()
+	metrics.Inc("runs.created")
+	q := queue.NewQueue()
+	q.Enqueue("agent.run", map[string]any{"agent_id": "agent-1"})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/metrics", nil)
+	rr := httptest.NewRecorder()
+	metricsHandler(metrics, q).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response should be valid JSON: %v", err)
+	}
+	if payload["queue_length"] != float64(1) {
+		t.Fatalf("expected queue_length 1, got %#v", payload["queue_length"])
+	}
+	if _, ok := payload["counts"].(map[string]any)["runs.created"]; !ok {
+		t.Fatalf("expected runs.created metric to be present, got %#v", payload["counts"])
+	}
+}
+
+func TestRunEventsHandlerReturnsStoredRunHistory(t *testing.T) {
+	service := streaming.NewService()
+	service.Publish("run-123", "status", "queued", map[string]any{"status": "queued"})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/run-123/events", nil)
+	rr := httptest.NewRecorder()
+	runEventsHandler(service).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response should be valid JSON: %v", err)
+	}
+	if len(payload["events"].([]any)) != 1 {
+		t.Fatalf("expected one event in history, got %#v", payload["events"])
+	}
+	if payload["run_id"] != "run-123" {
+		t.Fatalf("expected run_id run-123, got %#v", payload["run_id"])
 	}
 }

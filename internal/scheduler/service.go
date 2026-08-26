@@ -87,6 +87,21 @@ func (s *Service) ShouldRun(schedule *Schedule, at time.Time) bool {
 		matchesField(fields[4], dayOfWeek, 0, 6)
 }
 
+func (s *Service) DueAt(at time.Time) []*Schedule {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	matches := make([]*Schedule, 0)
+	for _, schedule := range s.schedules {
+		if schedule != nil && schedule.Enabled && s.ShouldRun(schedule, at) {
+			matches = append(matches, schedule)
+		}
+	}
+	return matches
+}
+
 func isValidCron(expr string) bool {
 	fields := strings.Fields(expr)
 	if len(fields) != 5 {

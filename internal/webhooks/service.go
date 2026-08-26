@@ -1,8 +1,14 @@
 package webhooks
 
 import (
+    "bytes"
+    "crypto/hmac"
+    "crypto/sha256"
+    "encoding/hex"
+    "encoding/json"
     "errors"
     "fmt"
+    "net/http"
     "strings"
     "sync"
     "time"
@@ -50,8 +56,9 @@ func (s *Service) Publish(eventType string, payload map[string]any) *Event {
 }
 
 func (s *Service) Dispatch(eventType string) []*Endpoint {
-    s.mu.Lock(); defer s.mu.Unlock()
+    s.mu.Lock()
     if !s.hasPublished(eventType) {
+        s.mu.Unlock()
         return []*Endpoint{}
     }
     matches := make([]*Endpoint, 0)
@@ -63,7 +70,52 @@ func (s *Service) Dispatch(eventType string) []*Endpoint {
             matches = append(matches, endpoint)
         }
     }
+    event := s.lastEvent(eventType)
+    s.mu.Unlock()
+
+    for _, endpoint := range matches {
+        s.deliver(endpoint, event)
+    }
     return matches
+}
+
+func (s *Service) deliver(endpoint *Endpoint, event *Event) {
+    if endpoint == nil || strings.TrimSpace(endpoint.URL) == "" || event == nil {
+        return
+    }
+    payload, err := json.Marshal(map[string]any{
+        "event": event.Type,
+        "payload": event.Payload,
+        "created_at": event.CreatedAt,
+    })
+    if err != nil {
+        return
+    }
+    req, err := http.NewRequest(http.MethodPost, endpoint.URL, bytes.NewReader(payload))
+    if err != nil {
+        return
+    }
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("User-Agent", "agentos-webhook/1.0")
+    if endpoint.Secret != "" {
+        mac := hmac.New(sha256.New, []byte(endpoint.Secret))
+        _, _ = mac.Write(payload)
+        req.Header.Set("X-AgentOS-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+    }
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return
+    }
+    defer resp.Body.Close()
+}
+
+func (s *Service) lastEvent(eventType string) *Event {
+    for i := len(s.events) - 1; i >= 0; i-- {
+        if s.events[i] != nil && s.events[i].Type == eventType {
+            return s.events[i]
+        }
+    }
+    return nil
 }
 
 func (s *Service) Snapshot() []*Event {
