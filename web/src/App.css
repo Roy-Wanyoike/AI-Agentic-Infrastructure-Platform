@@ -401,6 +401,18 @@ tbody tr:last-child td {
   font-size: 1.8rem;
 }
 
+.mini-stat:nth-child(2) strong {
+  color: #93c5fd;
+}
+
+.mini-stat:nth-child(3) strong {
+  color: #6ee7b7;
+}
+
+.mini-stat:nth-child(4) strong {
+  color: #fbbf24;
+}
+
 .agent-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(200px, 1fr));
@@ -447,6 +459,144 @@ tbody tr:last-child td {
   font-size: 0.9rem;
 }
 
+.workflow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(250px, 1fr));
+  gap: 18px;
+}
+
+.workflow-card,
+.tool-card {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.workflow-card-header,
+.tool-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.workflow-card-header h3,
+.tool-card-header h3 {
+  margin: 0;
+  color: white;
+}
+
+.eyebrow.small {
+  margin-bottom: 8px;
+  font-size: 10px;
+}
+
+.workflow-meta,
+.tool-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.workflow-meta label,
+.tool-meta label {
+  display: block;
+  margin-bottom: 6px;
+  color: #94a3b8;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.workflow-meta strong,
+.tool-meta strong {
+  color: white;
+  font-size: 0.92rem;
+}
+
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 18px;
+}
+
+.usage-chart {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  align-items: end;
+  gap: 12px;
+  min-height: 220px;
+  padding-top: 12px;
+}
+
+.usage-bar-wrap {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  height: 180px;
+  background: rgba(148, 163, 184, 0.04);
+  border-radius: 12px 12px 0 0;
+  padding: 8px 6px 0;
+}
+
+.usage-bar {
+  width: 100%;
+  border-radius: 10px 10px 0 0;
+  background: linear-gradient(180deg, #60a5fa 0%, #8b5cf6 100%);
+  box-shadow: 0 10px 20px rgba(96, 165, 250, 0.2);
+}
+
+.security-grid,
+.infra-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 18px;
+}
+
+.security-card,
+.infra-card {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.security-card-header,
+.infra-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.security-card-header h3,
+.infra-card-header h3 {
+  margin: 0;
+  color: white;
+}
+
+.security-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.security-row label {
+  color: #94a3b8;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.security-row strong {
+  color: white;
+}
+
 .card-actions {
   display: flex;
   justify-content: space-between;
@@ -469,7 +619,11 @@ tbody tr:last-child td {
   .bottom-grid,
   .kpi-grid,
   .summary-grid,
-  .agent-grid {
+  .agent-grid,
+  .workflow-grid,
+  .tool-grid,
+  .security-grid,
+  .infra-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -59,6 +59,48 @@ const agentCards = [
   },
 ]
 
+const runTimeline = [
+  { label: 'Queued', value: '184', tone: 'neutral' },
+  { label: 'Running', value: '32', tone: 'running' },
+  { label: 'Completed', value: '1,048', tone: 'healthy' },
+  { label: 'Failed', value: '21', tone: 'warning' },
+]
+
+const workflowRows = [
+  { name: 'Customer handoff', status: 'Live', owner: 'Support ops', steps: '5 steps', latency: '3.1s' },
+  { name: 'Incident response', status: 'Paused', owner: 'Platform', steps: '9 steps', latency: '5.4s' },
+  { name: 'Release audit', status: 'Review', owner: 'Engineering', steps: '4 steps', latency: '1.9s' },
+  { name: 'Billing sync', status: 'Healthy', owner: 'Finance', steps: '6 steps', latency: '2.2s' },
+]
+
+const toolCards = [
+  { name: 'Slack notifier', category: 'Communication', status: 'Healthy', latency: '180ms', permissions: 'write:messages' },
+  { name: 'Postgres query', category: 'Data access', status: 'Running', latency: '590ms', permissions: 'read:analytics' },
+  { name: 'Kubernetes deploy', category: 'Infrastructure', status: 'Review', latency: '1.2s', permissions: 'deploy:staging' },
+  { name: 'CRM sync', category: 'Sales ops', status: 'Healthy', latency: '240ms', permissions: 'write:records' },
+]
+
+const usageRows = [
+  { label: 'Agent calls', value: '1.28M', delta: '+12.6%' },
+  { label: 'Inference spend', value: '$18.4K', delta: '+3.8%' },
+  { label: 'Storage', value: '942 GB', delta: '+6.1%' },
+  { label: 'Peak concurrency', value: '3,842', delta: '-2.2%' },
+]
+
+const securityRows = [
+  { name: 'MFA enforcement', status: 'Healthy', coverage: '96%' },
+  { name: 'Secret rotation', status: 'Review', coverage: '71%' },
+  { name: 'IAM drift', status: 'Running', coverage: '84%' },
+  { name: 'Audit trail', status: 'Healthy', coverage: '99%' },
+]
+
+const infrastructureRows = [
+  { name: 'Core API', region: 'us-east-1', replicas: '8', status: 'Healthy' },
+  { name: 'Workers', region: 'eu-west-1', replicas: '6', status: 'Running' },
+  { name: 'Queue broker', region: 'us-west-2', replicas: '3', status: 'Review' },
+  { name: 'Storage', region: 'global', replicas: '4', status: 'Healthy' },
+]
+
 function OverviewView() {
   return (
     <>
@@ -292,6 +334,433 @@ function AgentsView() {
   )
 }
 
+function RunsView() {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Execution</p>
+          <h2>Runs</h2>
+        </div>
+        <div className="topbar-actions">
+          <button type="button" className="ghost-button">Filters</button>
+          <button type="button" className="primary-button">Trigger run</button>
+        </div>
+      </header>
+
+      <section className="summary-grid">
+        {runTimeline.map((item) => (
+          <article key={item.label} className="mini-stat">
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+          </article>
+        ))}
+      </section>
+
+      <section className="content-grid">
+        <article className="panel wide">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Live</p>
+              <h3>Recent executions</h3>
+            </div>
+            <button type="button" className="link-button">Export log</button>
+          </div>
+
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Run ID</th>
+                  <th>Agent</th>
+                  <th>Status</th>
+                  <th>Started</th>
+                  <th>Duration</th>
+                  <th>Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runRows.map((run) => (
+                  <tr key={run.id}>
+                    <td>{run.id}</td>
+                    <td>{run.agent}</td>
+                    <td>
+                      <span className={`status-badge ${run.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                        {run.status}
+                      </span>
+                    </td>
+                    <td>2m ago</td>
+                    <td>{run.duration}</td>
+                    <td>{run.cost}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Status</p>
+              <h3>Run health</h3>
+            </div>
+          </div>
+
+          <div className="quality-list">
+            <div>
+              <label>Queue backlog</label>
+              <div className="meter"><span style={{ width: '72%' }} /></div>
+              <strong>72% healthy</strong>
+            </div>
+            <div>
+              <label>Failure rate</label>
+              <div className="meter"><span style={{ width: '11%' }} /></div>
+              <strong>11% of runs</strong>
+            </div>
+            <div>
+              <label>Approval hold</label>
+              <div className="meter"><span style={{ width: '28%' }} /></div>
+              <strong>28% waiting</strong>
+            </div>
+          </div>
+        </article>
+      </section>
+    </>
+  )
+}
+
+function WorkflowsView() {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Automation</p>
+          <h2>Workflows</h2>
+        </div>
+        <div className="topbar-actions">
+          <button type="button" className="ghost-button">Templates</button>
+          <button type="button" className="primary-button">Create workflow</button>
+        </div>
+      </header>
+
+      <section className="summary-grid">
+        <article className="mini-stat">
+          <span>Live workflows</span>
+          <strong>12</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Review queue</span>
+          <strong>7</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Avg duration</span>
+          <strong>2.6m</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Success</span>
+          <strong>94%</strong>
+        </article>
+      </section>
+
+      <section className="workflow-grid">
+        {workflowRows.map((workflow) => (
+          <article key={workflow.name} className="workflow-card">
+            <div className="workflow-card-header">
+              <div>
+                <p className="eyebrow small">Workflow</p>
+                <h3>{workflow.name}</h3>
+              </div>
+              <span className={`status-badge ${workflow.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                {workflow.status}
+              </span>
+            </div>
+
+            <div className="workflow-meta">
+              <div>
+                <label>Owner</label>
+                <strong>{workflow.owner}</strong>
+              </div>
+              <div>
+                <label>Steps</label>
+                <strong>{workflow.steps}</strong>
+              </div>
+              <div>
+                <label>Latency</label>
+                <strong>{workflow.latency}</strong>
+              </div>
+            </div>
+
+            <div className="card-actions">
+              <button type="button" className="ghost-button">Inspect</button>
+              <button type="button" className="primary-button small">Run</button>
+            </div>
+          </article>
+        ))}
+      </section>
+    </>
+  )
+}
+
+function ToolsView() {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Tooling</p>
+          <h2>Tools</h2>
+        </div>
+        <div className="topbar-actions">
+          <button type="button" className="ghost-button">Marketplace</button>
+          <button type="button" className="primary-button">Add tool</button>
+        </div>
+      </header>
+
+      <section className="summary-grid">
+        <article className="mini-stat">
+          <span>Total tools</span>
+          <strong>36</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Secure</span>
+          <strong>31</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Needs review</span>
+          <strong>3</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Calls / hr</span>
+          <strong>24.8k</strong>
+        </article>
+      </section>
+
+      <section className="tool-grid">
+        {toolCards.map((tool) => (
+          <article key={tool.name} className="tool-card">
+            <div className="tool-card-header">
+              <div>
+                <p className="eyebrow small">{tool.category}</p>
+                <h3>{tool.name}</h3>
+              </div>
+              <span className={`status-badge ${tool.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                {tool.status}
+              </span>
+            </div>
+
+            <div className="tool-meta">
+              <div>
+                <label>Latency</label>
+                <strong>{tool.latency}</strong>
+              </div>
+              <div>
+                <label>Permission</label>
+                <strong>{tool.permissions}</strong>
+              </div>
+            </div>
+
+            <div className="card-actions">
+              <button type="button" className="ghost-button">Permissions</button>
+              <button type="button" className="primary-button small">Enable</button>
+            </div>
+          </article>
+        ))}
+      </section>
+    </>
+  )
+}
+
+function UsageView() {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Billing</p>
+          <h2>Usage</h2>
+        </div>
+        <div className="topbar-actions">
+          <button type="button" className="ghost-button">Adjust plan</button>
+          <button type="button" className="primary-button">Export report</button>
+        </div>
+      </header>
+
+      <section className="summary-grid">
+        {usageRows.map((item) => (
+          <article key={item.label} className="mini-stat">
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+            <div className="delta positive" style={{ marginTop: 10 }}>{item.delta}</div>
+          </article>
+        ))}
+      </section>
+
+      <section className="content-grid">
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Forecast</p>
+              <h3>Consumption trend</h3>
+            </div>
+            <button type="button" className="link-button">View detail</button>
+          </div>
+
+          <div className="usage-chart">
+            {[64, 72, 54, 81, 92, 88, 96].map((value, index) => (
+              <div key={index} className="usage-bar-wrap">
+                <span className="usage-bar" style={{ height: `${value}%` }} />
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Allocations</p>
+              <h3>Quota overview</h3>
+            </div>
+          </div>
+
+          <div className="quality-list">
+            <div>
+              <label>Inference budget</label>
+              <div className="meter"><span style={{ width: '76%' }} /></div>
+              <strong>76% consumed</strong>
+            </div>
+            <div>
+              <label>Storage pool</label>
+              <div className="meter"><span style={{ width: '54%' }} /></div>
+              <strong>54% used</strong>
+            </div>
+            <div>
+              <label>API requests</label>
+              <div className="meter"><span style={{ width: '91%' }} /></div>
+              <strong>91% of cap</strong>
+            </div>
+          </div>
+        </article>
+      </section>
+    </>
+  )
+}
+
+function SecurityView() {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Governance</p>
+          <h2>Security</h2>
+        </div>
+        <div className="topbar-actions">
+          <button type="button" className="ghost-button">Policies</button>
+          <button type="button" className="primary-button">Run audit</button>
+        </div>
+      </header>
+
+      <section className="summary-grid">
+        <article className="mini-stat">
+          <span>Controls</span>
+          <strong>41</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Protected</span>
+          <strong>98%</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Incidents</span>
+          <strong>2</strong>
+        </article>
+        <article className="mini-stat">
+          <span>MTTR</span>
+          <strong>14m</strong>
+        </article>
+      </section>
+
+      <section className="security-grid">
+        {securityRows.map((control) => (
+          <article key={control.name} className="security-card">
+            <div className="security-card-header">
+              <h3>{control.name}</h3>
+              <span className={`status-badge ${control.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                {control.status}
+              </span>
+            </div>
+            <div className="security-row">
+              <label>Coverage</label>
+              <strong>{control.coverage}</strong>
+            </div>
+            <div className="meter"><span style={{ width: control.coverage }} /></div>
+          </article>
+        ))}
+      </section>
+    </>
+  )
+}
+
+function InfrastructureView() {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Operations</p>
+          <h2>Infrastructure</h2>
+        </div>
+        <div className="topbar-actions">
+          <button type="button" className="ghost-button">Scale plan</button>
+          <button type="button" className="primary-button">Deploy update</button>
+        </div>
+      </header>
+
+      <section className="summary-grid">
+        <article className="mini-stat">
+          <span>Clusters</span>
+          <strong>7</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Replicas</span>
+          <strong>26</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Uptime</span>
+          <strong>99.97%</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Alerts</span>
+          <strong>3</strong>
+        </article>
+      </section>
+
+      <section className="infra-grid">
+        {infrastructureRows.map((service) => (
+          <article key={service.name} className="infra-card">
+            <div className="infra-card-header">
+              <div>
+                <p className="eyebrow small">{service.region}</p>
+                <h3>{service.name}</h3>
+              </div>
+              <span className={`status-badge ${service.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                {service.status}
+              </span>
+            </div>
+
+            <div className="tool-meta">
+              <div>
+                <label>Replicas</label>
+                <strong>{service.replicas}</strong>
+              </div>
+              <div>
+                <label>Region</label>
+                <strong>{service.region}</strong>
+              </div>
+            </div>
+          </article>
+        ))}
+      </section>
+    </>
+  )
+}
+
 function App() {
   const [activeView, setActiveView] = useState<ViewName>('Overview')
 
@@ -333,7 +802,7 @@ function App() {
       </aside>
 
       <main className="main-panel">
-        {activeView === 'Overview' ? <OverviewView /> : activeView === 'Agents' ? <AgentsView /> : <OverviewView />}
+        {activeView === 'Overview' ? <OverviewView /> : activeView === 'Agents' ? <AgentsView /> : activeView === 'Runs' ? <RunsView /> : activeView === 'Workflows' ? <WorkflowsView /> : activeView === 'Tools' ? <ToolsView /> : activeView === 'Usage' ? <UsageView /> : activeView === 'Security' ? <SecurityView /> : activeView === 'Infrastructure' ? <InfrastructureView /> : <OverviewView />}
       </main>
     </div>
   )
