@@ -1,15 +1,9 @@
+import { useState } from 'react'
 import './App.css'
 
-const navItems = [
-  'Overview',
-  'Agents',
-  'Runs',
-  'Workflows',
-  'Tools',
-  'Usage',
-  'Security',
-  'Infrastructure',
-]
+const navItems = ['Overview', 'Agents', 'Runs', 'Workflows', 'Tools', 'Usage', 'Security', 'Infrastructure'] as const
+
+type ViewName = (typeof navItems)[number]
 
 const metrics = [
   { label: 'Healthy agents', value: '28', delta: '+6.2%', tone: 'positive' },
@@ -38,7 +32,269 @@ const approvalRows = [
   { item: 'Customer email', risk: 'Low', requestedBy: 'Nina', ttl: '17m' },
 ]
 
+const agentCards = [
+  {
+    name: 'Support triage',
+    description: 'Customer support autopilot for ticket routing and policy-safe replies.',
+    status: 'Healthy',
+    model: 'gpt-4.1',
+    occupancy: '78%',
+    latency: '1.4s',
+  },
+  {
+    name: 'Code reviewer',
+    description: 'Repository-aware engineering assistant for review summaries and risk checks.',
+    status: 'Running',
+    model: 'claude-3.7',
+    occupancy: '64%',
+    latency: '2.1s',
+  },
+  {
+    name: 'Ops copilot',
+    description: 'Incident triage and runbook assistant for reliable operational guidance.',
+    status: 'Degraded',
+    model: 'gpt-4o-mini',
+    occupancy: '41%',
+    latency: '3.6s',
+  },
+]
+
+function OverviewView() {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Command center</p>
+          <h2>Operations overview</h2>
+        </div>
+        <div className="topbar-actions">
+          <button type="button" className="ghost-button">Export</button>
+          <button type="button" className="primary-button">Deploy agent</button>
+        </div>
+      </header>
+
+      <section className="kpi-grid" aria-label="Key metrics">
+        {metrics.map((metric) => (
+          <article key={metric.label} className="kpi-card">
+            <p>{metric.label}</p>
+            <div className="kpi-row">
+              <strong>{metric.value}</strong>
+              <span className={metric.tone === 'positive' ? 'delta positive' : 'delta neutral'}>{metric.delta}</span>
+            </div>
+          </article>
+        ))}
+      </section>
+
+      <section className="content-grid">
+        <article className="panel wide">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Fleet</p>
+              <h3>Agent health</h3>
+            </div>
+            <button type="button" className="link-button">View all</button>
+          </div>
+
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Agent</th>
+                  <th>Owner</th>
+                  <th>Status</th>
+                  <th>Version</th>
+                  <th>Utilization</th>
+                </tr>
+              </thead>
+              <tbody>
+                {agentRows.map((agent) => (
+                  <tr key={agent.name}>
+                    <td>{agent.name}</td>
+                    <td>{agent.owner}</td>
+                    <td>
+                      <span className={`status-badge ${agent.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                        {agent.status}
+                      </span>
+                    </td>
+                    <td>{agent.version}</td>
+                    <td>{agent.runRate}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Approvals</p>
+              <h3>Action queue</h3>
+            </div>
+          </div>
+
+          <div className="approval-stack">
+            {approvalRows.map((action) => (
+              <div key={action.item} className="approval-item">
+                <div>
+                  <strong>{action.item}</strong>
+                  <small>{action.requestedBy}</small>
+                </div>
+                <div className="approval-meta">
+                  <span className={`risk-badge ${action.risk.toLowerCase()}`}>{action.risk}</span>
+                  <span>{action.ttl}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </article>
+      </section>
+
+      <section className="bottom-grid">
+        <article className="panel wide">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Activity</p>
+              <h3>Recent runs</h3>
+            </div>
+          </div>
+
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Run ID</th>
+                  <th>Agent</th>
+                  <th>Status</th>
+                  <th>Duration</th>
+                  <th>Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runRows.map((run) => (
+                  <tr key={run.id}>
+                    <td>{run.id}</td>
+                    <td>{run.agent}</td>
+                    <td>
+                      <span className={`status-badge ${run.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                        {run.status}
+                      </span>
+                    </td>
+                    <td>{run.duration}</td>
+                    <td>{run.cost}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">SLO</p>
+              <h3>Service quality</h3>
+            </div>
+          </div>
+
+          <div className="quality-list">
+            <div>
+              <label>Success rate</label>
+              <div className="meter"><span style={{ width: '96%' }} /></div>
+              <strong>96.2%</strong>
+            </div>
+            <div>
+              <label>Queue health</label>
+              <div className="meter"><span style={{ width: '88%' }} /></div>
+              <strong>88.4%</strong>
+            </div>
+            <div>
+              <label>Model reliability</label>
+              <div className="meter"><span style={{ width: '93%' }} /></div>
+              <strong>93.1%</strong>
+            </div>
+          </div>
+        </article>
+      </section>
+    </>
+  )
+}
+
+function AgentsView() {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Catalog</p>
+          <h2>Agents</h2>
+        </div>
+        <div className="topbar-actions">
+          <button type="button" className="ghost-button">Filters</button>
+          <button type="button" className="primary-button">New agent</button>
+        </div>
+      </header>
+
+      <section className="summary-grid">
+        <article className="mini-stat">
+          <span>Total agents</span>
+          <strong>28</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Active</span>
+          <strong>19</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Drafts</span>
+          <strong>5</strong>
+        </article>
+        <article className="mini-stat">
+          <span>Needs review</span>
+          <strong>4</strong>
+        </article>
+      </section>
+
+      <section className="agent-grid">
+        {agentCards.map((agent) => (
+          <article key={agent.name} className="agent-card">
+            <div className="agent-card-header">
+              <div>
+                <h3>{agent.name}</h3>
+                <p>{agent.description}</p>
+              </div>
+              <span className={`status-badge ${agent.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                {agent.status}
+              </span>
+            </div>
+
+            <div className="detail-grid">
+              <div>
+                <label>Model</label>
+                <strong>{agent.model}</strong>
+              </div>
+              <div>
+                <label>Occupancy</label>
+                <strong>{agent.occupancy}</strong>
+              </div>
+              <div>
+                <label>Latency</label>
+                <strong>{agent.latency}</strong>
+              </div>
+            </div>
+
+            <div className="card-actions">
+              <button type="button" className="ghost-button">Inspect</button>
+              <button type="button" className="primary-button small">Run</button>
+            </div>
+          </article>
+        ))}
+      </section>
+    </>
+  )
+}
+
 function App() {
+  const [activeView, setActiveView] = useState<ViewName>('Overview')
+
   return (
     <div className="dashboard-shell">
       <aside className="sidebar">
@@ -51,8 +307,13 @@ function App() {
         </div>
 
         <nav className="nav" aria-label="Main menu">
-          {navItems.map((item, index) => (
-            <button key={item} className={index === 0 ? 'nav-item active' : 'nav-item'} type="button">
+          {navItems.map((item) => (
+            <button
+              key={item}
+              className={item === activeView ? 'nav-item active' : 'nav-item'}
+              type="button"
+              onClick={() => setActiveView(item)}
+            >
               {item}
             </button>
           ))}
@@ -72,160 +333,7 @@ function App() {
       </aside>
 
       <main className="main-panel">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">Command center</p>
-            <h2>Operations overview</h2>
-          </div>
-          <div className="topbar-actions">
-            <button type="button" className="ghost-button">Export</button>
-            <button type="button" className="primary-button">Deploy agent</button>
-          </div>
-        </header>
-
-        <section className="kpi-grid" aria-label="Key metrics">
-          {metrics.map((metric) => (
-            <article key={metric.label} className="kpi-card">
-              <p>{metric.label}</p>
-              <div className="kpi-row">
-                <strong>{metric.value}</strong>
-                <span className={metric.tone === 'positive' ? 'delta positive' : 'delta neutral'}>{metric.delta}</span>
-              </div>
-            </article>
-          ))}
-        </section>
-
-        <section className="content-grid">
-          <article className="panel wide">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Fleet</p>
-                <h3>Agent health</h3>
-              </div>
-              <button type="button" className="link-button">View all</button>
-            </div>
-
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Agent</th>
-                    <th>Owner</th>
-                    <th>Status</th>
-                    <th>Version</th>
-                    <th>Utilization</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {agentRows.map((agent) => (
-                    <tr key={agent.name}>
-                      <td>{agent.name}</td>
-                      <td>{agent.owner}</td>
-                      <td>
-                        <span className={`status-badge ${agent.status.toLowerCase().replace(/\s+/g, '-')}`}>
-                          {agent.status}
-                        </span>
-                      </td>
-                      <td>{agent.version}</td>
-                      <td>{agent.runRate}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </article>
-
-          <article className="panel">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Approvals</p>
-                <h3>Action queue</h3>
-              </div>
-            </div>
-
-            <div className="approval-stack">
-              {approvalRows.map((action) => (
-                <div key={action.item} className="approval-item">
-                  <div>
-                    <strong>{action.item}</strong>
-                    <small>{action.requestedBy}</small>
-                  </div>
-                  <div className="approval-meta">
-                    <span className={`risk-badge ${action.risk.toLowerCase()}`}>{action.risk}</span>
-                    <span>{action.ttl}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </article>
-        </section>
-
-        <section className="bottom-grid">
-          <article className="panel wide">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Activity</p>
-                <h3>Recent runs</h3>
-              </div>
-            </div>
-
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Run ID</th>
-                    <th>Agent</th>
-                    <th>Status</th>
-                    <th>Duration</th>
-                    <th>Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {runRows.map((run) => (
-                    <tr key={run.id}>
-                      <td>{run.id}</td>
-                      <td>{run.agent}</td>
-                      <td>
-                        <span className={`status-badge ${run.status.toLowerCase().replace(/\s+/g, '-')}`}>
-                          {run.status}
-                        </span>
-                      </td>
-                      <td>{run.duration}</td>
-                      <td>{run.cost}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </article>
-
-          <article className="panel">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">SLO</p>
-                <h3>Service quality</h3>
-              </div>
-            </div>
-
-            <div className="quality-list">
-              <div>
-                <label>Success rate</label>
-                <div className="meter"><span style={{ width: '96%' }} /></div>
-                <strong>96.2%</strong>
-              </div>
-              <div>
-                <label>Queue health</label>
-                <div className="meter"><span style={{ width: '88%' }} /></div>
-                <strong>88.4%</strong>
-              </div>
-              <div>
-                <label>Model reliability</label>
-                <div className="meter"><span style={{ width: '93%' }} /></div>
-                <strong>93.1%</strong>
-              </div>
-            </div>
-          </article>
-        </section>
+        {activeView === 'Overview' ? <OverviewView /> : activeView === 'Agents' ? <AgentsView /> : <OverviewView />}
       </main>
     </div>
   )
