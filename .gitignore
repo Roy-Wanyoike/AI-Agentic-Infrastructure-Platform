@@ -1,25 +1,47 @@
-# Binaries
-bin/
+# Go build artifacts
+/bin/
+/pkg/
 *.exe
+*.exe~
 *.dll
 *.so
 *.dylib
+*.test
+*.out
 
-# Build artifacts
-coverage.out
+# Go workspace files
+go.work
 
-# Environment files
+# Node / frontend build artifacts
+node_modules/
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Environment and secrets
 .env
-.env.local
-.env.*.local
-
-# IDE
-.vscode/
-.idea/
-.DS_Store
-
-# Dependency cache
-vendor/
+.env.*
+!.env.example
 
 # Logs
 *.log
+logs/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Coverage and temp files
+coverage/
+coverage.out
+*.tmp
+*.swp
+
+# Docker local state
+postgres-data/
+redis-data/
+
+# Dependency cache
+vendor/
