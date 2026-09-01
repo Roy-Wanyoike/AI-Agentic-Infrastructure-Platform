@@ -72,31 +72,6 @@ func loginHandler(service *auth.Service) http.HandlerFunc {
 
 func metricsHandler(metrics *observability.Metrics, q *queue.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// allow POST to accept external events (worker callbacks)
-		if r.Method == http.MethodPost {
-			path := strings.TrimPrefix(r.URL.Path, "/v1/runs/")
-			path = strings.TrimSuffix(path, "/events")
-			if path == "" || strings.Contains(path, "/") {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			if service == nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			var ev struct {
-				Type    string         `json:"type"`
-				Name    string         `json:"name"`
-				Payload map[string]any `json:"payload"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
-				http.Error(w, "invalid event body", http.StatusBadRequest)
-				return
-			}
-			service.Publish(path, ev.Type, ev.Name, ev.Payload)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -123,6 +98,31 @@ func metricsHandler(metrics *observability.Metrics, q *queue.Queue) http.Handler
 
 func runEventsHandler(service *streaming.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// allow POST to accept external events (worker callbacks)
+		if r.Method == http.MethodPost {
+			path := strings.TrimPrefix(r.URL.Path, "/v1/runs/")
+			path = strings.TrimSuffix(path, "/events")
+			if path == "" || strings.Contains(path, "/") {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if service == nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			var ev struct {
+				Type    string         `json:"type"`
+				Name    string         `json:"name"`
+				Payload map[string]any `json:"payload"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+				http.Error(w, "invalid event body", http.StatusBadRequest)
+				return
+			}
+			service.Publish(path, ev.Type, ev.Name, ev.Payload)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
