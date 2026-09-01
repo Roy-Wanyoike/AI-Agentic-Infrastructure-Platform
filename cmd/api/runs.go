@@ -7,6 +7,7 @@ import (
 
 	"agentos/internal/auth"
 	"agentos/internal/queue"
+	"agentos/internal/runs"
 )
 
 func createRunHandler(workQueue *queue.Queue, runsService *runs.Service) http.HandlerFunc {
