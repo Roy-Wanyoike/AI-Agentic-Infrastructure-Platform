@@ -10,7 +10,9 @@ import (
 	"agentos/internal/runs"
 )
 
-func createRunHandler(workQueue *queue.Queue, runsService *runs.Service) http.HandlerFunc {
+var runsServiceVar *runs.Service
+
+func createRunHandler(workQueue *queue.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -40,25 +42,34 @@ func createRunHandler(workQueue *queue.Queue, runsService *runs.Service) http.Ha
 			http.Error(w, "agent id is required", http.StatusBadRequest)
 			return
 		}
-		// create persisted run record
-		if runsService == nil {
-			http.Error(w, "runs service not available", http.StatusInternalServerError)
-			return
+		var runID string
+		var rs *runs.Service
+		if runsServiceVar != nil {
+			rs = runsServiceVar
 		}
-		run, err := runsService.Create(req.OrganizationID, req.AgentID, req.Input)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		if rs != nil {
+			run, err := rs.Create(req.OrganizationID, req.AgentID, req.Input)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			runID = run.ID
 		}
 		if workQueue == nil {
 			workQueue = queue.NewQueue()
 		}
-		task := workQueue.Enqueue("agent.run", map[string]any{"run_id": run.ID, "organization_id": req.OrganizationID, "agent_id": req.AgentID, "input": req.Input})
+		payload := map[string]any{"organization_id": req.OrganizationID, "agent_id": req.AgentID, "input": req.Input}
+		if runID != "" {
+			payload["run_id"] = runID
+		}
+		task := workQueue.Enqueue("agent.run", payload)
 		if task == nil {
 			http.Error(w, "failed to enqueue run", http.StatusInternalServerError)
 			return
 		}
-		runID := run.ID
+		if runID == "" {
+			runID = task.ID
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": runID, "status": "queued"})

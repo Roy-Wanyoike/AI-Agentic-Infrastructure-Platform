@@ -38,10 +38,12 @@ func main() {
 	metricsService := observability.NewMetrics()
 	streamService := streaming.NewService()
 	runsService := runs.NewService()
+	// expose to handlers for backwards-compatible wiring in tests
+	runsServiceVar = runsService
 	mux.Handle("/v1/agents", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(agentService)))))
 	mux.Handle("/v1/agents/create", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsWrite)(http.HandlerFunc(createAgentHandler(agentService)))))
 	mux.Handle("/v1/agents/", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsRead)(http.HandlerFunc(agentDetailHandler(agentService)))))
-	mux.Handle("/v1/runs", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsExecute)(http.HandlerFunc(createRunHandler(queueService, runsService)))))
+	mux.Handle("/v1/runs", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsExecute)(http.HandlerFunc(createRunHandler(queueService)))))
 	mux.Handle("/v1/runs/", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsRead)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/events") {
 			runEventsHandler(streamService).ServeHTTP(w, r)
