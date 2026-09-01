@@ -22,3 +22,43 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Next.js
+/.next/
+/out/
+/.next/cache/
+
+# Build outputs
+/build/
+
+# Vite / Bun
+.vite/
+.cache/
+bun.lockb
+
+# pnpm
+.pnpm-store/
+
+# Prisma
+node_modules/.prisma/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Vercel / Netlify / Deploy
+.vercel/
+.vercel/build/
+netlify.toml
+
+# Storybook
+storybook-static/
+
+# Local dev artifacts
+dev.log
+server.log
+
+# OS
+.DS_Store
+

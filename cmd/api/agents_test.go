@@ -160,3 +160,26 @@ func TestRunEventsHandlerReturnsStoredRunHistory(t *testing.T) {
 		t.Fatalf("expected run_id run-123, got %#v", payload["run_id"])
 	}
 }
+
+func TestRunEventsHandlerAcceptsPost(t *testing.T) {
+	service := streaming.NewService()
+
+	payload := `{"type":"status","name":"status.changed","payload":{"status":"RUNNING"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/run-xyz/events", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	runEventsHandler(service).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusNoContent, rr.Code, rr.Body.String())
+	}
+
+	history := service.History("run-xyz")
+	if len(history) != 1 {
+		t.Fatalf("expected 1 event in history, got %d", len(history))
+	}
+	ev := history[0]
+	if ev.Type != "status" || ev.Name != "status.changed" {
+		t.Fatalf("unexpected event stored: %#v", ev)
+	}
+}

@@ -2,9 +2,10 @@ package runs
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"agentos/internal/streaming"
 )
@@ -54,7 +55,7 @@ func (s *Service) Create(orgID, agentID, input string) (*Run, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id := fmt.Sprintf("run-%d", len(s.runs)+1)
+	id := uuid.NewString()
 	run := &Run{ID: id, OrganizationID: orgID, AgentID: agentID, Input: input, Status: StatusQueued, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	s.runs[id] = run
 	return run, nil

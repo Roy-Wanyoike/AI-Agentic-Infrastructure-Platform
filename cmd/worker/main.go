@@ -18,6 +18,42 @@ import (
 	"agentos/internal/tools"
 )
 
+func postEventWithRetries(apiBase, runID string, payload map[string]any) error {
+	b, _ := json.Marshal(payload)
+	url := fmt.Sprintf("%s/v1/runs/%s/events", apiBase, runID)
+	apiKey := os.Getenv("AGENTOS_API_KEY")
+	var lastErr error
+	backoff := 200 * time.Millisecond
+	for attempt := 0; attempt < 5; attempt++ {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(b))
+		if err != nil {
+			lastErr = err
+			time.Sleep(backoff)
+			backoff *= 2
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("X-API-Key", apiKey)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(backoff)
+			backoff *= 2
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+		lastErr = fmt.Errorf("bad status: %s", resp.Status)
+		time.Sleep(backoff)
+		backoff *= 2
+	}
+	return lastErr
+}
+
 func main() {
 	cfg := config.Load()
 	logr := logger.New(cfg.Env)
@@ -51,9 +87,8 @@ func main() {
 			if apiBase == "" {
 				apiBase = "http://localhost:8080"
 			}
-			payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusRunning)}}
-			b, _ := json.Marshal(payload)
-			_, _ = http.Post(fmt.Sprintf("%s/v1/runs/%s/events", apiBase, runID), "application/json", bytes.NewReader(b))
+			payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusRunning), "ts": time.Now().UTC().Format(time.RFC3339)}}
+			_ = postEventWithRetries(apiBase, runID, payload)
 		}()
 		run, err := runner.Run(context.Background(), agentID, input)
 		if err != nil {
@@ -63,9 +98,8 @@ func main() {
 				if apiBase == "" {
 					apiBase = "http://localhost:8080"
 				}
-				payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusFailed)}}
-				b, _ := json.Marshal(payload)
-				_, _ = http.Post(fmt.Sprintf("%s/v1/runs/%s/events", apiBase, runID), "application/json", bytes.NewReader(b))
+				payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusFailed), "ts": time.Now().UTC().Format(time.RFC3339)}}
+				_ = postEventWithRetries(apiBase, runID, payload)
 			}()
 			return err
 		}
@@ -77,9 +111,8 @@ func main() {
 			if apiBase == "" {
 				apiBase = "http://localhost:8080"
 			}
-			payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusCompleted), "output": run.Output}}
-			b, _ := json.Marshal(payload)
-			_, _ = http.Post(fmt.Sprintf("%s/v1/runs/%s/events", apiBase, runID), "application/json", bytes.NewReader(b))
+			payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusCompleted), "output": run.Output, "ts": time.Now().UTC().Format(time.RFC3339)}}
+			_ = postEventWithRetries(apiBase, runID, payload)
 		}()
 		return nil
 	})

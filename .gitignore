@@ -48,3 +48,28 @@ redis-data/
 
 # Dependency cache
 vendor/
+
+# Next.js / frontend build artifacts
+.next/
+public/.next/
+
+# Vite / dev cache
+.vite/
+.cache/
+
+# Bun
+bun.lockb
+
+# pnpm
+.pnpm-store/
+
+# Prisma
+node_modules/.prisma/
+
+# Generated static exports
+out/
+
+# Local dev logs and temp
+.dev.log
+dev.log
+

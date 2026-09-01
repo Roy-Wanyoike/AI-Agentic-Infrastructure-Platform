@@ -89,6 +89,26 @@ func RequirePermission(service *Service, permission Permission) func(http.Handle
 func RequireAuthOrAPIKey(service *Service, keyService *apikeys.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// allow API key via query param for browser EventSource connections
+			if apiKey := strings.TrimSpace(r.URL.Query().Get("api_key")); apiKey != "" {
+				if keyService == nil {
+					http.Error(w, "missing api key service", http.StatusUnauthorized)
+					return
+				}
+				key, ok := keyService.Validate(apiKey)
+				if !ok || key == nil {
+					http.Error(w, "invalid api key", http.StatusUnauthorized)
+					return
+				}
+				ctx := context.WithValue(r.Context(), userContextKey, UserClaims{
+					UserID:         key.UserID,
+					OrganizationID: key.OrgID,
+					Email:          key.UserID,
+					Role:           "OWNER",
+				})
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			if authorization := r.Header.Get("Authorization"); authorization != "" {
 				parts := strings.SplitN(authorization, " ", 2)
 				if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
