@@ -45,7 +45,17 @@ func main() {
 	mux.Handle("/v1/agents", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(agentService)))))
 	mux.Handle("/v1/agents/create", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsWrite)(http.HandlerFunc(createAgentHandler(agentService)))))
 	mux.Handle("/v1/agents/", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsRead)(http.HandlerFunc(agentDetailHandler(agentService)))))
-	mux.Handle("/v1/runs", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsExecute)(http.HandlerFunc(createRunHandler(queueService)))))
+	mux.Handle("/v1/runs", auth.RequireAuthOrAPIKey(authService, apiKeyService)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// require read permission for listing
+			auth.RequirePermission(authService, auth.PermissionRunsRead)(http.HandlerFunc(listRunsHandler(runsService))).ServeHTTP(w, r)
+			return
+		}
+		// default to create (POST)
+		auth.RequirePermission(authService, auth.PermissionRunsExecute)(http.HandlerFunc(createRunHandler(queueService))).ServeHTTP(w, r)
+	})))
+	// queue pull endpoint for workers to pull tasks (dev-only)
+	mux.Handle("/v1/queue/pull", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsExecute)(http.HandlerFunc(queuePullHandler(queueService)))))
 	mux.Handle("/v1/runs/", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionRunsRead)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/events") {
 			runEventsHandler(streamService).ServeHTTP(w, r)
@@ -59,9 +69,21 @@ func main() {
 		_, _ = w.Write([]byte(`{"service":"agentos-api","status":"running"}`))
 	})
 
+	// wrap mux with a permissive CORS handler for local development
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-API-Key,api_key")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.API.Port),
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  30 * time.Second,

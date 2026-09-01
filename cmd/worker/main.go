@@ -69,7 +69,7 @@ func main() {
 	runner := runtime.NewRunner(agentService, registry)
 	workQueue := queue.NewQueue()
 	runsService := runs.NewService()
-	worker := queue.NewWorker(workQueue, func(task *queue.Task) error {
+	processTask := func(task *queue.Task) error {
 		if task == nil || task.Payload == nil {
 			return fmt.Errorf("task payload is required")
 		}
@@ -115,9 +115,42 @@ func main() {
 			_ = postEventWithRetries(apiBase, runID, payload)
 		}()
 		return nil
-	})
+	}
+
+	worker := queue.NewWorker(workQueue, processTask)
 
 	logr.Info("agentos worker starting", "port", cfg.Worker.Port, "env", cfg.Env)
+
+	// If AGENTOS_API_PULL=true, poll the API for tasks (development pull model)
+	if os.Getenv("AGENTOS_API_PULL") == "true" {
+		apiBase := os.Getenv("AGENTOS_API")
+		if apiBase == "" {
+			apiBase = "http://localhost:8080"
+		}
+		apiKey := os.Getenv("AGENTOS_API_KEY")
+		for {
+			// call pull endpoint
+			req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/queue/pull", apiBase), nil)
+			if apiKey != "" {
+				req.Header.Set("X-API-Key", apiKey)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil || resp == nil || resp.StatusCode == http.StatusNoContent {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			var t queue.Task
+			_ = json.NewDecoder(resp.Body).Decode(&t)
+			resp.Body.Close()
+			// convert to pointer task expected by runner
+			task := &queue.Task{ID: t.ID, Type: t.Type, Payload: t.Payload}
+			if err := processTask(task); err != nil {
+				logr.Warn("worker process failed", "error", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
 	for {
 		if err := worker.ProcessNext(); err != nil {
 			logr.Warn("worker process failed", "error", err)

@@ -68,6 +68,16 @@ func (s *Service) Get(id string) (*Run, bool) {
 	return r, ok
 }
 
+func (s *Service) List() []Run {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Run, 0, len(s.runs))
+	for _, r := range s.runs {
+		out = append(out, *r)
+	}
+	return out
+}
+
 func (s *Service) UpdateStatus(id string, status RunStatus, output string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

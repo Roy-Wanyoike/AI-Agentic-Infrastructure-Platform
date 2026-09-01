@@ -103,3 +103,40 @@ func getRunHandler(runsService *runs.Service) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(run)
 	}
 }
+
+func listRunsHandler(runsService *runs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if runsService == nil {
+			http.Error(w, "runs service not available", http.StatusInternalServerError)
+			return
+		}
+		// TODO: filter by organization in future; return all runs for now
+		runs := runsService.List()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"runs": runs})
+	}
+}
+
+func queuePullHandler(q *queue.Queue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if q == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		task := q.Dequeue()
+		if task == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(task)
+	}
+}
