@@ -24,6 +24,12 @@ func main() {
 	logr := logger.New(cfg.Env)
 	authService := auth.NewService("dev-secret")
 	apiKeyService := apikeys.NewService()
+	// create a dev API key for local worker polling convenience
+	if key, err := apiKeyService.Create("org-demo", "dev-user", "dev-key"); err != nil {
+		logr.Warn("dev api key creation failed", "error", err)
+	} else {
+		logr.Info("dev api key created", "api_key", key.Value)
+	}
 	agentService := agents.NewService()
 
 	mux := http.NewServeMux()

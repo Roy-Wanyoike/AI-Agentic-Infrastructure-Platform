@@ -135,12 +135,30 @@ func main() {
 				req.Header.Set("X-API-Key", apiKey)
 			}
 			resp, err := http.DefaultClient.Do(req)
-			if err != nil || resp == nil || resp.StatusCode == http.StatusNoContent {
+			if err != nil || resp == nil {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			// no content -> nothing to do
+			if resp.StatusCode == http.StatusNoContent {
+				resp.Body.Close()
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			// only accept 200 OK with a valid task payload
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				logr.Warn("pull returned non-OK status", "status", resp.StatusCode)
 				time.Sleep(500 * time.Millisecond)
 				continue
 			}
 			var t queue.Task
-			_ = json.NewDecoder(resp.Body).Decode(&t)
+			if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
+				resp.Body.Close()
+				logr.Warn("failed to decode task from pull", "error", err)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
 			resp.Body.Close()
 			// convert to pointer task expected by runner
 			task := &queue.Task{ID: t.ID, Type: t.Type, Payload: t.Payload}
