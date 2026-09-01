@@ -9,7 +9,7 @@ import (
 	"agentos/internal/queue"
 )
 
-func createRunHandler(workQueue *queue.Queue) http.HandlerFunc {
+func createRunHandler(workQueue *queue.Queue, runsService *runs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -39,22 +39,32 @@ func createRunHandler(workQueue *queue.Queue) http.HandlerFunc {
 			http.Error(w, "agent id is required", http.StatusBadRequest)
 			return
 		}
+		// create persisted run record
+		if runsService == nil {
+			http.Error(w, "runs service not available", http.StatusInternalServerError)
+			return
+		}
+		run, err := runsService.Create(req.OrganizationID, req.AgentID, req.Input)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if workQueue == nil {
 			workQueue = queue.NewQueue()
 		}
-		task := workQueue.Enqueue("agent.run", map[string]any{"organization_id": req.OrganizationID, "agent_id": req.AgentID, "input": req.Input})
+		task := workQueue.Enqueue("agent.run", map[string]any{"run_id": run.ID, "organization_id": req.OrganizationID, "agent_id": req.AgentID, "input": req.Input})
 		if task == nil {
 			http.Error(w, "failed to enqueue run", http.StatusInternalServerError)
 			return
 		}
-		runID := task.ID
+		runID := run.ID
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": runID, "status": "queued"})
 	}
 }
 
-func getRunHandler() http.HandlerFunc {
+func getRunHandler(runsService *runs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -65,12 +75,19 @@ func getRunHandler() http.HandlerFunc {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		claims, err := auth.ExtractClaims(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnauthorized)
+		if runsService == nil {
+			http.Error(w, "runs service not available", http.StatusInternalServerError)
+			return
+		}
+		run, ok := runsService.Get(path)
+		if !ok {
+			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+		if !requireOrganizationAccess(w, r, run.OrganizationID) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": path, "organization_id": claims.OrganizationID, "status": "queued"})
+		_ = json.NewEncoder(w).Encode(run)
 	}
 }
