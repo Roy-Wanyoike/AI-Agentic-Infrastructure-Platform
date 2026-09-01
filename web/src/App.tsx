@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import './App.css'
+import { listAgents, Agent as ApiAgent } from './lib/api/agents'
 
 const navItems = ['Overview', 'Agents', 'Runs', 'Workflows', 'Tools', 'Knowledge', 'Analytics', 'Usage', 'Security', 'Infrastructure', 'Settings'] as const
 
@@ -258,6 +259,17 @@ function OverviewView() {
 }
 
 function AgentsView() {
+  const [agents, setAgents] = useState<ApiAgent[] | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    listAgents()
+      .then((res) => { if (mounted) setAgents(res) })
+      .catch((e: any) => { if (mounted) setErr(e?.message || JSON.stringify(e)) })
+    return () => { mounted = false }
+  }, [])
+
   return (
     <>
       <PageHeader
@@ -279,37 +291,72 @@ function AgentsView() {
       </section>
 
       <section className="agent-grid">
-        {agentCards.map((agent) => (
-          <article key={agent.name} className="agent-card">
-            <div className="agent-card-header">
-              <div>
-                <h3>{agent.name}</h3>
-                <p>{agent.description}</p>
+        {err ? <div className="panel">Failed to load agents: {err}</div> : null}
+        {agents === null ? (
+          agentCards.map((agent) => (
+            <article key={agent.name} className="agent-card">
+              <div className="agent-card-header">
+                <div>
+                  <h3>{agent.name}</h3>
+                  <p>{agent.description}</p>
+                </div>
+                <StatusPill status={agent.status} />
               </div>
-              <StatusPill status={agent.status} />
-            </div>
 
-            <div className="detail-grid">
-              <div>
-                <label>Model</label>
-                <strong>{agent.model}</strong>
+              <div className="detail-grid">
+                <div>
+                  <label>Model</label>
+                  <strong>{agent.model}</strong>
+                </div>
+                <div>
+                  <label>Occupancy</label>
+                  <strong>{agent.occupancy}</strong>
+                </div>
+                <div>
+                  <label>Latency</label>
+                  <strong>{agent.latency}</strong>
+                </div>
               </div>
-              <div>
-                <label>Occupancy</label>
-                <strong>{agent.occupancy}</strong>
-              </div>
-              <div>
-                <label>Latency</label>
-                <strong>{agent.latency}</strong>
-              </div>
-            </div>
 
-            <div className="card-actions">
-              <button type="button" className="ghost-button">Inspect</button>
-              <button type="button" className="primary-button small">Run</button>
-            </div>
-          </article>
-        ))}
+              <div className="card-actions">
+                <button type="button" className="ghost-button">Inspect</button>
+                <button type="button" className="primary-button small">Run</button>
+              </div>
+            </article>
+          ))
+        ) : (
+          agents.map((agent) => (
+            <article key={agent.id} className="agent-card">
+              <div className="agent-card-header">
+                <div>
+                  <h3>{agent.name}</h3>
+                  <p>{agent.owner || '—'}</p>
+                </div>
+                <StatusPill status={agent.status || 'Unknown'} />
+              </div>
+
+              <div className="detail-grid">
+                <div>
+                  <label>Version</label>
+                  <strong>{agent.version || '—'}</strong>
+                </div>
+                <div>
+                  <label>Owner</label>
+                  <strong>{agent.owner || '—'}</strong>
+                </div>
+                <div>
+                  <label>Created</label>
+                  <strong>{agent.created_at || '—'}</strong>
+                </div>
+              </div>
+
+              <div className="card-actions">
+                <button type="button" className="ghost-button">Inspect</button>
+                <button type="button" className="primary-button small">Run</button>
+              </div>
+            </article>
+          ))
+        )}
       </section>
     </>
   )
