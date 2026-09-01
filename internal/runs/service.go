@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"agentos/internal/streaming"
 )
 
 type RunStatus string
@@ -28,12 +30,22 @@ type Run struct {
 }
 
 type Service struct {
-	mu   sync.Mutex
-	runs map[string]*Run
+	mu       sync.Mutex
+	runs     map[string]*Run
+	streamer *streaming.Service
 }
 
 func NewService() *Service {
 	return &Service{runs: make(map[string]*Run)}
+}
+
+func (s *Service) SetStreamer(st *streaming.Service) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streamer = st
 }
 
 func (s *Service) Create(orgID, agentID, input string) (*Run, error) {
@@ -67,5 +79,13 @@ func (s *Service) UpdateStatus(id string, status RunStatus, output string) error
 		r.Output = output
 	}
 	r.UpdatedAt = time.Now().UTC()
+	// publish simple status event to streamer if available
+	if s.streamer != nil {
+		payload := map[string]any{"status": string(status)}
+		if output != "" {
+			payload["output"] = output
+		}
+		s.streamer.Publish(r.ID, "status", "status.changed", payload)
+	}
 	return nil
 }

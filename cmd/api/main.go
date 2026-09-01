@@ -38,6 +38,8 @@ func main() {
 	metricsService := observability.NewMetrics()
 	streamService := streaming.NewService()
 	runsService := runs.NewService()
+	// wire runs service to streaming service so run status updates are published
+	runsService.SetStreamer(streamService)
 	// expose to handlers for backwards-compatible wiring in tests
 	runsServiceVar = runsService
 	mux.Handle("/v1/agents", auth.RequireAuthOrAPIKey(authService, apiKeyService)(auth.RequirePermission(authService, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(agentService)))))

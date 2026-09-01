@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"bytes"
 	"fmt"
+	"net/http"
+	"os"
 	"time"
 
 	"agentos/internal/agents"
@@ -41,14 +45,42 @@ func main() {
 		}
 		// mark run running
 		_ = runsService.UpdateStatus(runID, runs.StatusRunning, "")
+		// notify API about status change (so streaming service can pick it up)
+		go func() {
+			apiBase := os.Getenv("AGENTOS_API")
+			if apiBase == "" {
+				apiBase = "http://localhost:8080"
+			}
+			payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusRunning)}}
+			b, _ := json.Marshal(payload)
+			_, _ = http.Post(fmt.Sprintf("%s/v1/runs/%s/events", apiBase, runID), "application/json", bytes.NewReader(b))
+		}()
 		run, err := runner.Run(context.Background(), agentID, input)
 		if err != nil {
 			_ = runsService.UpdateStatus(runID, runs.StatusFailed, "")
+			go func() {
+				apiBase := os.Getenv("AGENTOS_API")
+				if apiBase == "" {
+					apiBase = "http://localhost:8080"
+				}
+				payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusFailed)}}
+				b, _ := json.Marshal(payload)
+				_, _ = http.Post(fmt.Sprintf("%s/v1/runs/%s/events", apiBase, runID), "application/json", bytes.NewReader(b))
+			}()
 			return err
 		}
 		task.Payload["result"] = run.Output
 		task.Payload["status"] = string(run.Status)
 		_ = runsService.UpdateStatus(runID, runs.StatusCompleted, run.Output)
+		go func() {
+			apiBase := os.Getenv("AGENTOS_API")
+			if apiBase == "" {
+				apiBase = "http://localhost:8080"
+			}
+			payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusCompleted), "output": run.Output}}
+			b, _ := json.Marshal(payload)
+			_, _ = http.Post(fmt.Sprintf("%s/v1/runs/%s/events", apiBase, runID), "application/json", bytes.NewReader(b))
+		}()
 		return nil
 	})
 
