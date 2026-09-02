@@ -38,10 +38,12 @@ import {
   countByStatus,
   describeError,
   navItems,
+  paletteShortcutLabel,
   sortRunsDesc,
   statusAccent,
   type ViewName,
 } from './views/uiHelpers'
+import { CommandPalette, type PaletteAction } from './views/commandPalette'
 import { RunTimeline } from './views/runTimeline'
 import { WorkflowsView } from './views/workflows'
 import { ApprovalsView } from './views/approvals'
@@ -462,19 +464,31 @@ function AgentsView({
   selectedAgentId,
   onSelectAgent,
   onOpenRun,
+  canWrite,
+  createOpen,
+  onCreateOpenChange,
 }: {
   selectedAgentId: string | null
   onSelectAgent: (id: string | null) => void
   onOpenRun: (runId: string) => void
+  canWrite: boolean
+  createOpen: boolean
+  onCreateOpenChange: (open: boolean) => void
 }) {
   const agentsQuery = useAgents()
-  const [showCreate, setShowCreate] = useState(false)
   const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
   const draftCount = agents.filter((agent) => agent.status.toUpperCase() === 'DRAFT').length
   const modelCount = new Set(agents.map((agent) => agent.model).filter(Boolean)).size
 
   if (selectedAgentId) {
-    return <AgentDetailView agentId={selectedAgentId} onBack={() => onSelectAgent(null)} onRunStarted={onOpenRun} />
+    return (
+      <AgentDetailView
+        agentId={selectedAgentId}
+        onBack={() => onSelectAgent(null)}
+        onRunStarted={onOpenRun}
+        canWrite={canWrite}
+      />
+    )
   }
 
   return (
@@ -487,20 +501,24 @@ function AgentsView({
             <button type="button" className="ghost-button">
               Filters
             </button>
-            <button type="button" className="primary-button" onClick={() => setShowCreate((open) => !open)}>
-              New agent
-            </button>
+            {canWrite ? (
+              <button type="button" className="primary-button" onClick={() => onCreateOpenChange(!createOpen)}>
+                New agent
+              </button>
+            ) : (
+              <span className="form-note">Viewer role — creating agents needs MEMBER and above</span>
+            )}
           </>
         }
       />
 
-      {showCreate ? (
+      {createOpen ? (
         <CreateAgentForm
           onCreated={(agent) => {
-            setShowCreate(false)
+            onCreateOpenChange(false)
             onSelectAgent(agent.id)
           }}
-          onCancel={() => setShowCreate(false)}
+          onCancel={() => onCreateOpenChange(false)}
         />
       ) : null}
 
@@ -540,9 +558,11 @@ function AgentsView({
               title="No agents yet — create your first agent"
               hint="Agents bundle instructions, a model, and tool access. Register one and it appears here immediately."
               action={
-                <button type="button" className="primary-button" onClick={() => setShowCreate(true)}>
-                  Create agent
-                </button>
+                canWrite ? (
+                  <button type="button" className="primary-button" onClick={() => onCreateOpenChange(true)}>
+                    Create agent
+                  </button>
+                ) : undefined
               }
             />
           </div>
@@ -576,9 +596,11 @@ function AgentsView({
                 <button type="button" className="ghost-button" onClick={() => onSelectAgent(agent.id)}>
                   Inspect
                 </button>
-                <button type="button" className="primary-button small" onClick={() => onSelectAgent(agent.id)}>
-                  Run
-                </button>
+                {canWrite ? (
+                  <button type="button" className="primary-button small" onClick={() => onSelectAgent(agent.id)}>
+                    Run
+                  </button>
+                ) : null}
               </div>
             </article>
           ))
@@ -674,10 +696,12 @@ function AgentDetailView({
   agentId,
   onBack,
   onRunStarted,
+  canWrite,
 }: {
   agentId: string
   onBack: () => void
   onRunStarted: (runId: string) => void
+  canWrite: boolean
 }) {
   const agentQuery = useAgent(agentId)
   const runAgent = useRunAgent()
@@ -757,27 +781,31 @@ function AgentDetailView({
                 </div>
               </div>
 
-              {runAgent.isError ? <div className="form-error">{describeError(runAgent.error)}</div> : null}
-
-              <form onSubmit={startRun}>
-                <div className="field">
-                  <label htmlFor="run-input">Input</label>
-                  <textarea
-                    id="run-input"
-                    rows={5}
-                    value={runInput}
-                    onChange={(event) => setRunInput(event.target.value)}
-                    placeholder="Give this agent something to do…"
-                    required
-                  />
-                </div>
-                <div className="form-actions">
-                  <span className="form-note">Queues a run via POST /runs</span>
-                  <button type="submit" className="primary-button" disabled={runAgent.isPending}>
-                    {runAgent.isPending ? 'Queuing…' : 'Start run'}
-                  </button>
-                </div>
-              </form>
+              {!canWrite ? (
+                <p className="detail-copy muted">Viewer role — running agents needs MEMBER and above.</p>
+              ) : null}
+              {canWrite && runAgent.isError ? <div className="form-error">{describeError(runAgent.error)}</div> : null}
+              {canWrite ? (
+                <form onSubmit={startRun}>
+                  <div className="field">
+                    <label htmlFor="run-input">Input</label>
+                    <textarea
+                      id="run-input"
+                      rows={5}
+                      value={runInput}
+                      onChange={(event) => setRunInput(event.target.value)}
+                      placeholder="Give this agent something to do…"
+                      required
+                    />
+                  </div>
+                  <div className="form-actions">
+                    <span className="form-note">Queues a run via POST /runs</span>
+                    <button type="submit" className="primary-button" disabled={runAgent.isPending}>
+                      {runAgent.isPending ? 'Queuing…' : 'Start run'}
+                    </button>
+                  </div>
+                </form>
+              ) : null}
             </article>
           </section>
         </>
@@ -804,10 +832,12 @@ function RunsView({
   selectedRunId,
   onSelectRun,
   onNavigate,
+  canWrite,
 }: {
   selectedRunId: string | null
   onSelectRun: (id: string | null) => void
   onNavigate: (view: ViewName) => void
+  canWrite: boolean
 }) {
   const runsQuery = useRuns()
   const agentsQuery = useAgents()
@@ -831,9 +861,13 @@ function RunsView({
             <button type="button" className="ghost-button">
               Filters
             </button>
-            <button type="button" className="primary-button" onClick={() => setShowTrigger((open) => !open)}>
-              Trigger run
-            </button>
+            {canWrite ? (
+              <button type="button" className="primary-button" onClick={() => setShowTrigger((open) => !open)}>
+                Trigger run
+              </button>
+            ) : (
+              <span className="form-note">Viewer role — triggering runs needs MEMBER and above</span>
+            )}
           </>
         }
       />
@@ -892,9 +926,11 @@ function RunsView({
               hint="Trigger a run against one of your agents to see live status and output here."
               action={
                 agents.length > 0 ? (
-                  <button type="button" className="primary-button" onClick={() => setShowTrigger(true)}>
-                    Trigger run
-                  </button>
+                  canWrite ? (
+                    <button type="button" className="primary-button" onClick={() => setShowTrigger(true)}>
+                      Trigger run
+                    </button>
+                  ) : undefined
                 ) : (
                   <button type="button" className="primary-button" onClick={() => onNavigate('Agents')}>
                     Create an agent first
@@ -1377,6 +1413,52 @@ export default function App() {
   const [activeView, setActiveView] = useState<ViewName>('Overview')
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  // Lifted so the ⌘K palette's "Create agent" can open the Agents form.
+  const [agentCreateOpen, setAgentCreateOpen] = useState(false)
+
+  // RBAC-aware nav: write actions are hidden for roles without the matching
+  // permission (mirrors the backend matrix — the API still enforces it).
+  const canWriteRole = canWrite(auth.user?.role)
+  const canDecideRole = canDecide(auth.user?.role)
+
+  const navigateTo = (view: ViewName) => {
+    setSelectedAgentId(null)
+    setSelectedRunId(null)
+    setActiveView(view)
+  }
+
+  const paletteActions = useMemo<PaletteAction[]>(() => {
+    const items: PaletteAction[] = (
+      [
+        ['Agents', 'agents fleet catalog'],
+        ['Workflows', 'workflows automation dsl'],
+        ['Runs', 'runs executions traces'],
+        ['Approvals', 'approvals pending review risk'],
+        ['Evaluations', 'evals evaluations datasets quality pass rate'],
+        ['Usage', 'usage metrics tokens cost'],
+      ] as const
+    ).map(([view, keywords]) => ({
+      id: `nav-${view}`,
+      label: `Go to ${view}`,
+      hint: 'Navigate',
+      keywords,
+      run: () => navigateTo(view),
+    }))
+    if (canWriteRole) {
+      items.push({
+        id: 'create-agent',
+        label: 'Create agent',
+        hint: 'Write action',
+        keywords: 'new agent add create register',
+        run: () => {
+          navigateTo('Agents')
+          setAgentCreateOpen(true)
+        },
+      })
+    }
+    return items
+  }, [canWriteRole])
 
   if (!authed) return <AuthGate />
 
@@ -1393,15 +1475,26 @@ export default function App() {
       case 'Overview':
         return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} />
       case 'Agents':
-        return <AgentsView selectedAgentId={selectedAgentId} onSelectAgent={setSelectedAgentId} onOpenRun={openRun} />
+        return (
+          <AgentsView
+            selectedAgentId={selectedAgentId}
+            onSelectAgent={setSelectedAgentId}
+            onOpenRun={openRun}
+            canWrite={canWriteRole}
+            createOpen={agentCreateOpen}
+            onCreateOpenChange={setAgentCreateOpen}
+          />
+        )
       case 'Runs':
-        return <RunsView selectedRunId={selectedRunId} onSelectRun={setSelectedRunId} onNavigate={setActiveView} />
+        return (
+          <RunsView selectedRunId={selectedRunId} onSelectRun={setSelectedRunId} onNavigate={setActiveView} canWrite={canWriteRole} />
+        )
       case 'Workflows':
-        return <WorkflowsView onOpenRun={openRun} />
+        return <WorkflowsView onOpenRun={openRun} canWrite={canWriteRole} />
       case 'Approvals':
-        return <ApprovalsView canDecide={canDecide(auth.user?.role)} />
+        return <ApprovalsView canDecide={canDecideRole} />
       case 'Evaluations':
-        return <EvaluationsView canWrite={canWrite(auth.user?.role)} />
+        return <EvaluationsView canWrite={canWriteRole} />
       case 'Tools':
         return <ToolsView />
       case 'Knowledge':
@@ -1469,10 +1562,17 @@ export default function App() {
 
       <main className="main-panel">
         <header className="global-header">
-          <div className="searchbox">
+          <button
+            type="button"
+            className="searchbox"
+            onClick={() => setPaletteOpen(true)}
+            aria-label="Open command palette"
+            title="Command palette"
+          >
             <span className="search-icon">⌕</span>
             <span>Search AgentOS...</span>
-          </div>
+            <kbd className="search-kbd">{paletteShortcutLabel()}</kbd>
+          </button>
           <div className="global-header-actions">
             <div className="status-chip">
               <span className={healthOnline ? 'status-dot online' : 'status-dot offline'} />
@@ -1487,6 +1587,8 @@ export default function App() {
 
         {renderView()}
       </main>
+
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} actions={paletteActions} />
     </div>
   )
 }

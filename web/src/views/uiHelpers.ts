@@ -22,6 +22,13 @@ export const navItems = [
 
 export type ViewName = (typeof navItems)[number]
 
+/** Platform-aware shortcut hint for the ⌘K command palette. */
+export function paletteShortcutLabel(): string {
+  if (typeof navigator === 'undefined') return 'Ctrl K'
+  const platform = `${navigator.platform ?? ''} ${navigator.userAgent}`.toLowerCase()
+  return /mac|iphone|ipad/.test(platform) ? '⌘K' : 'Ctrl K'
+}
+
 export function describeError(error: unknown): string {
   if (error instanceof ApiError) {
     const suffix = error.status ? ` (HTTP ${error.status})` : ''

@@ -179,10 +179,12 @@ function WorkflowDetailView({
   workflowId,
   onBack,
   onOpenWorkflowRun,
+  canWrite,
 }: {
   workflowId: string
   onBack: () => void
   onOpenWorkflowRun: (workflowRunId: string) => void
+  canWrite: boolean
 }) {
   const workflowQuery = useWorkflow(workflowId)
   const publishWorkflow = usePublishWorkflow()
@@ -254,9 +256,11 @@ function WorkflowDetailView({
                   <h3>Graph</h3>
                 </div>
                 <div className="topbar-actions">
-                  <button type="button" className="ghost-button" onClick={publish} disabled={publishWorkflow.isPending}>
-                    {publishWorkflow.isPending ? 'Publishing…' : 'Publish version'}
-                  </button>
+                  {canWrite ? (
+                    <button type="button" className="ghost-button" onClick={publish} disabled={publishWorkflow.isPending}>
+                      {publishWorkflow.isPending ? 'Publishing…' : 'Publish version'}
+                    </button>
+                  ) : null}
                 </div>
               </div>
 
@@ -317,8 +321,12 @@ function WorkflowDetailView({
                 </div>
               </div>
 
-              {executeWorkflow.isError ? <div className="form-error">{describeError(executeWorkflow.error)}</div> : null}
+              {!canWrite ? (
+                <p className="detail-copy muted">Viewer role — executing workflows needs MEMBER and above.</p>
+              ) : null}
+              {canWrite && executeWorkflow.isError ? <div className="form-error">{describeError(executeWorkflow.error)}</div> : null}
 
+              {canWrite ? (
               <form onSubmit={execute}>
                 <div className="field">
                   <label htmlFor="workflow-run-input">Input</label>
@@ -338,6 +346,7 @@ function WorkflowDetailView({
                   </button>
                 </div>
               </form>
+              ) : null}
             </article>
           </section>
 
@@ -355,9 +364,11 @@ function WorkflowDetailView({
                 title="No versions published yet"
                 hint="The workflow definition is editable while in draft. Publishing snapshots it as an immutable version."
                 action={
-                  <button type="button" className="primary-button" onClick={publish} disabled={publishWorkflow.isPending}>
-                    Publish first version
-                  </button>
+                  canWrite ? (
+                    <button type="button" className="primary-button" onClick={publish} disabled={publishWorkflow.isPending}>
+                      Publish first version
+                    </button>
+                  ) : undefined
                 }
               />
             ) : (
@@ -518,7 +529,7 @@ function WorkflowRunDetailView({
   )
 }
 
-export function WorkflowsView({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
+export function WorkflowsView({ onOpenRun, canWrite }: { onOpenRun: (runId: string) => void; canWrite: boolean }) {
   const workflowsQuery = useWorkflows()
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)
   const [selectedWorkflowRunId, setSelectedWorkflowRunId] = useState<string | null>(null)
@@ -542,6 +553,7 @@ export function WorkflowsView({ onOpenRun }: { onOpenRun: (runId: string) => voi
         workflowId={selectedWorkflowId}
         onBack={() => setSelectedWorkflowId(null)}
         onOpenWorkflowRun={(workflowRunId) => setSelectedWorkflowRunId(workflowRunId)}
+        canWrite={canWrite}
       />
     )
   }
@@ -552,9 +564,13 @@ export function WorkflowsView({ onOpenRun }: { onOpenRun: (runId: string) => voi
         eyebrow="Automation"
         title="Workflows"
         actions={
-          <button type="button" className="primary-button" onClick={() => setShowCreate((open) => !open)}>
-            New workflow
-          </button>
+          canWrite ? (
+            <button type="button" className="primary-button" onClick={() => setShowCreate((open) => !open)}>
+              New workflow
+            </button>
+          ) : (
+            <span className="form-note">Viewer role — creating workflows needs MEMBER and above</span>
+          )
         }
       />
 
@@ -607,9 +623,11 @@ export function WorkflowsView({ onOpenRun }: { onOpenRun: (runId: string) => voi
             title="No workflows yet"
             hint="Workflows chain agents and tools into a DAG. Create one with a JSON DSL to get started."
             action={
-              <button type="button" className="primary-button" onClick={() => setShowCreate(true)}>
-                Create workflow
-              </button>
+              canWrite ? (
+                <button type="button" className="primary-button" onClick={() => setShowCreate(true)}>
+                  Create workflow
+                </button>
+              ) : undefined
             }
           />
         ) : (

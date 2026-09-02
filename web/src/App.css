@@ -1540,3 +1540,144 @@ tbody tr:last-child td {
   display: grid;
   gap: 4px;
 }
+
+/* ---------------------------------------------------------------------------
+⌘K command palette (header searchbox button + overlay)
+--------------------------------------------------------------------------- */
+
+button.searchbox {
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+button.searchbox:hover {
+  border-color: rgba(148, 163, 184, 0.42);
+  color: #e5ecff;
+}
+
+.search-kbd {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1;
+  color: #7dd3fc;
+  border: 1px solid rgba(125, 211, 252, 0.3);
+  border-radius: 6px;
+  padding: 3px 6px;
+  background: rgba(125, 211, 252, 0.08);
+}
+
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(2, 6, 23, 0.66);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+}
+
+.palette-panel {
+  width: 100%;
+  max-width: 560px;
+  max-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.98);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(2, 6, 23, 0.6);
+}
+
+.palette-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.palette-input input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e5ecff;
+  font: inherit;
+  font-size: 15px;
+}
+
+.palette-input input::placeholder {
+  color: #64748b;
+}
+
+.palette-list {
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.palette-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+  color: #cbd5f5;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.palette-option.active {
+  background: rgba(124, 58, 237, 0.18);
+  color: #f8fbff;
+}
+
+.palette-hint {
+  margin-left: auto;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.palette-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13.5px;
+}
+
+.palette-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+
+.palette-footer kbd,
+.palette-footer span kbd {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: #cbd5f5;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 5px;
+  padding: 2px 5px;
+  margin-right: 2px;
+  background: rgba(148, 163, 184, 0.08);
+}
