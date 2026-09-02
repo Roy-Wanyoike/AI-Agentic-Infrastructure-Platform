@@ -77,20 +77,6 @@ func TestLoadMigrations(t *testing.T) {
 	}
 }
 
-// migrationMatchers maps a migration version to a distinctive snippet of its
-// SQL used as the sqlmock matcher (regex-quoted; the runner executes the whole
-// file as one Exec so a substring match is sufficient). Unknown versions fall
-// back to matching the entire file so newly added migrations keep this test
-// green without edits.
-var migrationMatchers = map[int]string{
-	1: "CREATE TABLE IF NOT EXISTS organizations",
-	2: "CREATE TABLE IF NOT EXISTS organization_memberships",
-	3: "CREATE TABLE IF NOT EXISTS agent_versions",
-	4: "CREATE TABLE IF NOT EXISTS run_steps",
-	5: "ALTER TABLE agents ADD COLUMN IF NOT EXISTS description",
-	7: "ALTER TABLE agent_versions ADD COLUMN IF NOT EXISTS snapshot",
-}
-
 func TestApplyMigrations(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -98,24 +84,26 @@ func TestApplyMigrations(t *testing.T) {
 	}
 	defer db.Close()
 
+	// Discover the real migration set first, then derive the per-migration
+	// expectations from it so the test stays green as new tracks add
+	// migrations (006+ are owned by independent wave-2 tracks).
 	migrations, err := LoadMigrations("../../migrations")
 	if err != nil {
 		t.Fatalf("LoadMigrations returned error: %v", err)
+	}
+	if len(migrations) == 0 {
+		t.Fatal("expected migrations to be discovered")
 	}
 
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS schema_migrations").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	for _, migration := range migrations {
-		matcher := "(?s).*"
-		if snippet, ok := migrationMatchers[migration.Version]; ok {
-			matcher = regexp.QuoteMeta(snippet)
-		}
 		mock.ExpectQuery("SELECT version FROM schema_migrations WHERE version = \\$1").
 			WithArgs(migration.Version).
 			WillReturnRows(sqlmock.NewRows([]string{"version"}))
 		mock.ExpectBegin()
-		mock.ExpectExec(matcher).
+		mock.ExpectExec(regexp.QuoteMeta(migration.SQL)).
 			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec("INSERT INTO schema_migrations").
 			WithArgs(migration.Version, migration.Name).
