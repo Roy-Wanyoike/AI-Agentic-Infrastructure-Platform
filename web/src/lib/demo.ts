@@ -7,7 +7,6 @@ export const IS_DEMO_VIEW: ReadonlySet<string> = new Set([
   'Tools',
   'Knowledge',
   'Analytics',
-  'Usage',
   'Security',
   'Infrastructure',
 ])

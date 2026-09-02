@@ -46,6 +46,7 @@ import { RunTimeline } from './views/runTimeline'
 import { WorkflowsView } from './views/workflows'
 import { ApprovalsView } from './views/approvals'
 import { EvaluationsView } from './views/evaluations'
+import { UsageView } from './views/usage'
 import { canDecide, canWrite } from './lib/rbac'
 
 const COMMON_MODELS = ['gpt-4o-mini', 'gpt-4o', 'claude-3-7-sonnet', 'llama-3.1-70b']
@@ -1180,13 +1181,6 @@ const toolCards = [
   { name: 'CRM sync', category: 'Sales ops', status: 'Healthy', latency: '240ms', permissions: 'write:records' },
 ]
 
-const usageRows = [
-  { label: 'Agent calls', value: '1.28M', delta: '+12.6%' },
-  { label: 'Inference spend', value: '$18.4K', delta: '+3.8%' },
-  { label: 'Storage', value: '942 GB', delta: '+6.1%' },
-  { label: 'Peak concurrency', value: '3,842', delta: '-2.2%' },
-]
-
 const securityRows = [
   { name: 'MFA enforcement', status: 'Healthy', coverage: '96%' },
   { name: 'Secret rotation', status: 'Review', coverage: '71%' },
@@ -1251,81 +1245,6 @@ function ToolsView() {
             </div>
           </article>
         ))}
-      </section>
-    </>
-  )
-}
-
-function UsageView() {
-  return (
-    <>
-      <PageHeader
-        eyebrow="Billing"
-        title="Usage"
-        badge={<DemoBadge />}
-        actions={
-          <>
-            <button type="button" className="ghost-button">Adjust plan</button>
-            <button type="button" className="primary-button">Export report</button>
-          </>
-        }
-      />
-
-      <section className="summary-grid">
-        {usageRows.map((item) => (
-          <article key={item.label} className="mini-stat">
-            <span>{item.label}</span>
-            <strong>{item.value}</strong>
-            <div className="delta positive" style={{ marginTop: 10 }}>{item.delta}</div>
-          </article>
-        ))}
-      </section>
-
-      <section className="content-grid">
-        <article className="panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Forecast</p>
-              <h3>Consumption trend</h3>
-            </div>
-            <button type="button" className="link-button">View detail</button>
-          </div>
-
-          <div className="usage-chart">
-            {[64, 72, 54, 81, 92, 88, 96].map((value, index) => (
-              <div key={index} className="usage-bar-wrap">
-                <span className="usage-bar" style={{ height: `${value}%` }} />
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Allocations</p>
-              <h3>Quota overview</h3>
-            </div>
-          </div>
-
-          <div className="quality-list">
-            <div>
-              <label>Inference budget</label>
-              <div className="meter"><span style={{ width: '76%' }} /></div>
-              <strong>76% consumed</strong>
-            </div>
-            <div>
-              <label>Storage pool</label>
-              <div className="meter"><span style={{ width: '54%' }} /></div>
-              <strong>54% used</strong>
-            </div>
-            <div>
-              <label>API requests</label>
-              <div className="meter"><span style={{ width: '91%' }} /></div>
-              <strong>91% of cap</strong>
-            </div>
-          </div>
-        </article>
       </section>
     </>
   )
