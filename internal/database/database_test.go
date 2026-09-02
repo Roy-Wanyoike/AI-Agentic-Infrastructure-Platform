@@ -3,6 +3,7 @@ package database
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,20 @@ func TestLoadMigrations(t *testing.T) {
 	}
 }
 
+// migrationMatchers maps a migration version to a distinctive snippet of its
+// SQL used as the sqlmock matcher (regex-quoted; the runner executes the whole
+// file as one Exec so a substring match is sufficient). Unknown versions fall
+// back to matching the entire file so newly added migrations keep this test
+// green without edits.
+var migrationMatchers = map[int]string{
+	1: "CREATE TABLE IF NOT EXISTS organizations",
+	2: "CREATE TABLE IF NOT EXISTS organization_memberships",
+	3: "CREATE TABLE IF NOT EXISTS agent_versions",
+	4: "CREATE TABLE IF NOT EXISTS run_steps",
+	5: "ALTER TABLE agents ADD COLUMN IF NOT EXISTS description",
+	7: "ALTER TABLE agent_versions ADD COLUMN IF NOT EXISTS snapshot",
+}
+
 func TestApplyMigrations(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -83,36 +98,31 @@ func TestApplyMigrations(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS schema_migrations").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	for _, migration := range []struct {
-		version int
-		name    string
-		sql     string
-	}{
-		{version: 1, name: "init_schema", sql: "CREATE TABLE IF NOT EXISTS organizations"},
-		{version: 2, name: "auth_tables", sql: "CREATE TABLE IF NOT EXISTS organization_memberships"},
-		{version: 3, name: "agents_tables", sql: "CREATE TABLE IF NOT EXISTS agent_versions"},
-		{version: 4, name: "runs_and_steps", sql: "CREATE TABLE IF NOT EXISTS run_steps"},
-		{version: 5, name: "persistence_hardening", sql: "ALTER TABLE agents ADD COLUMN IF NOT EXISTS description"},
-	} {
-		mock.ExpectQuery("SELECT version FROM schema_migrations WHERE version = \\$1").
-			WithArgs(migration.version).
-			WillReturnRows(sqlmock.NewRows([]string{"version"}))
-		mock.ExpectBegin()
-		mock.ExpectExec(migration.sql).
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectExec("INSERT INTO schema_migrations").
-			WithArgs(migration.version, migration.name).
-			WillReturnResult(sqlmock.NewResult(1, 1))
-		mock.ExpectCommit()
-	}
-
 	migrations, err := LoadMigrations("../../migrations")
 	if err != nil {
 		t.Fatalf("LoadMigrations returned error: %v", err)
 	}
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS schema_migrations").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	for _, migration := range migrations {
+		matcher := "(?s).*"
+		if snippet, ok := migrationMatchers[migration.Version]; ok {
+			matcher = regexp.QuoteMeta(snippet)
+		}
+		mock.ExpectQuery("SELECT version FROM schema_migrations WHERE version = \\$1").
+			WithArgs(migration.Version).
+			WillReturnRows(sqlmock.NewRows([]string{"version"}))
+		mock.ExpectBegin()
+		mock.ExpectExec(matcher).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("INSERT INTO schema_migrations").
+			WithArgs(migration.Version, migration.Name).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
+	}
+
 	if err := ApplyMigrations(db, migrations); err != nil {
 		t.Fatalf("ApplyMigrations returned error: %v", err)
 	}
