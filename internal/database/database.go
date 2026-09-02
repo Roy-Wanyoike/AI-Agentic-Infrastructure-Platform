@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -52,6 +53,59 @@ func (c Config) BuildDSN() string {
 		c.DBName,
 		c.SSLMode,
 	)
+}
+
+// DSNFromEnv returns a Postgres connection string assembled from the
+// DATABASE_URL or POSTGRES_* environment variables. It returns an empty string
+// when neither is configured so callers can fall back to in-memory stores.
+func DSNFromEnv() string {
+	if url := strings.TrimSpace(os.Getenv("DATABASE_URL")); url != "" {
+		return url
+	}
+	host := strings.TrimSpace(os.Getenv("POSTGRES_HOST"))
+	if host == "" {
+		return ""
+	}
+	port := strings.TrimSpace(os.Getenv("POSTGRES_PORT"))
+	if port == "" {
+		port = "5432"
+	}
+	user := strings.TrimSpace(os.Getenv("POSTGRES_USER"))
+	if user == "" {
+		user = DefaultConfig().User
+	}
+	password := os.Getenv("POSTGRES_PASSWORD")
+	dbname := strings.TrimSpace(os.Getenv("POSTGRES_DB"))
+	if dbname == "" {
+		dbname = DefaultConfig().DBName
+	}
+	sslMode := strings.TrimSpace(os.Getenv("POSTGRES_SSLMODE"))
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", host, port, user, password, dbname, sslMode)
+}
+
+// Connect opens a Postgres connection for the given DSN and verifies it with a
+// bounded ping so callers fail fast instead of lazily on first query.
+func Connect(dsn string) (*sql.DB, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("database DSN is empty")
+	}
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if db == nil {
+		return nil, fmt.Errorf("database handle is nil")
+	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("database ping failed: %w", err)
+	}
+	return db, nil
 }
 
 func Open(cfg Config) (*sql.DB, error) {
@@ -308,12 +362,12 @@ func (r *Repository) ListRunsByOrg(orgID string) ([]map[string]any, error) {
 			return nil, err
 		}
 		out = append(out, map[string]any{
-			"id":         id,
+			"id":              id,
 			"organization_id": org,
-			"agent_id":   agentID,
-			"status":     status,
-			"created_at": createdAt,
-			"updated_at": updatedAt,
+			"agent_id":        agentID,
+			"status":          status,
+			"created_at":      createdAt,
+			"updated_at":      updatedAt,
 		})
 	}
 	return out, rows.Err()

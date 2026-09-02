@@ -1,0 +1,1242 @@
+# AgentOS API — OpenAPI 3.1 contract.
+#
+# IMPORTANT: this spec documents the API *exactly as implemented* in cmd/api
+# (handlers.go, agents.go, runs.go) as of Task 1-c. It is the frozen contract
+# the frontend and worker build against. Notable realities captured here:
+#   * Service structs have no json tags, so resource fields are PascalCase
+#     (e.g. {"ID":"agent-1","OrganizationID":"org-1",...}). Documented as-is.
+#   * Canonical base path is /api/v1; /v1 remains a served legacy alias.
+#   * List endpoints are unpaginated today (documented limitation, see
+#     x-unpaginated on list operations).
+#   * Errors from existing handlers are currently text/plain (http.Error);
+#     the target error model {"error":{"code","message","request_id"}}
+#     (internal/httpx.ErrorModel) is the contract going forward and both
+#     shapes are documented.
+#   * PATCH/DELETE on /agents/{id} currently return the agent unchanged
+#     (agentDetailHandler has no method switch) — documented with x-note.
+openapi: 3.1.0
+info:
+  title: AgentOS API
+  version: 0.1.0
+  summary: Multi-tenant AI-agent infrastructure platform API
+  description: |
+    AgentOS is a multi-tenant AI-agent infrastructure platform. This contract
+    covers the versioned REST API (/api/v1), the worker pull endpoint, the
+    Server-Sent Events (SSE) execution-event stream, and platform health /
+    metrics endpoints.
+
+    ## Authentication
+    Two schemes are accepted on every protected endpoint (see
+    `securitySchemes`):
+    1. `bearerToken` — `Authorization: Bearer <token>` where `<token>` is the
+       HMAC-SHA256 JWT-style token returned by `POST /auth/login`
+       (registration creates the first OWNER user; log in to get a token).
+    2. `apiKey` — `X-API-Key: ak_...` header. API keys are created server-side
+       (dev key created at startup) and authenticate as the key's OWNER role.
+    Browser `EventSource` clients that cannot set headers may pass
+    `?api_key=<key>` as a query parameter (legacy compatibility).
+
+    ## RBAC
+    Permissions: `agents.read`, `agents.write`, `runs.read`, `runs.execute`,
+    `users.manage`, `organization.manage`. Roles: `OWNER` (all), `ADMIN`
+    (all but organization.manage), `MEMBER` (agents.read, runs.read,
+    runs.execute), `VIEWER` (agents.read, runs.read). Each operation declares
+    its required permission via `x-required-permission`.
+
+    ## Multi-tenancy
+    Requests are scoped to an organization derived from the auth token. For
+    agent/run creation the body may carry `organization_id`; when omitted the
+    authenticated principal's organization is used. Access to another
+    organization's resources returns 403.
+
+    ## Error model
+    Target structured error (Content-Type application/json):
+    `{"error":{"code":"not_found","message":"agent not found","request_id":"..."}}`.
+    During migration, some handlers still emit `http.Error`-style
+    `text/plain` bodies; the structured model is authoritative for new code.
+
+    ## Pagination
+    List endpoints (`GET /agents`, `GET /runs`) are **unpaginated** today;
+    they return the full result set. This is a documented limitation and will
+    change in a future minor version (see `x-unpaginated`).
+  contact:
+    name: AgentOS Platform Team
+servers:
+  - url: /api/v1
+    description: Canonical versioned base path.
+  - url: /
+    description: |
+      Legacy root where all /v1/* routes are served identically
+      (e.g. /v1/agents). Deprecated alias kept for backward compatibility
+      (cmd/worker and existing clients still use it).
+tags:
+  - name: auth
+    description: Registration and token issuance.
+  - name: agents
+    description: Agent registry (multi-tenant).
+  - name: runs
+    description: Agent executions and their event streams.
+  - name: queue
+    description: Worker task pull (dev pull model).
+  - name: platform
+    description: Health, readiness and metrics.
+security:
+  - bearerToken: []
+  - apiKey: []
+paths:
+  /auth/register:
+    post:
+      operationId: register
+      tags: [auth]
+      summary: Register an organization and its first OWNER user
+      description: |
+        Creates a new organization (ID pattern `org-<n>`) and a user with the
+        default role `OWNER`. No authentication required. The response
+        intentionally includes the stored user record as implemented today —
+        including `PasswordHash` (bcrypt digest). This is a known contract
+        wart tracked for removal; clients must treat it as opaque.
+      security: []
+      x-required-permission: null
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              organization: Acme AI
+              email: owner@acme.dev
+              password: s3cret-password
+      responses:
+        '201':
+          description: Organization and user created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+              example:
+                organization:
+                  ID: org-1
+                  Name: Acme AI
+                user:
+                  ID: user-1
+                  Organization: org-1
+                  Email: owner@acme.dev
+                  PasswordHash: $2a$10$...
+                  Role: OWNER
+                  CreatedAt: '2025-01-01T12:00:00.123456789Z'
+        '400':
+          description: |
+            Missing field, invalid JSON body, or email already registered.
+            Body is plain text today (http.Error); structured error is the
+            target model.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/LegacyTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Exchange credentials for a bearer token
+      description: |
+        Returns an HMAC-SHA256 JWT-style token (24h expiry) carrying claims
+        `user_id`, `organization_id`, `email`, `role`, `exp`. Use it as
+        `Authorization: Bearer <token>` afterwards. No authentication required.
+      security: []
+      x-required-permission: null
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: owner@acme.dev
+              password: s3cret-password
+      responses:
+        '200':
+          description: Token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoi...
+        '401':
+          description: Invalid credentials (plain text body today).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/LegacyTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /agents:
+    get:
+      operationId: listAgents
+      tags: [agents]
+      summary: List agents in the caller's organization
+      description: |
+        Returns a JSON **array** (not an envelope) of agents belonging to the
+        requested organization. `organization_id` query parameter defaults to
+        the authenticated principal's organization; cross-organization access
+        is forbidden. Unpaginated today.
+      x-required-permission: agents.read
+      x-unpaginated: true
+      parameters:
+        - name: organization_id
+          in: query
+          required: false
+          description: Organization to list; defaults to the caller's organization.
+          schema:
+            type: string
+          example: org-1
+      responses:
+        '200':
+          description: Array of agents (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Agent'
+              example:
+                - ID: agent-1
+                  OrganizationID: org-1
+                  Name: Support Agent
+                  Description: Demo customer support agent
+                  Instructions: Answer simple questions
+                  Model: gpt-4o-mini
+                  Status: DRAFT
+                  CurrentVersionID: version-agent-1-1
+                  CreatedAt: '2025-01-01T12:00:00.123456789Z'
+                  UpdatedAt: '2025-01-01T12:00:00.123456789Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /agents/create:
+    post:
+      operationId: createAgent
+      tags: [agents]
+      summary: Create an agent
+      description: |
+        Creates an agent in `DRAFT` status and an initial AgentVersion
+        (version 1) which becomes `CurrentVersionID`. Required fields:
+        `name`, `instructions`, `model` (service-side validation);
+        `organization_id` defaults to the caller's organization.
+      x-required-permission: agents.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRequest'
+            example:
+              organization_id: org-1
+              name: Support Agent
+              description: Demo customer support agent
+              instructions: Answer simple questions
+              model: gpt-4o-mini
+      responses:
+        '201':
+          description: Agent created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+              example:
+                ID: agent-1
+                OrganizationID: org-1
+                Name: Support Agent
+                Description: Demo customer support agent
+                Instructions: Answer simple questions
+                Model: gpt-4o-mini
+                Status: DRAFT
+                CurrentVersionID: version-agent-1-1
+                CreatedAt: '2025-01-01T12:00:00.123456789Z'
+                UpdatedAt: '2025-01-01T12:00:00.123456789Z'
+        '400':
+          description: Invalid body or validation failure (name/instructions/model required).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/LegacyTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /agents/{id}:
+    get:
+      operationId: getAgent
+      tags: [agents]
+      summary: Get an agent by ID
+      x-required-permission: agents.read
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+      responses:
+        '200':
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateAgent
+      tags: [agents]
+      summary: Update an agent (NOT IMPLEMENTED — returns the agent unchanged)
+      description: |
+        **Reality check (documented, not aspirational):** the shared detail
+        handler (cmd/api/agents.go agentDetailHandler) has no method switch;
+        PATCH behaves exactly like GET and does not mutate anything.
+        `agents.write` is NOT currently enforced on this route (it is
+        registered under `agents.read`). Updating happens server-side via
+        version creation, not yet via the API.
+      x-required-permission: agents.read
+      x-note: not-implemented; returns current agent representation
+      deprecated: true
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+      responses:
+        '200':
+          description: Current agent representation (unchanged).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteAgent
+      tags: [agents]
+      summary: Delete an agent (NOT IMPLEMENTED — returns the agent unchanged)
+      description: |
+        **Reality check (documented, not aspirational):** DELETE behaves
+        exactly like GET; no data is deleted and `agents.write` is not
+        enforced on this route today.
+      x-required-permission: agents.read
+      x-note: not-implemented; returns current agent representation
+      deprecated: true
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+      responses:
+        '200':
+          description: Current agent representation (unchanged).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /runs:
+    get:
+      operationId: listRuns
+      tags: [runs]
+      summary: List runs
+      description: |
+        Returns an envelope `{"runs":[...]}`. **Today this lists all runs
+        across organizations** (handler TODO notes org filtering is future
+        work). Unpaginated today.
+      x-required-permission: runs.read
+      x-unpaginated: true
+      x-note: no organization filter applied yet
+      responses:
+        '200':
+          description: Runs envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRunsResponse'
+              example:
+                runs:
+                  - ID: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                    OrganizationID: org-1
+                    AgentID: agent-1
+                    Input: What is 2+2?
+                    Output: ''
+                    Status: QUEUED
+                    CreatedAt: '2025-01-01T12:00:00.123456789Z'
+                    UpdatedAt: '2025-01-01T12:00:00.123456789Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createRun
+      tags: [runs]
+      summary: Create and enqueue a run
+      description: |
+        Creates a run (status `QUEUED`) and enqueues an `agent.run` task.
+        Responds 201 with the run ID and `status: "queued"`. Actual execution
+        happens in the worker; watch `GET /runs/{id}/events` (SSE) for
+        `status.changed` events.
+      x-required-permission: runs.execute
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRunRequest'
+            example:
+              organization_id: org-1
+              agent_id: agent-1
+              input: What is 2+2?
+      responses:
+        '201':
+          description: Run created and task queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateRunResponse'
+              example:
+                run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                status: queued
+        '400':
+          description: Invalid body or missing agent_id.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/LegacyTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /runs/{id}:
+    get:
+      operationId: getRun
+      tags: [runs]
+      summary: Get a run by ID
+      x-required-permission: runs.read
+      parameters:
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: The run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+              example:
+                ID: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                OrganizationID: org-1
+                AgentID: agent-1
+                Input: What is 2+2?
+                Output: 'The result of 2+2 is 4'
+                Status: COMPLETED
+                CreatedAt: '2025-01-01T12:00:00.123456789Z'
+                UpdatedAt: '2025-01-01T12:00:05.987654321Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /runs/{id}/events:
+    get:
+      operationId: streamRunEvents
+      tags: [runs]
+      summary: Stream run events (SSE) or fetch history (JSON)
+      description: |
+        Dual-protocol endpoint:
+        * `Accept: text/event-stream` → a live SSE stream. After the headers,
+          buffered history events are replayed first, then live events follow.
+          Each frame is `data: <RunEvent JSON>\n\n` (no `event:` field is
+          sent; clients should key off the `name` field inside the JSON,
+          e.g. `status.changed`). Comment keep-alive pings (`: ping`) may be
+          interleaved. The stream ends when the client disconnects.
+        * Any other `Accept` → JSON history envelope
+          `{"run_id": "...", "events": [RunEvent, ...]}`.
+      x-required-permission: runs.read
+      x-event-names: [status.changed]
+      parameters:
+        - $ref: '#/components/parameters/RunID'
+        - name: Accept
+          in: header
+          required: false
+          description: Set to `text/event-stream` to switch to the SSE protocol.
+          schema:
+            type: string
+            enum: [text/event-stream]
+      responses:
+        '200':
+          description: |
+            SSE stream (text/event-stream) or JSON history depending on the
+            Accept header.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: 'SSE byte stream; each frame is "data: <RunEvent JSON>" followed by a blank line.'
+                example: |
+                  data: {"run_id":"3f6c2b62-...","type":"status","name":"status.changed","payload":{"status":"RUNNING","ts":"2025-01-01T12:00:01Z"},"created_at":"2025-01-01T12:00:01.123456789Z"}
+
+                  data: {"run_id":"3f6c2b62-...","type":"status","name":"status.changed","payload":{"status":"COMPLETED","output":"The result of 2+2 is 4","ts":"2025-01-01T12:00:05Z"},"created_at":"2025-01-01T12:00:05.987654321Z"}
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunEventsResponse'
+              example:
+                run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                events:
+                  - run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                    type: status
+                    name: status.changed
+                    payload:
+                      status: COMPLETED
+                      output: The result of 2+2 is 4
+                      ts: '2025-01-01T12:00:05Z'
+                    created_at: '2025-01-01T12:00:05.987654321Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Run ID path segment missing or malformed.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/LegacyTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: publishRunEvent
+      tags: [runs]
+      summary: Publish an external event to a run's stream
+      description: |
+        Ingestion endpoint used by workers to report execution events. Accepts
+        `{"type","name","payload"}` and fans the event out to SSE subscribers
+        plus history. Returns 204 No Content. Note: today this route is
+        registered under the `runs.read` permission gate; API keys
+        authenticate with the OWNER role so worker callbacks succeed.
+      x-required-permission: runs.read
+      x-note: permission gate shared with GET; revisit before exposing publicly
+      parameters:
+        - $ref: '#/components/parameters/RunID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishEventRequest'
+            example:
+              type: status
+              name: status.changed
+              payload:
+                status: RUNNING
+                ts: '2025-01-01T12:00:01Z'
+      responses:
+        '204':
+          description: Event published.
+        '400':
+          description: Invalid event body.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/LegacyTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /runs/{id}/steps:
+    get:
+      operationId: listRunSteps
+      tags: [runs]
+      summary: List the execution steps (trace) of a run
+      description: |
+        Returns the recorded execution timeline for a run: one entry per model
+        call and tool invocation, captured by the worker's runtime step
+        recorder and persisted as `run_steps`. Each step carries its type,
+        status, input/output metadata, error, token usage and timestamps.
+        Steps are tenant-scoped: the org is derived from the run row.
+      x-required-permission: runs.read
+      parameters:
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: Step list (possibly empty) for the run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunStepsResponse'
+              example:
+                run_id: run-1
+                steps:
+                  - ID: 9e1f...
+                    RunID: run-1
+                    StepType: model
+                    Status: succeeded
+                    InputMeta:
+                      input: What is 2+2?
+                      name: openai-compatible
+                      index: 1
+                    OutputMeta:
+                      output: '{"tool":"calculator","arguments":{"expression":"2+2"}}'
+                    TokenUsage:
+                      total_tokens: 42
+                    StartedAt: '2025-01-01T12:00:00.5Z'
+                    CompletedAt: '2025-01-01T12:00:01.1Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /queue/pull:
+    get:
+      operationId: pullQueueTask
+      tags: [queue]
+      summary: Pull the next task (worker pull model)
+      description: |
+        Dequeues the next task (FIFO) for the calling worker. Returns `200`
+        with the Task JSON, or `204 No Content` when the queue is empty.
+        Intended for the worker's `AGENTOS_API_PULL=true` mode; a POST is
+        accepted as an alias of GET. Requires `runs.execute`.
+      x-required-permission: runs.execute
+      responses:
+        '200':
+          description: Next task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+              example:
+                ID: agent.run-2025-01-01T12:00:00.123456789Z
+                Type: agent.run
+                Payload:
+                  organization_id: org-1
+                  agent_id: agent-1
+                  input: What is 2+2?
+                  run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                Status: queued
+                Attempts: 0
+                CreatedAt: '2025-01-01T12:00:00.123456789Z'
+                UpdatedAt: '2025-01-01T12:00:00.123456789Z'
+                LastError: ''
+        '204':
+          description: Queue is empty.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: pullQueueTaskPost
+      tags: [queue]
+      summary: Pull the next task (POST alias of GET)
+      x-required-permission: runs.execute
+      responses:
+        '200':
+          description: Next task (same schema as GET).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '204':
+          description: Queue is empty.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /metrics:
+    get:
+      operationId: getMetrics
+      tags: [platform]
+      summary: Application metrics snapshot
+      description: |
+        Returns in-process counters and the latest latency observations keyed
+        by metric name, plus the current queue length. When the HTTP metrics
+        middleware (internal/observability.MetricsMiddleware) is wired,
+        entries follow the label format
+        `http_requests_total{route="...",method="...",status="..."}` and
+        `http_request_duration_seconds{...}`.
+      x-required-permission: runs.read
+      responses:
+        '200':
+          description: Metrics snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+              example:
+                counts:
+                  'http_requests_total{route="/api/v1/agents",method="GET",status="200"}': 42
+                latency:
+                  'http_request_duration_seconds{route="/api/v1/agents",method="GET",status="200"}': 0.0017
+                queue_length: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [platform]
+      summary: Liveness probe
+      security: []
+      x-required-permission: null
+      responses:
+        '200':
+          description: Service is alive. Body is the literal string `ok`.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [platform]
+      summary: Readiness probe
+      security: []
+      x-required-permission: null
+      responses:
+        '200':
+          description: Service is ready. Body is the literal string `ready`.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ready
+  /:
+    get:
+      operationId: getServiceInfo
+      tags: [platform]
+      summary: Service identity banner (catch-all route)
+      description: |
+        Catch-all route returning the service identity. Reachable at the
+        server root (outside the versioned base path). No authentication.
+      security: []
+      x-required-permission: null
+      responses:
+        '200':
+          description: Service banner.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service:
+                    type: string
+                    const: agentos-api
+                  status:
+                    type: string
+                    const: running
+                required: [service, status]
+              example:
+                service: agentos-api
+                status: running
+components:
+  parameters:
+    AgentID:
+      name: id
+      in: path
+      required: true
+      description: Agent identifier (e.g. `agent-1`).
+      schema:
+        type: string
+      example: agent-1
+    RunID:
+      name: id
+      in: path
+      required: true
+      description: Run identifier (UUID v4 string).
+      schema:
+        type: string
+      example: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: |
+        HMAC-SHA256 JWT-style token from `POST /auth/login` (24h expiry).
+        Claims: user_id, organization_id, email, role, exp.
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Pre-provisioned API key (`ak_...`). Authenticates as the key's
+        organization with the OWNER role. Browser EventSource clients may
+        alternatively pass `?api_key=<key>` (legacy query-param auth).
+  responses:
+    Unauthorized:
+      description: Missing/invalid credentials (plain text body today; JSON model is the target).
+      content:
+        text/plain:
+          schema:
+            $ref: '#/components/schemas/LegacyTextError'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated but lacking the required permission or organization access.
+      content:
+        text/plain:
+          schema:
+            $ref: '#/components/schemas/LegacyTextError'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found.
+      content:
+        text/plain:
+          schema:
+            $ref: '#/components/schemas/LegacyTextError'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    LegacyTextError:
+      type: string
+      description: Legacy plain-text error body emitted via http.Error during migration.
+      example: agent not found
+    Error:
+      type: object
+      description: Structured error model (internal/httpx.ErrorModel).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable stable error code (e.g. unauthorized, forbidden, not_found, bad_request, internal_error).
+              examples: [not_found]
+            message:
+              type: string
+              description: Human-readable message.
+              examples: [agent not found]
+            request_id:
+              type: string
+              description: Correlation ID echoed from the X-Request-ID header (or generated per request).
+              examples: ['1b8f0c47e51d2a3c4d5e6f708192a3b4']
+          required: [code, message, request_id]
+      required: [error]
+    Organization:
+      type: object
+      description: Tenant organization (auth.Organization; no json tags — PascalCase keys).
+      properties:
+        ID:
+          type: string
+          examples: [org-1]
+        Name:
+          type: string
+          examples: [Acme AI]
+      required: [ID, Name]
+    User:
+      type: object
+      description: |
+        User record (auth.User; no json tags — PascalCase keys). NOTE: the
+        register response currently includes PasswordHash (bcrypt digest);
+        treat as opaque and do not log it.
+      properties:
+        ID:
+          type: string
+          examples: [user-1]
+        Organization:
+          type: string
+          description: Organization ID the user belongs to.
+          examples: [org-1]
+        Email:
+          type: string
+          format: email
+          examples: [owner@acme.dev]
+        PasswordHash:
+          type: string
+          description: bcrypt digest (exposed today by register; scheduled for removal).
+          examples: ['$2a$10$...']
+        Role:
+          type: string
+          enum: [OWNER, ADMIN, MEMBER, VIEWER]
+        CreatedAt:
+          type: string
+          format: date-time
+      required: [ID, Organization, Email, Role, CreatedAt]
+    RegisterRequest:
+      type: object
+      properties:
+        organization:
+          type: string
+          description: New organization name.
+          examples: [Acme AI]
+        email:
+          type: string
+          format: email
+          examples: [owner@acme.dev]
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          examples: [s3cret-password]
+      required: [organization, email, password]
+    RegisterResponse:
+      type: object
+      properties:
+        organization:
+          $ref: '#/components/schemas/Organization'
+        user:
+          $ref: '#/components/schemas/User'
+      required: [organization, user]
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          examples: [owner@acme.dev]
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          examples: [s3cret-password]
+      required: [email, password]
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: HMAC-SHA256 JWT-style bearer token (24h expiry).
+          examples: [eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoi...]
+      required: [token]
+    Agent:
+      type: object
+      description: |
+        Agent record (agents.Agent; no json tags — PascalCase keys as
+        serialized by encoding/json today).
+      properties:
+        ID:
+          type: string
+          examples: [agent-1]
+        OrganizationID:
+          type: string
+          examples: [org-1]
+        Name:
+          type: string
+          examples: [Support Agent]
+        Description:
+          type: string
+          examples: [Demo customer support agent]
+        Instructions:
+          type: string
+          examples: [Answer simple questions]
+        Model:
+          type: string
+          examples: [gpt-4o-mini]
+        Status:
+          type: string
+          description: Lifecycle status; new agents start as DRAFT.
+          enum: [DRAFT, ACTIVE, DISABLED]
+        CurrentVersionID:
+          type: string
+          examples: [version-agent-1-1]
+        CreatedAt:
+          type: string
+          format: date-time
+        UpdatedAt:
+          type: string
+          format: date-time
+      required: [ID, OrganizationID, Name, Instructions, Model, Status, CreatedAt, UpdatedAt]
+    AgentVersion:
+      type: object
+      description: |
+        Immutable agent configuration version (agents.AgentVersion). Not yet
+        exposed via a dedicated HTTP route; part of the domain contract for
+        upcoming version endpoints.
+      properties:
+        ID:
+          type: string
+          examples: [version-agent-1-1]
+        AgentID:
+          type: string
+          examples: [agent-1]
+        Version:
+          type: integer
+          description: Monotonically increasing version number starting at 1.
+          examples: [1]
+        Instructions:
+          type: string
+        Model:
+          type: string
+        CreatedAt:
+          type: string
+          format: date-time
+      required: [ID, AgentID, Version, Instructions, Model, CreatedAt]
+    CreateAgentRequest:
+      type: object
+      properties:
+        organization_id:
+          type: string
+          description: Optional; defaults to the authenticated principal's organization.
+          examples: [org-1]
+        name:
+          type: string
+          examples: [Support Agent]
+        description:
+          type: string
+          examples: [Demo customer support agent]
+        instructions:
+          type: string
+          examples: [Answer simple questions]
+        model:
+          type: string
+          examples: [gpt-4o-mini]
+      required: [name, instructions, model]
+    Run:
+      type: object
+      description: |
+        Agent execution record (runs.Run; no json tags — PascalCase keys).
+        Status transitions: QUEUED → RUNNING → COMPLETED | FAILED.
+      properties:
+        ID:
+          type: string
+          description: UUID v4.
+          examples: ['3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10']
+        OrganizationID:
+          type: string
+          examples: [org-1]
+        AgentID:
+          type: string
+          examples: [agent-1]
+        Input:
+          type: string
+          examples: ['What is 2+2?']
+        Output:
+          type: string
+          description: Final output once the run completes (empty until then).
+          examples: [The result of 2+2 is 4]
+        Status:
+          type: string
+          enum: [QUEUED, RUNNING, COMPLETED, FAILED]
+        CreatedAt:
+          type: string
+          format: date-time
+        UpdatedAt:
+          type: string
+          format: date-time
+      required: [ID, OrganizationID, AgentID, Status, CreatedAt, UpdatedAt]
+    RunStatus:
+      type: string
+      enum: [QUEUED, RUNNING, COMPLETED, FAILED]
+      description: Run lifecycle states (runs.RunStatus).
+    CreateRunRequest:
+      type: object
+      properties:
+        organization_id:
+          type: string
+          description: Optional; defaults to the authenticated principal's organization.
+          examples: [org-1]
+        agent_id:
+          type: string
+          examples: [agent-1]
+        input:
+          type: string
+          description: Prompt/task input handed to the agent.
+          examples: ['What is 2+2?']
+      required: [agent_id, input]
+    CreateRunResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+          description: 'Created run ID (fallback: queue task ID if the runs service is unavailable).'
+          examples: ['3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10']
+        status:
+          type: string
+          const: queued
+      required: [run_id, status]
+    ListRunsResponse:
+      type: object
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Run'
+      required: [runs]
+    RunEvent:
+      type: object
+      description: |
+        Execution event as delivered over SSE (`data:` frame payload) and in
+        the JSON history envelope (snake_case keys — built in the handler).
+      properties:
+        run_id:
+          type: string
+        type:
+          type: string
+          description: Event category (today always `status`).
+          examples: [status]
+        name:
+          type: string
+          description: Event name; the key clients should switch on.
+          examples: [status.changed]
+        payload:
+          type: object
+          description: |
+            Event-specific data. For `status.changed`:
+            `{status: QUEUED|RUNNING|COMPLETED|FAILED, output?, ts?}` where
+            `output` appears on COMPLETED and `ts` is an RFC3339 worker timestamp.
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339Nano UTC timestamp of event creation.
+      required: [run_id, type, name, payload, created_at]
+    RunEventsResponse:
+      type: object
+      description: JSON history envelope returned when Accept is not text/event-stream.
+      properties:
+        run_id:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/RunEvent'
+      required: [run_id, events]
+    PublishEventRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          examples: [status]
+        name:
+          type: string
+          examples: [status.changed]
+        payload:
+          type: object
+          additionalProperties: true
+      required: [type, name, payload]
+    Task:
+      type: object
+      description: |
+        Queue task delivered to workers (queue.Task; no json tags — PascalCase
+        keys). Status values: queued, running, completed, dead_letter.
+      properties:
+        ID:
+          type: string
+          examples: ['agent.run-2025-01-01T12:00:00.123456789Z']
+        Type:
+          type: string
+          examples: [agent.run]
+        Payload:
+          type: object
+          additionalProperties: true
+          description: |
+            For `agent.run`: {organization_id, agent_id, input, run_id};
+            the worker augments it with result and status on completion.
+        Status:
+          type: string
+          enum: [queued, running, completed, dead_letter]
+        Attempts:
+          type: integer
+          description: Attempt count; tasks move to dead_letter after 4 failed attempts.
+          examples: [0]
+        CreatedAt:
+          type: string
+          format: date-time
+        UpdatedAt:
+          type: string
+          format: date-time
+        LastError:
+          type: string
+          description: Last processing error message (empty when none).
+      required: [ID, Type, Payload, Status, Attempts, CreatedAt, UpdatedAt, LastError]
+    MetricsResponse:
+      type: object
+      description: |
+        Metrics snapshot (metricsHandler). `counts` maps metric keys to
+        counters; `latency` maps metric keys to the latest observed duration
+        in seconds; `queue_length` is the current in-memory queue depth.
+      properties:
+        counts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Counter snapshot keyed by metric name/label key.
+        latency:
+          type: object
+          additionalProperties:
+            type: number
+            format: double
+          description: Latest observed duration (seconds) keyed by metric name/label key.
+        queue_length:
+          type: integer
+          examples: [3]
+      required: [counts, latency, queue_length]
+    RunStep:
+      type: object
+      description: |
+        One recorded execution step of a run's timeline (runs.Step; no json
+        tags — PascalCase keys). StepType is `model` or `tool`; Status is
+        `succeeded`, `failed` or `PENDING`.
+      properties:
+        ID:
+          type: string
+        RunID:
+          type: string
+        StepType:
+          type: string
+          enum: [model, tool, PENDING]
+        Status:
+          type: string
+          enum: [succeeded, failed, PENDING]
+        InputMeta:
+          type: object
+          additionalProperties: true
+          description: e.g. {input, name, index}
+        OutputMeta:
+          type: object
+          additionalProperties: true
+          description: e.g. {output}
+        Error:
+          type: string
+        TokenUsage:
+          type: object
+          additionalProperties: true
+          description: e.g. {prompt_tokens, completion_tokens, total_tokens}
+        Cost:
+          type: number
+          format: double
+        StartedAt:
+          type: string
+          format: date-time
+        CompletedAt:
+          type: string
+          format: date-time
+        CreatedAt:
+          type: string
+          format: date-time
+    RunStepsResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/RunStep'

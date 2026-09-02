@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"agentos/internal/agents"
 	"agentos/internal/config"
 	"agentos/internal/logger"
+	"agentos/internal/models"
 	"agentos/internal/queue"
 	"agentos/internal/runs"
 	"agentos/internal/runtime"
@@ -54,21 +56,96 @@ func postEventWithRetries(apiBase, runID string, payload map[string]any) error {
 	return lastErr
 }
 
+// agentSvcCreate seeds the demo agent used by local development.
+func agentSvcCreate(svc *agents.Service) (*agents.Agent, error) {
+	return svc.Create("org-demo", "Support Agent", "Demo customer support agent", "Answer simple questions", "gpt-4o-mini")
+}
+
+// stepRecorderAdapter adapts the runtime step stream to the runs service
+// recorder so model/tool steps become queryable run_steps rows. The tenant
+// scope is resolved from the run itself (trusted internal worker path).
+func stepRecorderAdapter(runsService *runs.Service) runtime.StepRecorder {
+	return runtime.StepRecorderFunc(func(ctx context.Context, runID string, step runtime.Step) error {
+		if step.Input == "" && step.Output == "" && step.Error == "" {
+			return nil
+		}
+		run, ok := runsService.Get(runID)
+		if !ok {
+			return nil // run already pruned; nothing to attach the step to
+		}
+		started := time.Now().UTC().Add(-time.Duration(step.DurationMS) * time.Millisecond)
+		rs := &runs.Step{
+			RunID:       runID,
+			StepType:    step.Type,
+			Status:      step.Status,
+			InputMeta:   map[string]any{"input": step.Input, "name": step.Name, "index": step.Index},
+			OutputMeta:  map[string]any{"output": step.Output},
+			Error:       step.Error,
+			StartedAt:   started,
+			CompletedAt: time.Now().UTC(),
+		}
+		if step.TokenUsage.TotalTokens > 0 {
+			rs.TokenUsage = map[string]any{
+				"prompt_tokens":     step.TokenUsage.PromptTokens,
+				"completion_tokens": step.TokenUsage.CompletionTokens,
+				"total_tokens":      step.TokenUsage.TotalTokens,
+			}
+		}
+		return runsService.RecordStep(ctx, run.OrganizationID, runID, rs)
+	})
+}
+
 func main() {
 	cfg := config.Load()
 	logr := logger.New(cfg.Env)
 
-	agentService := agents.NewService()
-	_, err := agentService.Create("org-demo", "Support Agent", "Demo customer support agent", "Answer simple questions", "gpt-4o-mini")
+	agentsvc := agents.NewService()
+	_, err := agentSvcCreate(agentsvc)
 	if err != nil {
 		logr.Warn("seed agent setup failed", "error", err)
 	}
 
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewCalculatorTool())
-	runner := runtime.NewRunner(agentService, registry)
+	registry.Register(tools.NewHTTPRequestTool())
+
+	// Provider wiring: when OPENAI_API_KEY is set the worker runs real model
+	// calls against any OpenAI-compatible endpoint (OPENAI_BASE_URL to point
+	// at OpenRouter/Groq/Ollama/vLLM). Without a key the runner stays in its
+	// deterministic offline mode so local development needs no credentials.
+	var provider models.Provider
+	if apiKey := os.Getenv("OPENAI_API_KEY"); strings.TrimSpace(apiKey) != "" {
+		baseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		model := strings.TrimSpace(os.Getenv("AGENTOS_WORKER_MODEL"))
+		primary := models.NewOpenAIProvider("openai-compatible", apiKey, baseURL, model, &http.Client{Timeout: 120 * time.Second})
+		if fbKey := os.Getenv("AGENTOS_FALLBACK_API_KEY"); strings.TrimSpace(fbKey) != "" {
+			fbBase := strings.TrimSpace(os.Getenv("AGENTOS_FALLBACK_BASE_URL"))
+			if fbBase == "" {
+				fbBase = "https://api.openai.com/v1"
+			}
+			fallback := models.NewOpenAIProvider("fallback", fbKey, fbBase, model, &http.Client{Timeout: 120 * time.Second})
+			if chained, cerr := models.NewFailoverProvider(primary, fallback); cerr == nil {
+				provider = chained
+			} else {
+				provider = primary
+			}
+		} else {
+			provider = primary
+		}
+		logr.Info("model provider configured", "base_url", baseURL, "model", model)
+	} else {
+		logr.Warn("no OPENAI_API_KEY set; worker runs in offline deterministic mode")
+	}
+
 	workQueue := queue.NewQueue()
 	runsService := runs.NewService()
+	runner := runtime.NewRunnerWithOptions(agentsvc, registry,
+		runtime.WithProvider(provider),
+		runtime.WithStepRecorder(stepRecorderAdapter(runsService)),
+	)
 	processTask := func(task *queue.Task) error {
 		if task == nil || task.Payload == nil {
 			return fmt.Errorf("task payload is required")
@@ -90,8 +167,8 @@ func main() {
 			payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusRunning), "ts": time.Now().UTC().Format(time.RFC3339)}}
 			_ = postEventWithRetries(apiBase, runID, payload)
 		}()
-		run, err := runner.Run(context.Background(), agentID, input)
-		if err != nil {
+		run, rerr := runner.RunWithID(context.Background(), runID, agentID, input)
+		if rerr != nil {
 			_ = runsService.UpdateStatus(runID, runs.StatusFailed, "")
 			go func() {
 				apiBase := os.Getenv("AGENTOS_API")

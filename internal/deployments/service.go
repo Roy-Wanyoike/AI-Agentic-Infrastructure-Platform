@@ -25,15 +25,15 @@ type Release struct {
 }
 
 type Service struct {
-	mu          sync.Mutex
+	mu           sync.Mutex
 	environments map[string]*Environment
-	releases    map[string][]*Release
+	releases     map[string][]*Release
 }
 
 func NewService() *Service {
 	return &Service{
 		environments: make(map[string]*Environment),
-		releases:    make(map[string][]*Release),
+		releases:     make(map[string][]*Release),
 	}
 }
 

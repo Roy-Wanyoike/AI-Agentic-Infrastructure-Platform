@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agentos/internal/agents"
+	"agentos/internal/audit"
 	"agentos/internal/auth"
 	"agentos/internal/observability"
 	"agentos/internal/queue"
@@ -57,7 +58,7 @@ func TestCreateAgentRequiresMatchingOrganization(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
-	auth.RequireAuth(authService)(createAgentHandler(agentService)).ServeHTTP(rr, req)
+	auth.RequireAuth(authService)(createAgentHandler(agentService, audit.NewService())).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected status %d, got %d body=%s", http.StatusForbidden, rr.Code, rr.Body.String())
@@ -79,7 +80,7 @@ func TestCreateRunRequiresMatchingOrganization(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
-	auth.RequireAuth(authService)(createRunHandler(queue.NewQueue())).ServeHTTP(rr, req)
+	auth.RequireAuth(authService)(createRunHandler(queue.NewQueue(), audit.NewService())).ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected status %d, got %d body=%s", http.StatusForbidden, rr.Code, rr.Body.String())
 	}
@@ -101,7 +102,7 @@ func TestCreateRunEnqueuesQueuedTask(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
-	auth.RequireAuth(authService)(createRunHandler(q)).ServeHTTP(rr, req)
+	auth.RequireAuth(authService)(createRunHandler(q, audit.NewService())).ServeHTTP(rr, req)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("expected status %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
 	}

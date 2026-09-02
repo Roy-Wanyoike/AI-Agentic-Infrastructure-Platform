@@ -38,7 +38,8 @@ func (s *Service) Create(name, cron string) (*Schedule, error) {
 	if !isValidCron(cron) {
 		return nil, errors.New("invalid cron expression")
 	}
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	schedule := &Schedule{
 		ID:        fmt.Sprintf("schedule-%d", len(s.schedules)+1),
 		Name:      name,
@@ -52,7 +53,8 @@ func (s *Service) Create(name, cron string) (*Schedule, error) {
 }
 
 func (s *Service) Get(id string) (*Schedule, bool) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	schedule, ok := s.schedules[id]
 	return schedule, ok
 }

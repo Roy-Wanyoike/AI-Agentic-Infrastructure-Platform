@@ -35,7 +35,7 @@ type Workflow struct {
 }
 
 type Service struct {
-	mu         sync.Mutex
+	mu        sync.Mutex
 	workflows map[string]*Workflow
 }
 

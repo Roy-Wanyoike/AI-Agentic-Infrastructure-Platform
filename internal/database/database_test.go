@@ -95,6 +95,7 @@ func TestApplyMigrations(t *testing.T) {
 		{version: 2, name: "auth_tables", sql: "CREATE TABLE IF NOT EXISTS organization_memberships"},
 		{version: 3, name: "agents_tables", sql: "CREATE TABLE IF NOT EXISTS agent_versions"},
 		{version: 4, name: "runs_and_steps", sql: "CREATE TABLE IF NOT EXISTS run_steps"},
+		{version: 5, name: "persistence_hardening", sql: "ALTER TABLE agents ADD COLUMN IF NOT EXISTS description"},
 	} {
 		mock.ExpectQuery("SELECT version FROM schema_migrations WHERE version = \\$1").
 			WithArgs(migration.version).
