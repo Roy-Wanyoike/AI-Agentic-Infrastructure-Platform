@@ -9,9 +9,10 @@ import (
 )
 
 type Metrics struct {
-	mu      sync.Mutex
-	counts  map[string]int64
-	latency map[string]float64
+	mu         sync.Mutex
+	counts     map[string]int64
+	latency    map[string]float64
+	histograms map[string]*Histogram // bucketed observations (Task 2-h)
 }
 
 type RateLimiter struct {
@@ -29,7 +30,11 @@ type Quota struct {
 }
 
 func NewMetrics() *Metrics {
-	return &Metrics{counts: make(map[string]int64), latency: make(map[string]float64)}
+	return &Metrics{
+		counts:     make(map[string]int64),
+		latency:    make(map[string]float64),
+		histograms: make(map[string]*Histogram),
+	}
 }
 
 func (m *Metrics) Inc(name string) {
@@ -248,9 +253,13 @@ func (m *Metrics) IncHTTP(route, method string, status int) {
 }
 
 // ObserveHTTP records the latest request duration (seconds) for the labelled
-// route/method/status.
+// route/method/status (legacy last-value gauge, surfaced through Snapshot()
+// and /metrics?format=json) AND a bucketed observation of the
+// agentos_request_duration_seconds family for percentile estimation and
+// Prometheus exposition (Task 2-h).
 func (m *Metrics) ObserveHTTP(route, method string, status int, seconds float64) {
 	m.Observe(httpMetricKey(HTTPDurationMetric, route, method, status), seconds)
+	m.ObserveHistogram(httpMetricKey(MetricRequestDuration, route, method, status), seconds)
 }
 
 // MetricsMiddleware records request count and duration for every request by
