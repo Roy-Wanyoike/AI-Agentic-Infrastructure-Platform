@@ -1,0 +1,410 @@
+# AgentOS API — OpenAPI 3.1 FRAGMENT for Track 2-f (Scheduler).
+#
+# This file is NOT part of the live spec by itself: the orchestrator merges
+# `paths:` and `schemas:` below into api/openapi.yaml (which owns the shared
+# components: securitySchemes bearerToken/apiKey and responses
+# Unauthorized/Forbidden/NotFound referenced here).
+#
+# Implementation notes:
+#   * All timestamps are RFC3339 UTC strings; unset optional timestamps
+#     (run_at on recurring/cron, next_run_at on completed schedules,
+#     last_fired_at before the first firing) serialize as null.
+#   * `last_fired_at` and `updated_at` are additive fields beyond the minimal
+#     contract shape (worker catch-up bookkeeping / audit).
+#   * Validation failures return 422 {"error":{"code":"VALIDATION_ERROR",...}};
+#     state conflicts (pause on paused, resume on active, transitions on
+#     completed schedules) return 409.
+#   * Tenant scope: organization_id is taken from the auth claims, never from
+#     the request body.
+paths:
+  /schedules:
+    get:
+      operationId: listSchedules
+      summary: List schedules of the caller's organization (oldest first)
+      description: Requires `schedules.read`. Unpaginated.
+      tags: [Schedules]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      responses:
+        '200':
+          description: Schedules for the caller's tenant (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSchedulesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Unexpected internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-required-permission: schedules.read
+
+  /schedules/create:
+    post:
+      operationId: createSchedule
+      summary: Create a schedule (kind once | recurring | cron)
+      description: |
+        Requires `schedules.write`. Validation rules:
+          * `kind=once` requires `run_at` (RFC3339).
+          * `kind=recurring` requires `interval_seconds >= 60`.
+          * `kind=cron` requires a valid 5-field `cron_expr`
+            (minute hour day-of-month month day-of-week; supports
+            `*`, numbers, ranges `a-b`, lists `a,b,c`, steps `*/n`)
+            and an IANA `timezone` (e.g. `UTC`, `Europe/Berlin`).
+        `next_run_at` is computed server-side; timezone defaults to `UTC` for
+        once/recurring when omitted.
+      tags: [Schedules]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleCreateRequest'
+            example:
+              agent_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+              input: daily digest
+              kind: cron
+              cron_expr: '30 9 * * 1-5'
+              timezone: Europe/Berlin
+      responses:
+        '201':
+          description: Schedule created (status `active`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleResponse'
+        '400':
+          description: Malformed JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INVALID_REQUEST
+                  message: invalid request body
+        '422':
+          description: Validation failure (kind rules, cron expression, timezone, run_at).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: interval_seconds must be >= 60 for recurring schedules
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      x-required-permission: schedules.write
+
+  /schedules/{id}:
+    get:
+      operationId: getSchedule
+      summary: Get one schedule
+      description: Requires `schedules.read`. Foreign-tenant ids surface as 404.
+      tags: [Schedules]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Schedule identifier (UUID).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The schedule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Schedule not found (or belongs to another tenant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: SCHEDULE_NOT_FOUND
+                  message: schedule not found
+      x-required-permission: schedules.read
+    delete:
+      operationId: deleteSchedule
+      summary: Delete a schedule
+      description: |
+        Requires `schedules.write`. Deleting an unknown or foreign id returns
+        404. The worker stops firing deleted schedules on its next poll.
+      tags: [Schedules]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteScheduleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Schedule not found (or belongs to another tenant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: SCHEDULE_NOT_FOUND
+                  message: schedule not found
+      x-required-permission: schedules.write
+
+  /schedules/{id}/pause:
+    post:
+      operationId: pauseSchedule
+      summary: Pause a schedule (active -> paused)
+      description: |
+        Requires `schedules.write`. Paused schedules never fire; `next_run_at`
+        is preserved so resume continues the cadence (an overdue schedule
+        fires once on the next worker poll).
+      tags: [Schedules]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paused (returns the updated schedule).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleResponse'
+        '409':
+          description: Schedule is not active (paused/completed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INVALID_STATE
+                  message: schedule is not active
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Schedule not found (or belongs to another tenant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: SCHEDULE_NOT_FOUND
+                  message: schedule not found
+      x-required-permission: schedules.write
+
+  /schedules/{id}/resume:
+    post:
+      operationId: resumeSchedule
+      summary: Resume a paused schedule (paused -> active)
+      description: Requires `schedules.write`.
+      tags: [Schedules]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Resumed (returns the updated schedule).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleResponse'
+        '409':
+          description: Schedule is not paused (active/completed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INVALID_STATE
+                  message: schedule is not paused
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Schedule not found (or belongs to another tenant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: SCHEDULE_NOT_FOUND
+                  message: schedule not found
+      x-required-permission: schedules.write
+
+components:
+  schemas:
+    Schedule:
+      type: object
+      description: One tenant-scoped trigger definition.
+      required:
+        - id
+        - agent_id
+        - kind
+        - status
+        - timezone
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          description: Agent that runs on every firing.
+        input:
+          type: string
+          description: Input payload passed to the created run.
+        kind:
+          type: string
+          enum: [once, recurring, cron]
+        run_at:
+          type: [string, 'null']
+          format: date-time
+          description: Absolute fire time (kind=once only; RFC3339 UTC).
+        interval_seconds:
+          type: integer
+          description: Recurrence interval (kind=recurring, >= 60; 0 otherwise).
+        cron_expr:
+          type: string
+          description: 5-field cron expression (kind=cron; empty otherwise).
+        timezone:
+          type: string
+          description: IANA timezone the cron expression is evaluated in (default UTC).
+        status:
+          type: string
+          enum: [active, paused, completed]
+          description: completed is the terminal state of a fired once schedule.
+        next_run_at:
+          type: [string, 'null']
+          format: date-time
+          description: Next pending fire instant (null when none pending).
+        last_run_id:
+          type: string
+          description: Run created by the most recent firing (empty before first fire).
+        last_fired_at:
+          type: [string, 'null']
+          format: date-time
+          description: Catch-up bookkeeping instant of the last claimed firing.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ScheduleCreateRequest:
+      type: object
+      required: [agent_id, kind]
+      properties:
+        agent_id:
+          type: string
+        input:
+          type: string
+          default: ''
+        kind:
+          type: string
+          enum: [once, recurring, cron]
+        run_at:
+          type: string
+          format: date-time
+          description: Required for kind=once (RFC3339).
+        interval_seconds:
+          type: integer
+          minimum: 60
+          description: Required for kind=recurring.
+        cron_expr:
+          type: string
+          description: Required for kind=cron (5 fields).
+        timezone:
+          type: string
+          description: IANA name; required for kind=cron, defaults to UTC.
+
+    ListSchedulesResponse:
+      type: object
+      required: [schedules]
+      properties:
+        schedules:
+          type: array
+          items:
+            $ref: '#/components/schemas/Schedule'
+
+    ScheduleResponse:
+      type: object
+      required: [schedule]
+      properties:
+        schedule:
+          $ref: '#/components/schemas/Schedule'
+
+    DeleteScheduleResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: boolean
+
+    Error:
+      type: object
+      description: Wave-2 JSON error model (see api/openapi.yaml Error schema).
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (VALIDATION_ERROR, SCHEDULE_NOT_FOUND, INVALID_STATE, SCHEDULE_COMPLETED, INVALID_REQUEST, INTERNAL_ERROR).
+            message:
+              type: string
