@@ -162,6 +162,14 @@ func (m *MemoryPublisher) Dropped() uint64 {
 	return m.dropped
 }
 
+// Subscribers reports the number of active subscriptions (diagnostics helper;
+// tests use it to wait until a worker has actually subscribed).
+func (m *MemoryPublisher) Subscribers() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.subs)
+}
+
 func (s *memSubscriber) matches(eventType string) bool {
 	if len(s.types) == 0 {
 		return true
