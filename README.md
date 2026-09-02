@@ -63,17 +63,27 @@ agentos/
 
 ```bash
 cp .env.example .env
-make docker-up
-make build
-make test
-make run-api
+make docker-up      # Postgres, Redis, NATS
+make migrate-up     # apply database migrations
+make seed           # idempotent demo data (org, agents, tool, workflow, runs)
+make run-api        # API on :8080
 ```
 
-In a second terminal:
+In a second terminal, start the worker (run execution):
 
 ```bash
 make run-worker
 ```
+
+In a third terminal, run the web dashboard dev server:
+
+```bash
+cd web && npm install && npm run dev
+```
+
+The seeder creates a demo login you can use right away:
+`demo@agentos.dev` / `demo-password` (override with `AGENTOS_SEED_PASSWORD`
+before running `make seed`). Platform docs: [docs/architecture.md](docs/architecture.md).
 
 ## Services
 
