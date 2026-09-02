@@ -1233,3 +1233,183 @@ tbody tr:last-child td {
   font-size: 13px;
   color: #cbd5f5;
 }
+
+/* ---------------------------------------------------------------------------
+   Wave 2 additions (2-g): workflows / approvals / evals shared bits
+--------------------------------------------------------------------------- */
+
+.status-badge.published {
+  background: rgba(52, 211, 153, 0.12);
+  color: #6ee7b7;
+}
+
+.status-badge.approved,
+.status-badge.succeeded {
+  background: rgba(52, 211, 153, 0.12);
+  color: #6ee7b7;
+}
+
+.status-badge.rejected,
+.status-badge.cancelled,
+.status-badge.timeout {
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
+}
+
+.status-badge.waiting-approval {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fcd34d;
+}
+
+.status-badge.archived {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94a3b8;
+}
+
+.status-badge.active {
+  background: rgba(96, 165, 250, 0.12);
+  color: #93c5fd;
+}
+
+.code-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.validation-list ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.validation-list code {
+  background: rgba(248, 113, 113, 0.18);
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.config-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #94a3b8;
+  word-break: break-all;
+}
+
+.edge-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.edge-chip {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #cbd5f5;
+}
+
+.edge-chip em {
+  color: #94a3b8;
+  font-style: normal;
+}
+
+.table-error-cell {
+  color: #fca5a5;
+  font-size: 12.5px;
+  max-width: 260px;
+  word-break: break-word;
+}
+
+/* Command palette (⌘K) */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+  z-index: 100;
+}
+
+.palette {
+  width: min(560px, 100%);
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.palette input {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #f1f5f9;
+  padding: 16px 18px;
+  font-size: 15px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.palette-list {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.palette-item strong {
+  font-weight: 500;
+}
+
+.palette-item small {
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+
+.palette-item:hover,
+.palette-item.selected {
+  background: rgba(96, 165, 250, 0.14);
+}
+
+.palette-empty {
+  padding: 22px 16px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.role-chip {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.14);
+  color: #cbd5f5;
+}

@@ -43,6 +43,7 @@ import {
   type ViewName,
 } from './views/uiHelpers'
 import { RunTimeline } from './views/runTimeline'
+import { WorkflowsView } from './views/workflows'
 
 const COMMON_MODELS = ['gpt-4o-mini', 'gpt-4o', 'claude-3-7-sonnet', 'llama-3.1-70b']
 
@@ -1169,13 +1170,6 @@ function RunDetailView({
 // Demo views (no live endpoints yet) — content kept, honestly badged
 // ---------------------------------------------------------------------------
 
-const workflowRows = [
-  { name: 'Customer handoff', status: 'Live', owner: 'Support ops', steps: '5 steps', latency: '3.1s' },
-  { name: 'Incident response', status: 'Paused', owner: 'Platform', steps: '9 steps', latency: '5.4s' },
-  { name: 'Release audit', status: 'Review', owner: 'Engineering', steps: '4 steps', latency: '1.9s' },
-  { name: 'Billing sync', status: 'Healthy', owner: 'Finance', steps: '6 steps', latency: '2.2s' },
-]
-
 const toolCards = [
   { name: 'Slack notifier', category: 'Communication', status: 'Healthy', latency: '180ms', permissions: 'write:messages' },
   { name: 'Postgres query', category: 'Data access', status: 'Running', latency: '590ms', permissions: 'read:analytics' },
@@ -1203,65 +1197,6 @@ const infrastructureRows = [
   { name: 'Queue broker', region: 'us-west-2', replicas: '3', status: 'Review' },
   { name: 'Storage', region: 'global', replicas: '4', status: 'Healthy' },
 ]
-
-function WorkflowsView() {
-  return (
-    <>
-      <PageHeader
-        eyebrow="Automation"
-        title="Workflows"
-        badge={<DemoBadge />}
-        actions={
-          <>
-            <button type="button" className="ghost-button">Templates</button>
-            <button type="button" className="primary-button">Create workflow</button>
-          </>
-        }
-      />
-
-      <section className="summary-grid">
-        <SummaryStat label="Live workflows" value="12" accent="default" />
-        <SummaryStat label="Review queue" value="7" accent="info" />
-        <SummaryStat label="Avg duration" value="2.6m" accent="success" />
-        <SummaryStat label="Success" value="94%" accent="warning" />
-      </section>
-
-      <section className="workflow-grid">
-        {workflowRows.map((workflow) => (
-          <article key={workflow.name} className="workflow-card">
-            <div className="workflow-card-header">
-              <div>
-                <p className="eyebrow small">Workflow</p>
-                <h3>{workflow.name}</h3>
-              </div>
-              <StatusPill status={workflow.status} />
-            </div>
-
-            <div className="workflow-meta">
-              <div>
-                <label>Owner</label>
-                <strong>{workflow.owner}</strong>
-              </div>
-              <div>
-                <label>Steps</label>
-                <strong>{workflow.steps}</strong>
-              </div>
-              <div>
-                <label>Latency</label>
-                <strong>{workflow.latency}</strong>
-              </div>
-            </div>
-
-            <div className="card-actions">
-              <button type="button" className="ghost-button">Inspect</button>
-              <button type="button" className="primary-button small">Run</button>
-            </div>
-          </article>
-        ))}
-      </section>
-    </>
-  )
-}
 
 function ToolsView() {
   return (
@@ -1540,7 +1475,7 @@ export default function App() {
       case 'Runs':
         return <RunsView selectedRunId={selectedRunId} onSelectRun={setSelectedRunId} onNavigate={setActiveView} />
       case 'Workflows':
-        return <WorkflowsView />
+        return <WorkflowsView onOpenRun={openRun} />
       case 'Tools':
         return <ToolsView />
       case 'Knowledge':

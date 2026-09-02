@@ -116,7 +116,7 @@ export function asString(value: unknown): string | undefined {
   return undefined
 }
 
-function asNumber(value: unknown): number | undefined {
+export function asNumber(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string' && value.trim() !== '') {
     const parsed = Number(value)

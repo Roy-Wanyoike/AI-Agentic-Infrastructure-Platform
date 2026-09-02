@@ -17,6 +17,16 @@ import { createRun, getRun, listRunSteps, listRuns, subscribeRunEvents } from '.
 import type { CreateAgentInput, UpdateAgentInput } from './api/agents'
 import type { CreateRunInput } from './api/runs'
 import { eventOutput, eventStatus, isTerminalRunStatus, type Run, type RunEvent } from './api/types'
+import {
+  createWorkflow,
+  executeWorkflow,
+  getWorkflow,
+  getWorkflowRun,
+  isTerminalWorkflowRunStatus,
+  listWorkflows,
+  publishWorkflow,
+} from './api/workflows'
+import type { CreateWorkflowInput } from './api/workflows'
 
 export function useAgents() {
   return useQuery({ queryKey: ['agents'], queryFn: listAgents })
@@ -185,4 +195,67 @@ export function useRunEvents(runId: string | null | undefined, onEvent?: (event:
       if (retryHandle !== undefined) window.clearTimeout(retryHandle)
     }
   }, [runId, queryClient])
+}
+
+// ---------------------------------------------------------------------------
+// Workflows (track 2-a contract)
+// ---------------------------------------------------------------------------
+
+export function useWorkflows() {
+  return useQuery({ queryKey: ['workflows'], queryFn: listWorkflows })
+}
+
+export function useWorkflow(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['workflows', id],
+    queryFn: () => getWorkflow(id as string),
+    enabled: Boolean(id),
+  })
+}
+
+export function useCreateWorkflow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateWorkflowInput) => createWorkflow(input),
+    onSuccess: (workflow) => {
+      void queryClient.invalidateQueries({ queryKey: ['workflows'] })
+      if (workflow.id) queryClient.setQueryData(['workflows', workflow.id], workflow)
+    },
+  })
+}
+
+export function usePublishWorkflow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => publishWorkflow(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workflows'] })
+    },
+  })
+}
+
+export function useExecuteWorkflow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: string }) => executeWorkflow(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workflows'] })
+      void queryClient.invalidateQueries({ queryKey: ['workflowRuns'] })
+      void queryClient.invalidateQueries({ queryKey: ['runs'] })
+      void queryClient.invalidateQueries({ queryKey: ['metrics'] })
+    },
+  })
+}
+
+export function useWorkflowRun(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['workflowRuns', id],
+    queryFn: () => getWorkflowRun(id as string),
+    enabled: Boolean(id),
+    // Workflow runs fan out to child runs; poll until terminal for a live view.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status && !isTerminalWorkflowRunStatus(status) ? 4000 : false
+    },
+  })
 }
