@@ -1413,3 +1413,66 @@ tbody tr:last-child td {
   background: rgba(148, 163, 184, 0.14);
   color: #cbd5f5;
 }
+
+/* Approvals view */
+
+.filter-tabs {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.filter-tabs .ghost-button.active {
+  background: rgba(96, 165, 250, 0.16);
+  color: #bfdbfe;
+  border-color: rgba(96, 165, 250, 0.4);
+}
+
+.approval-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.approval-item-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-reason {
+  margin: 10px 0 0;
+  color: #cbd5f5;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.decision-confirm {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.07);
+  display: grid;
+  gap: 10px;
+}
+
+.decision-confirm .field {
+  margin-bottom: 0;
+}
+
+.danger-button {
+  background: rgba(248, 113, 113, 0.16);
+  color: #fca5a5;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  cursor: pointer;
+}
+
+.danger-button:hover {
+  background: rgba(248, 113, 113, 0.26);
+}
+
+.danger-button.small {
+  font-size: 13px;
+  padding: 6px 14px;
+}

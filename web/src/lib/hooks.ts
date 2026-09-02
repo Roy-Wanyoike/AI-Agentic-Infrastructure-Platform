@@ -27,6 +27,7 @@ import {
   publishWorkflow,
 } from './api/workflows'
 import type { CreateWorkflowInput } from './api/workflows'
+import { decideApproval, listApprovals, type ApprovalDecision } from './api/approvals'
 
 export function useAgents() {
   return useQuery({ queryKey: ['agents'], queryFn: listAgents })
@@ -256,6 +257,32 @@ export function useWorkflowRun(id: string | null | undefined) {
     refetchInterval: (query) => {
       const status = query.state.data?.status
       return status && !isTerminalWorkflowRunStatus(status) ? 4000 : false
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Approvals (track 2-a contract)
+// ---------------------------------------------------------------------------
+
+export function useApprovals(status?: string) {
+  return useQuery({
+    queryKey: ['approvals', status ?? 'all'],
+    queryFn: () => listApprovals(status),
+    // Pending queues benefit from a light refresh; React Query dedupes.
+    refetchInterval: status === undefined || status === 'pending' ? 15000 : false,
+  })
+}
+
+export function useDecideApproval() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, decision, reason }: { id: string; decision: ApprovalDecision; reason?: string }) =>
+      decideApproval(id, decision, reason),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['approvals'] })
+      void queryClient.invalidateQueries({ queryKey: ['runs'] })
+      void queryClient.invalidateQueries({ queryKey: ['workflowRuns'] })
     },
   })
 }
