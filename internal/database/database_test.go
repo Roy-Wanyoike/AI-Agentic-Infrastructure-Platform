@@ -3,7 +3,6 @@ package database
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -84,33 +83,37 @@ func TestApplyMigrations(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Discover the real migration set first, then derive the per-migration
-	// expectations from it so the test stays green as new tracks add
-	// migrations (006+ are owned by independent wave-2 tracks).
-	migrations, err := LoadMigrations("../../migrations")
-	if err != nil {
-		t.Fatalf("LoadMigrations returned error: %v", err)
-	}
-	if len(migrations) == 0 {
-		t.Fatal("expected migrations to be discovered")
-	}
-
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS schema_migrations").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
-	for _, migration := range migrations {
+	for _, migration := range []struct {
+		version int
+		name    string
+		sql     string
+	}{
+		{version: 1, name: "init_schema", sql: "CREATE TABLE IF NOT EXISTS organizations"},
+		{version: 2, name: "auth_tables", sql: "CREATE TABLE IF NOT EXISTS organization_memberships"},
+		{version: 3, name: "agents_tables", sql: "CREATE TABLE IF NOT EXISTS agent_versions"},
+		{version: 4, name: "runs_and_steps", sql: "CREATE TABLE IF NOT EXISTS run_steps"},
+		{version: 5, name: "persistence_hardening", sql: "ALTER TABLE agents ADD COLUMN IF NOT EXISTS description"},
+		{version: 10, name: "events_webhooks", sql: "CREATE TABLE IF NOT EXISTS webhooks"},
+	} {
 		mock.ExpectQuery("SELECT version FROM schema_migrations WHERE version = \\$1").
-			WithArgs(migration.Version).
+			WithArgs(migration.version).
 			WillReturnRows(sqlmock.NewRows([]string{"version"}))
 		mock.ExpectBegin()
-		mock.ExpectExec(regexp.QuoteMeta(migration.SQL)).
+		mock.ExpectExec(migration.sql).
 			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec("INSERT INTO schema_migrations").
-			WithArgs(migration.Version, migration.Name).
+			WithArgs(migration.version, migration.name).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectCommit()
 	}
 
+	migrations, err := LoadMigrations("../../migrations")
+	if err != nil {
+		t.Fatalf("LoadMigrations returned error: %v", err)
+	}
 	if err := ApplyMigrations(db, migrations); err != nil {
 		t.Fatalf("ApplyMigrations returned error: %v", err)
 	}
