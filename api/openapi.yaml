@@ -1,19 +1,3 @@
-# AgentOS API — OpenAPI 3.1 contract.
-#
-# IMPORTANT: this spec documents the API *exactly as implemented* in cmd/api
-# (handlers.go, agents.go, runs.go) as of Task 1-c. It is the frozen contract
-# the frontend and worker build against. Notable realities captured here:
-#   * Service structs have no json tags, so resource fields are PascalCase
-#     (e.g. {"ID":"agent-1","OrganizationID":"org-1",...}). Documented as-is.
-#   * Canonical base path is /api/v1; /v1 remains a served legacy alias.
-#   * List endpoints are unpaginated today (documented limitation, see
-#     x-unpaginated on list operations).
-#   * Errors from existing handlers are currently text/plain (http.Error);
-#     the target error model {"error":{"code","message","request_id"}}
-#     (internal/httpx.ErrorModel) is the contract going forward and both
-#     shapes are documented.
-#   * PATCH/DELETE on /agents/{id} currently return the agent unchanged
-#     (agentDetailHandler has no method switch) — documented with x-note.
 openapi: 3.1.0
 info:
   title: AgentOS API
@@ -62,123 +46,64 @@ info:
   contact:
     name: AgentOS Platform Team
 servers:
-  - url: /api/v1
-    description: Canonical versioned base path.
-  - url: /
-    description: |
-      Legacy root where all /v1/* routes are served identically
-      (e.g. /v1/agents). Deprecated alias kept for backward compatibility
-      (cmd/worker and existing clients still use it).
+- url: /api/v1
+  description: Canonical versioned base path.
+- url: /
+  description: |
+    Legacy root where all /v1/* routes are served identically
+    (e.g. /v1/agents). Deprecated alias kept for backward compatibility
+    (cmd/worker and existing clients still use it).
 tags:
-  - name: auth
-    description: Registration and token issuance.
-  - name: agents
-    description: Agent registry (multi-tenant).
-  - name: runs
-    description: Agent executions and their event streams.
-  - name: queue
-    description: Worker task pull (dev pull model).
-  - name: platform
-    description: Health, readiness and metrics.
+- name: auth
+  description: Registration and token issuance.
+- name: agents
+  description: Agent registry (multi-tenant).
+- name: runs
+  description: Agent executions and their event streams.
+- name: queue
+  description: Worker task pull (dev pull model).
+- name: platform
+  description: Health, readiness and metrics.
 security:
-  - bearerToken: []
-  - apiKey: []
+- bearerToken: []
+- apiKey: []
 paths:
-  /auth/register:
-    post:
-      operationId: register
-      tags: [auth]
-      summary: Register an organization and its first OWNER user
+  /:
+    get:
+      operationId: getServiceInfo
+      tags:
+      - platform
+      summary: Service identity banner (catch-all route)
       description: |
-        Creates a new organization (ID pattern `org-<n>`) and a user with the
-        default role `OWNER`. No authentication required. The response
-        intentionally includes the stored user record as implemented today —
-        including `PasswordHash` (bcrypt digest). This is a known contract
-        wart tracked for removal; clients must treat it as opaque.
+        Catch-all route returning the service identity. Reachable at the
+        server root (outside the versioned base path). No authentication.
       security: []
       x-required-permission: null
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterRequest'
-            example:
-              organization: Acme AI
-              email: owner@acme.dev
-              password: s3cret-password
-      responses:
-        '201':
-          description: Organization and user created.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RegisterResponse'
-              example:
-                organization:
-                  ID: org-1
-                  Name: Acme AI
-                user:
-                  ID: user-1
-                  Organization: org-1
-                  Email: owner@acme.dev
-                  PasswordHash: $2a$10$...
-                  Role: OWNER
-                  CreatedAt: '2025-01-01T12:00:00.123456789Z'
-        '400':
-          description: |
-            Missing field, invalid JSON body, or email already registered.
-            Body is plain text today (http.Error); structured error is the
-            target model.
-          content:
-            text/plain:
-              schema:
-                $ref: '#/components/schemas/LegacyTextError'
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  /auth/login:
-    post:
-      operationId: login
-      tags: [auth]
-      summary: Exchange credentials for a bearer token
-      description: |
-        Returns an HMAC-SHA256 JWT-style token (24h expiry) carrying claims
-        `user_id`, `organization_id`, `email`, `role`, `exp`. Use it as
-        `Authorization: Bearer <token>` afterwards. No authentication required.
-      security: []
-      x-required-permission: null
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
-            example:
-              email: owner@acme.dev
-              password: s3cret-password
       responses:
         '200':
-          description: Token issued.
+          description: Service banner.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LoginResponse'
+                type: object
+                properties:
+                  service:
+                    type: string
+                    const: agentos-api
+                  status:
+                    type: string
+                    const: running
+                required:
+                - service
+                - status
               example:
-                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoi...
-        '401':
-          description: Invalid credentials (plain text body today).
-          content:
-            text/plain:
-              schema:
-                $ref: '#/components/schemas/LegacyTextError'
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+                service: agentos-api
+                status: running
   /agents:
     get:
       operationId: listAgents
-      tags: [agents]
+      tags:
+      - agents
       summary: List agents in the caller's organization
       description: |
         Returns a JSON **array** (not an envelope) of agents belonging to the
@@ -188,13 +113,13 @@ paths:
       x-required-permission: agents.read
       x-unpaginated: true
       parameters:
-        - name: organization_id
-          in: query
-          required: false
-          description: Organization to list; defaults to the caller's organization.
-          schema:
-            type: string
-          example: org-1
+      - name: organization_id
+        in: query
+        required: false
+        description: Organization to list; defaults to the caller's organization.
+        schema:
+          type: string
+        example: org-1
       responses:
         '200':
           description: Array of agents (possibly empty).
@@ -205,16 +130,16 @@ paths:
                 items:
                   $ref: '#/components/schemas/Agent'
               example:
-                - ID: agent-1
-                  OrganizationID: org-1
-                  Name: Support Agent
-                  Description: Demo customer support agent
-                  Instructions: Answer simple questions
-                  Model: gpt-4o-mini
-                  Status: DRAFT
-                  CurrentVersionID: version-agent-1-1
-                  CreatedAt: '2025-01-01T12:00:00.123456789Z'
-                  UpdatedAt: '2025-01-01T12:00:00.123456789Z'
+              - ID: agent-1
+                OrganizationID: org-1
+                Name: Support Agent
+                Description: Demo customer support agent
+                Instructions: Answer simple questions
+                Model: gpt-4o-mini
+                Status: DRAFT
+                CurrentVersionID: version-agent-1-1
+                CreatedAt: '2025-01-01T12:00:00.123456789Z'
+                UpdatedAt: '2025-01-01T12:00:00.123456789Z'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -222,7 +147,8 @@ paths:
   /agents/create:
     post:
       operationId: createAgent
-      tags: [agents]
+      tags:
+      - agents
       summary: Create an agent
       description: |
         Creates an agent in `DRAFT` status and an initial AgentVersion
@@ -276,11 +202,12 @@ paths:
   /agents/{id}:
     get:
       operationId: getAgent
-      tags: [agents]
+      tags:
+      - agents
       summary: Get an agent by ID
       x-required-permission: agents.read
       parameters:
-        - $ref: '#/components/parameters/AgentID'
+      - $ref: '#/components/parameters/AgentID'
       responses:
         '200':
           description: The agent.
@@ -296,7 +223,8 @@ paths:
           $ref: '#/components/responses/NotFound'
     patch:
       operationId: updateAgent
-      tags: [agents]
+      tags:
+      - agents
       summary: Update an agent (NOT IMPLEMENTED — returns the agent unchanged)
       description: |
         **Reality check (documented, not aspirational):** the shared detail
@@ -309,7 +237,7 @@ paths:
       x-note: not-implemented; returns current agent representation
       deprecated: true
       parameters:
-        - $ref: '#/components/parameters/AgentID'
+      - $ref: '#/components/parameters/AgentID'
       responses:
         '200':
           description: Current agent representation (unchanged).
@@ -325,7 +253,8 @@ paths:
           $ref: '#/components/responses/NotFound'
     delete:
       operationId: deleteAgent
-      tags: [agents]
+      tags:
+      - agents
       summary: Delete an agent (NOT IMPLEMENTED — returns the agent unchanged)
       description: |
         **Reality check (documented, not aspirational):** DELETE behaves
@@ -335,7 +264,7 @@ paths:
       x-note: not-implemented; returns current agent representation
       deprecated: true
       parameters:
-        - $ref: '#/components/parameters/AgentID'
+      - $ref: '#/components/parameters/AgentID'
       responses:
         '200':
           description: Current agent representation (unchanged).
@@ -349,10 +278,1165 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /agents/{id}/rollback:
+    post:
+      operationId: rollbackAgent
+      summary: Re-point the agent to a target version and restore its snapshot config
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AgentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackAgentRequest'
+      responses:
+        '200':
+          description: Target version is now the agent's current version (live config restored).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentVersionResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: target_version missing or not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /agents/{id}/versions:
+    get:
+      operationId: listAgentVersions
+      summary: List an agent's immutable config versions (ascending)
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AgentID'
+      responses:
+        '200':
+          description: Config versions of the agent, ascending by version number.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /agents/{id}/versions/create:
+    post:
+      operationId: createAgentVersion
+      summary: Snapshot the agent's current configuration into a new draft version
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AgentID'
+      responses:
+        '201':
+          description: Draft version created (numbered after the highest existing version).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionNumberResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /agents/{id}/versions/{version}/publish:
+    post:
+      operationId: publishAgentVersion
+      summary: Mark a draft version immutable (published) and re-point the agent to it
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AgentID'
+      - name: version
+        in: path
+        required: true
+        description: Version number to publish.
+        schema:
+          type: integer
+          minimum: 1
+        example: 3
+      responses:
+        '200':
+          description: Version published (idempotent re-publish returns the same version).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionNumberResponse'
+        '400':
+          description: Version path segment is not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Version is archived (revive it via rollback instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /approvals:
+    get:
+      operationId: listApprovals
+      tags:
+      - approvals
+      summary: List the tenant's approvals
+      x-required-permission: approvals.read
+      parameters:
+      - name: status
+        in: query
+        required: false
+        description: Filter by status (pending|approved|rejected|cancelled).
+        schema:
+          $ref: '#/components/schemas/ApprovalStatus'
+      responses:
+        '200':
+          description: Approvals (unpaginated today).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalListResponse'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '500':
+          $ref: '#/components/responses/WfServerError'
+  /approvals/{id}:
+    get:
+      operationId: getApproval
+      tags:
+      - approvals
+      summary: Get one approval
+      x-required-permission: approvals.read
+      parameters:
+      - $ref: '#/components/parameters/WfApprovalID'
+      responses:
+        '200':
+          description: The approval.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval:
+                    $ref: '#/components/schemas/Approval'
+                required:
+                - approval
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '500':
+          $ref: '#/components/responses/WfServerError'
+  /approvals/{id}/decide:
+    post:
+      operationId: decideApproval
+      tags:
+      - approvals
+      summary: Approve or reject an approval
+      description: |
+        Sets the approver from the authenticated principal and decided_at to
+        now. When the decision is `approved` and a run is linked, the paused
+        run is resumed (status back to `pending`). Deciding twice returns 409.
+      x-required-permission: approvals.decide
+      parameters:
+      - $ref: '#/components/parameters/WfApprovalID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecideApprovalRequest'
+            example:
+              decision: approved
+              reason: Verified the deployment plan
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval:
+                    $ref: '#/components/schemas/Approval'
+                required:
+                - approval
+        '400':
+          $ref: '#/components/responses/WfBadRequest'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '403':
+          $ref: '#/components/responses/WfForbidden'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '409':
+          description: The approval has already been decided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '422':
+          description: decision must be `approved` or `rejected`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/WfServerError'
+  /auth/login:
+    post:
+      operationId: login
+      tags:
+      - auth
+      summary: Exchange credentials for a bearer token
+      description: |
+        Returns an HMAC-SHA256 JWT-style token (24h expiry) carrying claims
+        `user_id`, `organization_id`, `email`, `role`, `exp`. Use it as
+        `Authorization: Bearer <token>` afterwards. No authentication required.
+      security: []
+      x-required-permission: null
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: owner@acme.dev
+              password: s3cret-password
+      responses:
+        '200':
+          description: Token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoi...
+        '401':
+          description: Invalid credentials (plain text body today).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/LegacyTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/register:
+    post:
+      operationId: register
+      tags:
+      - auth
+      summary: Register an organization and its first OWNER user
+      description: |
+        Creates a new organization (ID pattern `org-<n>`) and a user with the
+        default role `OWNER`. No authentication required. The response
+        intentionally includes the stored user record as implemented today —
+        including `PasswordHash` (bcrypt digest). This is a known contract
+        wart tracked for removal; clients must treat it as opaque.
+      security: []
+      x-required-permission: null
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              organization: Acme AI
+              email: owner@acme.dev
+              password: s3cret-password
+      responses:
+        '201':
+          description: Organization and user created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+              example:
+                organization:
+                  ID: org-1
+                  Name: Acme AI
+                user:
+                  ID: user-1
+                  Organization: org-1
+                  Email: owner@acme.dev
+                  PasswordHash: $2a$10$...
+                  Role: OWNER
+                  CreatedAt: '2025-01-01T12:00:00.123456789Z'
+        '400':
+          description: |
+            Missing field, invalid JSON body, or email already registered.
+            Body is plain text today (http.Error); structured error is the
+            target model.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/LegacyTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /deployments:
+    get:
+      operationId: listDeployments
+      summary: List deployments, optionally filtered by agent
+      x-required-permission: deployments.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        description: Restrict the listing to one agent.
+        schema:
+          type: string
+        example: agent-1
+      responses:
+        '200':
+          description: Deployments of the tenant (newest first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /deployments/create:
+    post:
+      operationId: createDeployment
+      summary: Create a deployment (status requested) of a published agent version
+      x-required-permission: deployments.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDeploymentRequest'
+      responses:
+        '201':
+          description: Deployment created in status `requested`; advance it with promote.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: |
+            Validation failed (VALIDATION_ERROR for bad environment/fields;
+            VERSION_NOT_PUBLISHED when the target version does not exist or is
+            not published).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /deployments/{id}:
+    get:
+      operationId: getDeployment
+      summary: Fetch one deployment
+      x-required-permission: deployments.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+      responses:
+        '200':
+          description: The deployment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /deployments/{id}/promote:
+    post:
+      operationId: promoteDeployment
+      summary: Advance the lifecycle one step (requested -> validated -> deploying -> healthy)
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+      responses:
+        '200':
+          description: Deployment advanced one step (a worker replaces explicit promote later).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Terminal status (healthy/failed) cannot advance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /deployments/{id}/rollback:
+    post:
+      operationId: rollbackDeployment
+      summary: Re-point the environment to the previous healthy deployment's version
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+      responses:
+        '200':
+          description: Environment re-pointed; response carries the new healthy deployment and the version
+            it serves.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RollbackDeploymentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: No previous healthy deployment exists for this agent+environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /eval-datasets:
+    get:
+      operationId: listEvalDatasets
+      summary: List evaluation datasets (tenant-scoped)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags:
+      - Evaluations
+      responses:
+        '200':
+          description: Datasets of the caller's organization, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - datasets
+                properties:
+                  datasets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EvalDatasetSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /eval-datasets/create:
+    post:
+      operationId: createEvalDataset
+      summary: Create an evaluation dataset with its cases
+      description: |
+        Validates every case before persisting: supported scorers are
+        `exact`, `contains`, `regex`, `latency_under_ms`, `cost_under_cents`;
+        `regex` requires `params.pattern` (compilable), `latency_under_ms`
+        requires `params.threshold_ms > 0`, `cost_under_cents` requires
+        `params.threshold_cents > 0`; case ids must be unique (auto-generated
+        when omitted); at most 50 cases per dataset.
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags:
+      - Evaluations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - name
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                cases:
+                  type: array
+                  maxItems: 50
+                  items:
+                    $ref: '#/components/schemas/EvalCase'
+      responses:
+        '201':
+          description: Created dataset (echoes the ordered case list).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - dataset
+                properties:
+                  dataset:
+                    $ref: '#/components/schemas/EvalDataset'
+        '400':
+          description: Validation error (unknown scorer, bad params, duplicate case ids, >50 cases).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /eval-datasets/{id}:
+    get:
+      operationId: getEvalDataset
+      summary: Get one evaluation dataset including its cases
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags:
+      - Evaluations
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Dataset with cases.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - dataset
+                properties:
+                  dataset:
+                    $ref: '#/components/schemas/EvalDataset'
+        '404':
+          description: Dataset not found in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /eval-datasets/{id}/run:
+    post:
+      operationId: runEvalDataset
+      summary: Execute every case of a dataset against an agent (synchronous, bounded)
+      description: |
+        Runs each case through the agent runtime with a per-case context
+        deadline (30s) and at most 50 cases. Returns the completed run id;
+        fetch `GET /eval-runs/{id}` for results and summary. Cost is recorded
+        as 0 until the runtime exposes cost (token usage only today).
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags:
+      - Evaluations
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - agent_id
+              properties:
+                agent_id:
+                  type: string
+      responses:
+        '200':
+          description: Run finished; status is `completed` (per-case failures land in the results).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - eval_run_id
+                - status
+                properties:
+                  eval_run_id:
+                    type: string
+                  status:
+                    type: string
+                    enum:
+                    - completed
+                    - failed
+        '400':
+          description: Missing agent_id or validation error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '404':
+          description: Dataset or agent not found in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Evals runner not wired into the API server.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+  /eval-runs/compare:
+    post:
+      operationId: compareEvalRuns
+      summary: Compare a candidate run against a baseline run
+      description: |
+        Cases are matched by case_id; only the intersection of both runs is
+        judged. A regression is a case the baseline passed and the candidate
+        failed; an improvement is the reverse.
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags:
+      - Evaluations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - baseline_run_id
+              - candidate_run_id
+              properties:
+                baseline_run_id:
+                  type: string
+                candidate_run_id:
+                  type: string
+      responses:
+        '200':
+          description: Comparison with both summaries and case-level deltas.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalComparison'
+        '400':
+          description: Missing run ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '404':
+          description: Baseline or candidate run not found in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /eval-runs/{id}:
+    get:
+      operationId: getEvalRun
+      summary: Get one evaluation run with per-case results and summary
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags:
+      - Evaluations
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Run with results and aggregate summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalRunResponse'
+        '404':
+          description: Run not found in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /healthz:
+    get:
+      operationId: getHealth
+      tags:
+      - platform
+      summary: Liveness probe
+      security: []
+      x-required-permission: null
+      responses:
+        '200':
+          description: Service is alive. Body is the literal string `ok`.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+  /metrics:
+    get:
+      operationId: getMetrics
+      tags:
+      - platform
+      summary: Application metrics snapshot
+      description: |
+        Returns in-process counters and the latest latency observations keyed
+        by metric name, plus the current queue length. When the HTTP metrics
+        middleware (internal/observability.MetricsMiddleware) is wired,
+        entries follow the label format
+        `http_requests_total{route="...",method="...",status="..."}` and
+        `http_request_duration_seconds{...}`.
+      x-required-permission: runs.read
+      responses:
+        '200':
+          description: Metrics snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+              example:
+                counts:
+                  http_requests_total{route="/api/v1/agents",method="GET",status="200"}: 42
+                latency:
+                  http_request_duration_seconds{route="/api/v1/agents",method="GET",status="200"}: 0.0017
+                queue_length: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /policies:
+    get:
+      operationId: listPolicies
+      summary: List policies of the authenticated organization
+      description: |
+        Returns the governance policies of the caller's organization ordered
+        by priority (desc) then creation time (asc) — the same order the
+        evaluation engine applies. Unpaginated (see base spec limitation).
+      tags:
+      - Governance
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: policies.read
+      responses:
+        '200':
+          description: Policy list (possibly empty)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Internal'
+  /policies/create:
+    post:
+      operationId: createPolicy
+      summary: Create a policy
+      description: |
+        Validates the policy record (name required; effect allow|deny;
+        resource_type tool|agent|workflow|deployment|*; no empty entries in
+        actions / tool_allowlist / environments; max_cost_cents >= 0) and
+        persists it for the caller's organization. id and timestamps are
+        assigned server-side. Returns 422 with an invalid_policy error when
+        validation fails.
+      tags:
+      - Governance
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: policies.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Policy'
+      responses:
+        '201':
+          description: Created policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          description: Malformed JSON body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Policy validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /policies/evaluate:
+    post:
+      operationId: evaluatePolicies
+      summary: Evaluate the caller's policies against one action
+      description: |
+        Runs the governance engine over the enabled policies of the caller's
+        organization: highest-priority match wins, deny beats allow on a
+        priority tie, and the default decision is allow when nothing matches.
+        Condition semantics (conditions are applicability predicates):
+          * tool_allowlist (non-empty) — the request tool must be listed;
+          * environments (non-empty) — the request environment must be listed;
+          * max_cost_cents (set >= 0) — the request is over budget, i.e.
+            estimated_cost_cents > max_cost_cents (budget-guard);
+          * require_approval — annotated in the decision reason.
+        The tenant scope always comes from the authenticated principal;
+        resource.tenant_id is informational. Evaluate is a read-only operation
+        and requires policies.read.
+      tags:
+      - Governance
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: policies.read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyEvaluateRequest'
+      responses:
+        '200':
+          description: Decision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyEvaluateResponse'
+        '400':
+          description: Malformed JSON body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Missing action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /policies/{id}:
+    get:
+      operationId: getPolicy
+      summary: Get one policy
+      tags:
+      - Governance
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: policies.read
+      parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      responses:
+        '200':
+          description: The policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updatePolicy
+      summary: Full update of one policy
+      description: |
+        Replaces the mutable fields (name, effect, resource_type, actions,
+        conditions, priority, enabled). id, organization_id and created_at
+        are preserved; updated_at is bumped. Validates like create.
+      tags:
+      - Governance
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: policies.write
+      parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Policy'
+      responses:
+        '200':
+          description: Updated policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          description: Malformed JSON body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Policy validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: deletePolicy
+      summary: Delete one policy
+      tags:
+      - Governance
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: policies.write
+      parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      responses:
+        '200':
+          description: Deletion confirmation
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - deleted
+                properties:
+                  deleted:
+                    type: boolean
+                    enum:
+                    - true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /queue/pull:
+    get:
+      operationId: pullQueueTask
+      tags:
+      - queue
+      summary: Pull the next task (worker pull model)
+      description: |
+        Dequeues the next task (FIFO) for the calling worker. Returns `200`
+        with the Task JSON, or `204 No Content` when the queue is empty.
+        Intended for the worker's `AGENTOS_API_PULL=true` mode; a POST is
+        accepted as an alias of GET. Requires `runs.execute`.
+      x-required-permission: runs.execute
+      responses:
+        '200':
+          description: Next task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+              example:
+                ID: agent.run-2025-01-01T12:00:00.123456789Z
+                Type: agent.run
+                Payload:
+                  organization_id: org-1
+                  agent_id: agent-1
+                  input: What is 2+2?
+                  run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                Status: queued
+                Attempts: 0
+                CreatedAt: '2025-01-01T12:00:00.123456789Z'
+                UpdatedAt: '2025-01-01T12:00:00.123456789Z'
+                LastError: ''
+        '204':
+          description: Queue is empty.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: pullQueueTaskPost
+      tags:
+      - queue
+      summary: Pull the next task (POST alias of GET)
+      x-required-permission: runs.execute
+      responses:
+        '200':
+          description: Next task (same schema as GET).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '204':
+          description: Queue is empty.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags:
+      - platform
+      summary: Readiness probe
+      security: []
+      x-required-permission: null
+      responses:
+        '200':
+          description: Service is ready. Body is the literal string `ready`.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ready
   /runs:
     get:
       operationId: listRuns
-      tags: [runs]
+      tags:
+      - runs
       summary: List runs
       description: |
         Returns an envelope `{"runs":[...]}`. **Today this lists all runs
@@ -370,21 +1454,22 @@ paths:
                 $ref: '#/components/schemas/ListRunsResponse'
               example:
                 runs:
-                  - ID: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
-                    OrganizationID: org-1
-                    AgentID: agent-1
-                    Input: What is 2+2?
-                    Output: ''
-                    Status: QUEUED
-                    CreatedAt: '2025-01-01T12:00:00.123456789Z'
-                    UpdatedAt: '2025-01-01T12:00:00.123456789Z'
+                - ID: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                  OrganizationID: org-1
+                  AgentID: agent-1
+                  Input: What is 2+2?
+                  Output: ''
+                  Status: QUEUED
+                  CreatedAt: '2025-01-01T12:00:00.123456789Z'
+                  UpdatedAt: '2025-01-01T12:00:00.123456789Z'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: createRun
-      tags: [runs]
+      tags:
+      - runs
       summary: Create and enqueue a run
       description: |
         Creates a run (status `QUEUED`) and enqueues an `agent.run` task.
@@ -428,11 +1513,12 @@ paths:
   /runs/{id}:
     get:
       operationId: getRun
-      tags: [runs]
+      tags:
+      - runs
       summary: Get a run by ID
       x-required-permission: runs.read
       parameters:
-        - $ref: '#/components/parameters/RunID'
+      - $ref: '#/components/parameters/RunID'
       responses:
         '200':
           description: The run.
@@ -445,7 +1531,7 @@ paths:
                 OrganizationID: org-1
                 AgentID: agent-1
                 Input: What is 2+2?
-                Output: 'The result of 2+2 is 4'
+                Output: The result of 2+2 is 4
                 Status: COMPLETED
                 CreatedAt: '2025-01-01T12:00:00.123456789Z'
                 UpdatedAt: '2025-01-01T12:00:05.987654321Z'
@@ -455,10 +1541,46 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /runs/{id}/cancel:
+    post:
+      operationId: cancelRun
+      tags:
+      - run-control
+      summary: Cancel a run (idempotent)
+      description: |
+        Transitions the run to `cancelled`. Cancelling an already-cancelled
+        run is a no-op; cancelling a completed/failed/timed-out run returns
+        409. New status vocabulary: pending|running|paused|waiting_approval|
+        completed|failed|cancelled|timeout.
+      x-required-permission: runs.control
+      parameters:
+      - $ref: '#/components/parameters/WfRunID'
+      responses:
+        '200':
+          description: The updated run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunControlResponse'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '403':
+          $ref: '#/components/responses/WfForbidden'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '409':
+          description: Invalid transition from a terminal status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/WfServerError'
   /runs/{id}/events:
     get:
       operationId: streamRunEvents
-      tags: [runs]
+      tags:
+      - runs
       summary: Stream run events (SSE) or fetch history (JSON)
       description: |
         Dual-protocol endpoint:
@@ -471,16 +1593,18 @@ paths:
         * Any other `Accept` → JSON history envelope
           `{"run_id": "...", "events": [RunEvent, ...]}`.
       x-required-permission: runs.read
-      x-event-names: [status.changed]
+      x-event-names:
+      - status.changed
       parameters:
-        - $ref: '#/components/parameters/RunID'
-        - name: Accept
-          in: header
-          required: false
-          description: Set to `text/event-stream` to switch to the SSE protocol.
-          schema:
-            type: string
-            enum: [text/event-stream]
+      - $ref: '#/components/parameters/RunID'
+      - name: Accept
+        in: header
+        required: false
+        description: Set to `text/event-stream` to switch to the SSE protocol.
+        schema:
+          type: string
+          enum:
+          - text/event-stream
       responses:
         '200':
           description: |
@@ -490,7 +1614,8 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: 'SSE byte stream; each frame is "data: <RunEvent JSON>" followed by a blank line.'
+                description: 'SSE byte stream; each frame is "data: <RunEvent JSON>" followed by a blank
+                  line.'
                 example: |
                   data: {"run_id":"3f6c2b62-...","type":"status","name":"status.changed","payload":{"status":"RUNNING","ts":"2025-01-01T12:00:01Z"},"created_at":"2025-01-01T12:00:01.123456789Z"}
 
@@ -501,14 +1626,14 @@ paths:
               example:
                 run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
                 events:
-                  - run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
-                    type: status
-                    name: status.changed
-                    payload:
-                      status: COMPLETED
-                      output: The result of 2+2 is 4
-                      ts: '2025-01-01T12:00:05Z'
-                    created_at: '2025-01-01T12:00:05.987654321Z'
+                - run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                  type: status
+                  name: status.changed
+                  payload:
+                    status: COMPLETED
+                    output: The result of 2+2 is 4
+                    ts: '2025-01-01T12:00:05Z'
+                  created_at: '2025-01-01T12:00:05.987654321Z'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -524,7 +1649,8 @@ paths:
                 $ref: '#/components/schemas/Error'
     post:
       operationId: publishRunEvent
-      tags: [runs]
+      tags:
+      - runs
       summary: Publish an external event to a run's stream
       description: |
         Ingestion endpoint used by workers to report execution events. Accepts
@@ -535,7 +1661,7 @@ paths:
       x-required-permission: runs.read
       x-note: permission gate shared with GET; revisit before exposing publicly
       parameters:
-        - $ref: '#/components/parameters/RunID'
+      - $ref: '#/components/parameters/RunID'
       requestBody:
         required: true
         content:
@@ -564,10 +1690,73 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /runs/{id}/pause:
+    post:
+      operationId: pauseRun
+      tags:
+      - run-control
+      summary: Pause a run (idempotent)
+      description: Transitions a queued/pending/running/waiting_approval run to `paused`. Workers observe
+        the paused status and stop processing.
+      x-required-permission: runs.control
+      parameters:
+      - $ref: '#/components/parameters/WfRunID'
+      responses:
+        '200':
+          description: The updated run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunControlResponse'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '409':
+          description: Invalid transition from a terminal status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/WfServerError'
+  /runs/{id}/resume:
+    post:
+      operationId: resumeRun
+      tags:
+      - run-control
+      summary: Resume a paused run (idempotent)
+      description: Transitions a paused run back to `pending` so it can be re-enqueued. Runs waiting on
+        an approval must be resumed through the approval decision instead.
+      x-required-permission: runs.control
+      parameters:
+      - $ref: '#/components/parameters/WfRunID'
+      responses:
+        '200':
+          description: The updated run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunControlResponse'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '409':
+          description: |
+            Invalid transition (only `paused` runs can be resumed;
+            already-`pending` runs are an idempotent success).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/WfServerError'
   /runs/{id}/steps:
     get:
       operationId: listRunSteps
-      tags: [runs]
+      tags:
+      - runs
       summary: List the execution steps (trace) of a run
       description: |
         Returns the recorded execution timeline for a run: one entry per model
@@ -577,7 +1766,7 @@ paths:
         Steps are tenant-scoped: the org is derived from the run row.
       x-required-permission: runs.read
       parameters:
-        - $ref: '#/components/parameters/RunID'
+      - $ref: '#/components/parameters/RunID'
       responses:
         '200':
           description: Step list (possibly empty) for the run.
@@ -588,170 +1777,713 @@ paths:
               example:
                 run_id: run-1
                 steps:
-                  - ID: 9e1f...
-                    RunID: run-1
-                    StepType: model
-                    Status: succeeded
-                    InputMeta:
-                      input: What is 2+2?
-                      name: openai-compatible
-                      index: 1
-                    OutputMeta:
-                      output: '{"tool":"calculator","arguments":{"expression":"2+2"}}'
-                    TokenUsage:
-                      total_tokens: 42
-                    StartedAt: '2025-01-01T12:00:00.5Z'
-                    CompletedAt: '2025-01-01T12:00:01.1Z'
+                - ID: 9e1f...
+                  RunID: run-1
+                  StepType: model
+                  Status: succeeded
+                  InputMeta:
+                    input: What is 2+2?
+                    name: openai-compatible
+                    index: 1
+                  OutputMeta:
+                    output: '{"tool":"calculator","arguments":{"expression":"2+2"}}'
+                  TokenUsage:
+                    total_tokens: 42
+                  StartedAt: '2025-01-01T12:00:00.5Z'
+                  CompletedAt: '2025-01-01T12:00:01.1Z'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
-
-  /queue/pull:
+  /schedules:
     get:
-      operationId: pullQueueTask
-      tags: [queue]
-      summary: Pull the next task (worker pull model)
-      description: |
-        Dequeues the next task (FIFO) for the calling worker. Returns `200`
-        with the Task JSON, or `204 No Content` when the queue is empty.
-        Intended for the worker's `AGENTOS_API_PULL=true` mode; a POST is
-        accepted as an alias of GET. Requires `runs.execute`.
-      x-required-permission: runs.execute
+      operationId: listSchedules
+      summary: List schedules of the caller's organization (oldest first)
+      description: Requires `schedules.read`. Unpaginated.
+      tags:
+      - Schedules
+      security:
+      - bearerToken: []
+      - apiKey: []
       responses:
         '200':
-          description: Next task.
+          description: Schedules for the caller's tenant (possibly empty).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Task'
-              example:
-                ID: agent.run-2025-01-01T12:00:00.123456789Z
-                Type: agent.run
-                Payload:
-                  organization_id: org-1
-                  agent_id: agent-1
-                  input: What is 2+2?
-                  run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
-                Status: queued
-                Attempts: 0
-                CreatedAt: '2025-01-01T12:00:00.123456789Z'
-                UpdatedAt: '2025-01-01T12:00:00.123456789Z'
-                LastError: ''
-        '204':
-          description: Queue is empty.
+                $ref: '#/components/schemas/ListSchedulesResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Unexpected internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-required-permission: schedules.read
+  /schedules/create:
     post:
-      operationId: pullQueueTaskPost
-      tags: [queue]
-      summary: Pull the next task (POST alias of GET)
-      x-required-permission: runs.execute
-      responses:
-        '200':
-          description: Next task (same schema as GET).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Task'
-        '204':
-          description: Queue is empty.
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-  /metrics:
-    get:
-      operationId: getMetrics
-      tags: [platform]
-      summary: Application metrics snapshot
+      operationId: createSchedule
+      summary: Create a schedule (kind once | recurring | cron)
       description: |
-        Returns in-process counters and the latest latency observations keyed
-        by metric name, plus the current queue length. When the HTTP metrics
-        middleware (internal/observability.MetricsMiddleware) is wired,
-        entries follow the label format
-        `http_requests_total{route="...",method="...",status="..."}` and
-        `http_request_duration_seconds{...}`.
-      x-required-permission: runs.read
+        Requires `schedules.write`. Validation rules:
+          * `kind=once` requires `run_at` (RFC3339).
+          * `kind=recurring` requires `interval_seconds >= 60`.
+          * `kind=cron` requires a valid 5-field `cron_expr`
+            (minute hour day-of-month month day-of-week; supports
+            `*`, numbers, ranges `a-b`, lists `a,b,c`, steps `*/n`)
+            and an IANA `timezone` (e.g. `UTC`, `Europe/Berlin`).
+        `next_run_at` is computed server-side; timezone defaults to `UTC` for
+        once/recurring when omitted.
+      tags:
+      - Schedules
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleCreateRequest'
+            example:
+              agent_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+              input: daily digest
+              kind: cron
+              cron_expr: 30 9 * * 1-5
+              timezone: Europe/Berlin
       responses:
-        '200':
-          description: Metrics snapshot.
+        '201':
+          description: Schedule created (status `active`).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MetricsResponse'
+                $ref: '#/components/schemas/ScheduleResponse'
+        '400':
+          description: Malformed JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
               example:
-                counts:
-                  'http_requests_total{route="/api/v1/agents",method="GET",status="200"}': 42
-                latency:
-                  'http_request_duration_seconds{route="/api/v1/agents",method="GET",status="200"}': 0.0017
-                queue_length: 3
+                error:
+                  code: INVALID_REQUEST
+                  message: invalid request body
+        '422':
+          description: Validation failure (kind rules, cron expression, timezone, run_at).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: interval_seconds must be >= 60 for recurring schedules
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-  /healthz:
+      x-required-permission: schedules.write
+  /schedules/{id}:
     get:
-      operationId: getHealth
-      tags: [platform]
-      summary: Liveness probe
-      security: []
-      x-required-permission: null
+      operationId: getSchedule
+      summary: Get one schedule
+      description: Requires `schedules.read`. Foreign-tenant ids surface as 404.
+      tags:
+      - Schedules
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Schedule identifier (UUID).
+        schema:
+          type: string
       responses:
         '200':
-          description: Service is alive. Body is the literal string `ok`.
+          description: The schedule.
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-                example: ok
-  /readyz:
-    get:
-      operationId: getReadiness
-      tags: [platform]
-      summary: Readiness probe
-      security: []
-      x-required-permission: null
-      responses:
-        '200':
-          description: Service is ready. Body is the literal string `ready`.
+                $ref: '#/components/schemas/ScheduleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Schedule not found (or belongs to another tenant).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-                example: ready
-  /:
-    get:
-      operationId: getServiceInfo
-      tags: [platform]
-      summary: Service identity banner (catch-all route)
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: SCHEDULE_NOT_FOUND
+                  message: schedule not found
+      x-required-permission: schedules.read
+    delete:
+      operationId: deleteSchedule
+      summary: Delete a schedule
       description: |
-        Catch-all route returning the service identity. Reachable at the
-        server root (outside the versioned base path). No authentication.
-      security: []
-      x-required-permission: null
+        Requires `schedules.write`. Deleting an unknown or foreign id returns
+        404. The worker stops firing deleted schedules on its next poll.
+      tags:
+      - Schedules
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
       responses:
         '200':
-          description: Service banner.
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteScheduleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Schedule not found (or belongs to another tenant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: SCHEDULE_NOT_FOUND
+                  message: schedule not found
+      x-required-permission: schedules.write
+  /schedules/{id}/pause:
+    post:
+      operationId: pauseSchedule
+      summary: Pause a schedule (active -> paused)
+      description: |
+        Requires `schedules.write`. Paused schedules never fire; `next_run_at`
+        is preserved so resume continues the cadence (an overdue schedule
+        fires once on the next worker poll).
+      tags:
+      - Schedules
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Paused (returns the updated schedule).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleResponse'
+        '409':
+          description: Schedule is not active (paused/completed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INVALID_STATE
+                  message: schedule is not active
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Schedule not found (or belongs to another tenant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: SCHEDULE_NOT_FOUND
+                  message: schedule not found
+      x-required-permission: schedules.write
+  /schedules/{id}/resume:
+    post:
+      operationId: resumeSchedule
+      summary: Resume a paused schedule (paused -> active)
+      description: Requires `schedules.write`.
+      tags:
+      - Schedules
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Resumed (returns the updated schedule).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleResponse'
+        '409':
+          description: Schedule is not paused (active/completed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INVALID_STATE
+                  message: schedule is not paused
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Schedule not found (or belongs to another tenant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: SCHEDULE_NOT_FOUND
+                  message: schedule not found
+      x-required-permission: schedules.write
+  /webhooks:
+    get:
+      operationId: listWebhooks
+      tags:
+      - webhooks
+      summary: List the tenant's outbound webhook endpoints
+      description: |
+        Returns all webhook registrations of the authenticated organization,
+        newest first. The signing secret is never included in list responses —
+        only `secret_set` (always `true` for records that carry a secret hash).
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: webhooks.read
+      responses:
+        '200':
+          description: Array of webhooks (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Unexpected store failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookError'
+  /webhooks/create:
+    post:
+      operationId: createWebhook
+      tags:
+      - webhooks
+      summary: Register an outbound webhook endpoint
+      description: |
+        Creates a webhook subscribed to the given event types (empty `events`
+        array = subscribe to ALL event types). An HMAC signing secret is
+        generated and returned in this response body as `secret` — EXACTLY
+        ONCE; only its SHA-256 hash is persisted. Invalid input (non-http(s)
+        URL, unknown event type) returns 422.
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: webhooks.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookRequest'
+      responses:
+        '201':
+          description: Webhook created; the one-time signing secret is included.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateWebhookResponse'
+        '400':
+          description: Malformed JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Validation failure (invalid URL or unknown event type).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookError'
+  /webhooks/{id}:
+    delete:
+      operationId: deleteWebhook
+      tags:
+      - webhooks
+      summary: Delete a webhook endpoint
+      description: |
+        Removes the webhook (and its delivery records, via FK cascade).
+        Deleting an unknown or foreign-tenant id returns 404 (existence is
+        not leaked across tenants).
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: webhooks.write
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeleteResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /webhooks/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      tags:
+      - webhooks
+      summary: List recent delivery attempts of one webhook
+      description: |
+        Returns the webhook's delivery records, newest first. Each record
+        mirrors the LATEST attempt (attempts / last_status_code / latency_ms /
+        error are updated in place by the delivery worker after every retry).
+        `limit` defaults to 50 and is capped at 500; non-integer or
+        non-positive values return 400.
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: webhooks.read
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 50
+      responses:
+        '200':
+          description: Array of delivery records (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeliveryList'
+        '400':
+          description: Invalid limit parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /workflow-runs/{id}:
+    get:
+      operationId: getWorkflowRun
+      tags:
+      - workflow-runs
+      summary: Get one workflow run with its node runs
+      x-required-permission: workflows.read
+      parameters:
+      - $ref: '#/components/parameters/WfWorkflowRunID'
+      responses:
+        '200':
+          description: Workflow run with the per-node run mapping.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowRunResponse'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '500':
+          $ref: '#/components/responses/WfServerError'
+  /workflows:
+    get:
+      operationId: listWorkflows
+      tags:
+      - workflows
+      summary: List the tenant's workflows
+      x-required-permission: workflows.read
+      responses:
+        '200':
+          description: Workflows (summary shape, newest first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowListResponse'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '500':
+          $ref: '#/components/responses/WfServerError'
+  /workflows/create:
+    post:
+      operationId: createWorkflow
+      tags:
+      - workflows
+      summary: Create a draft workflow from a DSL
+      description: |
+        Runs DSL validation first: invalid definitions are rejected with 422
+        and the structured error list (code, message, node_id). The workflow
+        starts as `draft` with `current_version` 0. The tenant is taken from
+        the authenticated principal; client-supplied organization ids are
+        ignored.
+      x-required-permission: workflows.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkflowRequest'
+            example:
+              name: Deploy Flow
+              description: Plan then deploy with a sign-off gate
+              dsl:
+                nodes:
+                - id: n1
+                  type: agent
+                  name: Planner
+                  config:
+                    agent_id: agent-1
+                    input: '{{input}}'
+                - id: n2
+                  type: approval
+                  name: Gate
+                  config:
+                    action: deploy
+                    risk: high
+                edges:
+                - from: n1
+                  to: n2
+                  condition: on_success
+      responses:
+        '201':
+          description: Workflow created (draft).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDetailResponse'
+        '400':
+          $ref: '#/components/responses/WfBadRequest'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '403':
+          $ref: '#/components/responses/WfForbidden'
+        '422':
+          description: |
+            DSL validation failed. Body: `{"errors":[{"code","message","node_id"}]}`.
+            Error codes: empty_graph, missing_node_id, duplicate_node_id,
+            unknown_node_type, missing_config, missing_node_ref,
+            invalid_edge_condition, cycle_detected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowValidationErrors'
+        '500':
+          $ref: '#/components/responses/WfServerError'
+  /workflows/{id}:
+    get:
+      operationId: getWorkflow
+      tags:
+      - workflows
+      summary: Get one workflow with its published versions
+      x-required-permission: workflows.read
+      parameters:
+      - $ref: '#/components/parameters/WfWorkflowID'
+      responses:
+        '200':
+          description: Workflow detail including immutable versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDetailWithVersionsResponse'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '403':
+          $ref: '#/components/responses/WfForbidden'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '500':
+          $ref: '#/components/responses/WfServerError'
+  /workflows/{id}/execute:
+    post:
+      operationId: executeWorkflow
+      tags:
+      - workflows
+      summary: Execute the workflow (expand its DAG into agent runs)
+      description: |
+        Expands the DAG in topological order: one agent run per agent/tool
+        node (tool nodes without an explicit config.agent_id ride the first
+        agent node), every run is enqueued on the worker queue. An approval
+        node creates a pending approval, pauses the run preceding it and flips
+        the workflow run to `waiting_approval`; approving the approval resumes
+        the paused run. Structural nodes (condition/parallel/delay/webhook/end)
+        record completed node runs without agent runs.
+      x-required-permission: workflows.execute
+      parameters:
+      - $ref: '#/components/parameters/WfWorkflowID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteWorkflowRequest'
+            example:
+              input: Deploy the payments service
+      responses:
+        '200':
+          description: DAG expanded; node runs created and tasks enqueued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionResult'
+              example:
+                workflow_run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                run_ids:
+                - 4d0f5c9a-1f4e-4a2b-9a5f-6b3c8d7e2f10
+                - 5e1a6d0b-2a5f-4b3c-0b6a-7c4d9e8f3a21
+                status: pending
+        '400':
+          $ref: '#/components/responses/WfBadRequest'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '403':
+          $ref: '#/components/responses/WfForbidden'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '422':
+          description: DSL validation failures.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowValidationErrors'
+        '503':
+          description: The execution engine (runs/queue services) is not wired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+  /workflows/{id}/publish:
+    post:
+      operationId: publishWorkflow
+      tags:
+      - workflows
+      summary: Publish the current DSL as the next immutable version
+      description: Snapshots the workflow's DSL into a new version (1, 2, …) and marks the workflow published.
+        Invalid DSLs are rejected with 422.
+      x-required-permission: workflows.write
+      parameters:
+      - $ref: '#/components/parameters/WfWorkflowID'
+      responses:
+        '200':
+          description: Version published.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  service:
-                    type: string
-                    const: agentos-api
-                  status:
-                    type: string
-                    const: running
-                required: [service, status]
-              example:
-                service: agentos-api
-                status: running
+                  workflow:
+                    $ref: '#/components/schemas/WorkflowSummary'
+                  version:
+                    $ref: '#/components/schemas/WorkflowVersion'
+                required:
+                - workflow
+                - version
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '403':
+          $ref: '#/components/responses/WfForbidden'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '422':
+          description: DSL validation failures (publish requires a valid DSL).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowValidationErrors'
+        '500':
+          $ref: '#/components/responses/WfServerError'
+  /workflows/{id}/validate:
+    post:
+      operationId: validateWorkflow
+      tags:
+      - workflows
+      summary: Validate the workflow's current DSL
+      x-required-permission: workflows.read
+      parameters:
+      - $ref: '#/components/parameters/WfWorkflowID'
+      responses:
+        '200':
+          description: The DSL is valid.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    const: true
+                required:
+                - valid
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '404':
+          $ref: '#/components/responses/WfNotFound'
+        '422':
+          description: Validation failures (same body as create).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowValidationErrors'
+        '500':
+          $ref: '#/components/responses/WfServerError'
 components:
   parameters:
     AgentID:
@@ -828,29 +2560,41 @@ components:
           properties:
             code:
               type: string
-              description: Machine-readable stable error code (e.g. unauthorized, forbidden, not_found, bad_request, internal_error).
-              examples: [not_found]
+              description: Machine-readable stable error code (e.g. unauthorized, forbidden, not_found,
+                bad_request, internal_error).
+              examples:
+              - not_found
             message:
               type: string
               description: Human-readable message.
-              examples: [agent not found]
+              examples:
+              - agent not found
             request_id:
               type: string
               description: Correlation ID echoed from the X-Request-ID header (or generated per request).
-              examples: ['1b8f0c47e51d2a3c4d5e6f708192a3b4']
-          required: [code, message, request_id]
-      required: [error]
+              examples:
+              - 1b8f0c47e51d2a3c4d5e6f708192a3b4
+          required:
+          - code
+          - message
+          - request_id
+      required:
+      - error
     Organization:
       type: object
       description: Tenant organization (auth.Organization; no json tags — PascalCase keys).
       properties:
         ID:
           type: string
-          examples: [org-1]
+          examples:
+          - org-1
         Name:
           type: string
-          examples: [Acme AI]
-      required: [ID, Name]
+          examples:
+          - Acme AI
+      required:
+      - ID
+      - Name
     User:
       type: object
       description: |
@@ -860,43 +2604,62 @@ components:
       properties:
         ID:
           type: string
-          examples: [user-1]
+          examples:
+          - user-1
         Organization:
           type: string
           description: Organization ID the user belongs to.
-          examples: [org-1]
+          examples:
+          - org-1
         Email:
           type: string
           format: email
-          examples: [owner@acme.dev]
+          examples:
+          - owner@acme.dev
         PasswordHash:
           type: string
           description: bcrypt digest (exposed today by register; scheduled for removal).
-          examples: ['$2a$10$...']
+          examples:
+          - $2a$10$...
         Role:
           type: string
-          enum: [OWNER, ADMIN, MEMBER, VIEWER]
+          enum:
+          - OWNER
+          - ADMIN
+          - MEMBER
+          - VIEWER
         CreatedAt:
           type: string
           format: date-time
-      required: [ID, Organization, Email, Role, CreatedAt]
+      required:
+      - ID
+      - Organization
+      - Email
+      - Role
+      - CreatedAt
     RegisterRequest:
       type: object
       properties:
         organization:
           type: string
           description: New organization name.
-          examples: [Acme AI]
+          examples:
+          - Acme AI
         email:
           type: string
           format: email
-          examples: [owner@acme.dev]
+          examples:
+          - owner@acme.dev
         password:
           type: string
           format: password
           writeOnly: true
-          examples: [s3cret-password]
-      required: [organization, email, password]
+          examples:
+          - s3cret-password
+      required:
+      - organization
+      - email
+      - password
     RegisterResponse:
       type: object
       properties:
@@ -904,28 +2667,36 @@ components:
           $ref: '#/components/schemas/Organization'
         user:
           $ref: '#/components/schemas/User'
-      required: [organization, user]
+      required:
+      - organization
+      - user
     LoginRequest:
       type: object
       properties:
         email:
           type: string
           format: email
-          examples: [owner@acme.dev]
+          examples:
+          - owner@acme.dev
         password:
           type: string
           format: password
           writeOnly: true
-          examples: [s3cret-password]
-      required: [email, password]
+          examples:
+          - s3cret-password
+      required:
+      - email
+      - password
     LoginResponse:
       type: object
       properties:
         token:
           type: string
           description: HMAC-SHA256 JWT-style bearer token (24h expiry).
-          examples: [eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoi...]
-      required: [token]
+          examples:
+          - eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoi...
+      required:
+      - token
     Agent:
       type: object
       description: |
@@ -934,36 +2705,54 @@ components:
       properties:
         ID:
           type: string
-          examples: [agent-1]
+          examples:
+          - agent-1
         OrganizationID:
           type: string
-          examples: [org-1]
+          examples:
+          - org-1
         Name:
           type: string
-          examples: [Support Agent]
+          examples:
+          - Support Agent
         Description:
           type: string
-          examples: [Demo customer support agent]
+          examples:
+          - Demo customer support agent
         Instructions:
           type: string
-          examples: [Answer simple questions]
+          examples:
+          - Answer simple questions
         Model:
           type: string
-          examples: [gpt-4o-mini]
+          examples:
+          - gpt-4o-mini
         Status:
           type: string
           description: Lifecycle status; new agents start as DRAFT.
-          enum: [DRAFT, ACTIVE, DISABLED]
+          enum:
+          - DRAFT
+          - ACTIVE
+          - DISABLED
         CurrentVersionID:
           type: string
-          examples: [version-agent-1-1]
+          examples:
+          - version-agent-1-1
         CreatedAt:
           type: string
           format: date-time
         UpdatedAt:
           type: string
           format: date-time
-      required: [ID, OrganizationID, Name, Instructions, Model, Status, CreatedAt, UpdatedAt]
+      required:
+      - ID
+      - OrganizationID
+      - Name
+      - Instructions
+      - Model
+      - Status
+      - CreatedAt
+      - UpdatedAt
     AgentVersion:
       type: object
       description: |
@@ -973,14 +2762,17 @@ components:
       properties:
         ID:
           type: string
-          examples: [version-agent-1-1]
+          examples:
+          - version-agent-1-1
         AgentID:
           type: string
-          examples: [agent-1]
+          examples:
+          - agent-1
         Version:
           type: integer
           description: Monotonically increasing version number starting at 1.
-          examples: [1]
+          examples:
+          - 1
         Instructions:
           type: string
         Model:
@@ -988,27 +2780,41 @@ components:
         CreatedAt:
           type: string
           format: date-time
-      required: [ID, AgentID, Version, Instructions, Model, CreatedAt]
+      required:
+      - ID
+      - AgentID
+      - Version
+      - Instructions
+      - Model
+      - CreatedAt
     CreateAgentRequest:
       type: object
       properties:
         organization_id:
           type: string
           description: Optional; defaults to the authenticated principal's organization.
-          examples: [org-1]
+          examples:
+          - org-1
         name:
           type: string
-          examples: [Support Agent]
+          examples:
+          - Support Agent
         description:
           type: string
-          examples: [Demo customer support agent]
+          examples:
+          - Demo customer support agent
         instructions:
           type: string
-          examples: [Answer simple questions]
+          examples:
+          - Answer simple questions
         model:
           type: string
-          examples: [gpt-4o-mini]
-      required: [name, instructions, model]
+          examples:
+          - gpt-4o-mini
+      required:
+      - name
+      - instructions
+      - model
     Run:
       type: object
       description: |
@@ -1018,33 +2824,52 @@ components:
         ID:
           type: string
           description: UUID v4.
-          examples: ['3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10']
+          examples:
+          - 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
         OrganizationID:
           type: string
-          examples: [org-1]
+          examples:
+          - org-1
         AgentID:
           type: string
-          examples: [agent-1]
+          examples:
+          - agent-1
         Input:
           type: string
-          examples: ['What is 2+2?']
+          examples:
+          - What is 2+2?
         Output:
           type: string
           description: Final output once the run completes (empty until then).
-          examples: [The result of 2+2 is 4]
+          examples:
+          - The result of 2+2 is 4
         Status:
           type: string
-          enum: [QUEUED, RUNNING, COMPLETED, FAILED]
+          enum:
+          - QUEUED
+          - RUNNING
+          - COMPLETED
+          - FAILED
         CreatedAt:
           type: string
           format: date-time
         UpdatedAt:
           type: string
           format: date-time
-      required: [ID, OrganizationID, AgentID, Status, CreatedAt, UpdatedAt]
+      required:
+      - ID
+      - OrganizationID
+      - AgentID
+      - Status
+      - CreatedAt
+      - UpdatedAt
     RunStatus:
       type: string
-      enum: [QUEUED, RUNNING, COMPLETED, FAILED]
+      enum:
+      - QUEUED
+      - RUNNING
+      - COMPLETED
+      - FAILED
       description: Run lifecycle states (runs.RunStatus).
     CreateRunRequest:
       type: object
@@ -1052,26 +2877,34 @@ components:
         organization_id:
           type: string
           description: Optional; defaults to the authenticated principal's organization.
-          examples: [org-1]
+          examples:
+          - org-1
         agent_id:
           type: string
-          examples: [agent-1]
+          examples:
+          - agent-1
         input:
           type: string
           description: Prompt/task input handed to the agent.
-          examples: ['What is 2+2?']
-      required: [agent_id, input]
+          examples:
+          - What is 2+2?
+      required:
+      - agent_id
+      - input
     CreateRunResponse:
       type: object
       properties:
         run_id:
           type: string
           description: 'Created run ID (fallback: queue task ID if the runs service is unavailable).'
-          examples: ['3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10']
+          examples:
+          - 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
         status:
           type: string
           const: queued
-      required: [run_id, status]
+      required:
+      - run_id
+      - status
     ListRunsResponse:
       type: object
       properties:
@@ -1079,7 +2912,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Run'
-      required: [runs]
+      required:
+      - runs
     RunEvent:
       type: object
       description: |
@@ -1091,11 +2925,13 @@ components:
         type:
           type: string
           description: Event category (today always `status`).
-          examples: [status]
+          examples:
+          - status
         name:
           type: string
           description: Event name; the key clients should switch on.
-          examples: [status.changed]
+          examples:
+          - status.changed
         payload:
           type: object
           description: |
@@ -1106,7 +2942,12 @@ components:
           type: string
           format: date-time
           description: RFC3339Nano UTC timestamp of event creation.
-      required: [run_id, type, name, payload, created_at]
+      required:
+      - run_id
+      - type
+      - name
+      - payload
+      - created_at
     RunEventsResponse:
       type: object
       description: JSON history envelope returned when Accept is not text/event-stream.
@@ -1117,20 +2958,27 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RunEvent'
-      required: [run_id, events]
+      required:
+      - run_id
+      - events
     PublishEventRequest:
       type: object
       properties:
         type:
           type: string
-          examples: [status]
+          examples:
+          - status
         name:
           type: string
-          examples: [status.changed]
+          examples:
+          - status.changed
         payload:
           type: object
           additionalProperties: true
-      required: [type, name, payload]
+      required:
+      - type
+      - name
+      - payload
     Task:
       type: object
       description: |
@@ -1139,10 +2987,12 @@ components:
       properties:
         ID:
           type: string
-          examples: ['agent.run-2025-01-01T12:00:00.123456789Z']
+          examples:
+          - agent.run-2025-01-01T12:00:00.123456789Z
         Type:
           type: string
-          examples: [agent.run]
+          examples:
+          - agent.run
         Payload:
           type: object
           additionalProperties: true
@@ -1151,11 +3001,16 @@ components:
             the worker augments it with result and status on completion.
         Status:
           type: string
-          enum: [queued, running, completed, dead_letter]
+          enum:
+          - queued
+          - running
+          - completed
+          - dead_letter
         Attempts:
           type: integer
           description: Attempt count; tasks move to dead_letter after 4 failed attempts.
-          examples: [0]
+          examples:
+          - 0
         CreatedAt:
           type: string
           format: date-time
@@ -1165,7 +3020,15 @@ components:
         LastError:
           type: string
           description: Last processing error message (empty when none).
-      required: [ID, Type, Payload, Status, Attempts, CreatedAt, UpdatedAt, LastError]
+      required:
+      - ID
+      - Type
+      - Payload
+      - Status
+      - Attempts
+      - CreatedAt
+      - UpdatedAt
+      - LastError
     MetricsResponse:
       type: object
       description: |
@@ -1186,8 +3049,12 @@ components:
           description: Latest observed duration (seconds) keyed by metric name/label key.
         queue_length:
           type: integer
-          examples: [3]
-      required: [counts, latency, queue_length]
+          examples:
+          - 3
+      required:
+      - counts
+      - latency
+      - queue_length
     RunStep:
       type: object
       description: |
@@ -1201,10 +3068,16 @@ components:
           type: string
         StepType:
           type: string
-          enum: [model, tool, PENDING]
+          enum:
+          - model
+          - tool
+          - PENDING
         Status:
           type: string
-          enum: [succeeded, failed, PENDING]
+          enum:
+          - succeeded
+          - failed
+          - PENDING
         InputMeta:
           type: object
           additionalProperties: true
@@ -1240,3 +3113,1334 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RunStep'
+    EvalErrorEnvelope:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+    EvalParams:
+      type: object
+      properties:
+        pattern:
+          type: string
+          description: Regular expression for the regex scorer.
+        threshold_ms:
+          type: number
+          format: double
+          description: Inclusive latency ceiling (ms) for latency_under_ms.
+        threshold_cents:
+          type: number
+          format: double
+          description: Inclusive cost ceiling (cents) for cost_under_cents.
+    EvalCase:
+      type: object
+      required:
+      - scorer
+      properties:
+        id:
+          type: string
+          description: Caller-supplied case id (auto-generated UUID when omitted); unique per dataset.
+          example: c1
+        input:
+          type: string
+        expected:
+          type: string
+          description: Expected output (exact/contains) — regex and threshold scorers use params.
+        scorer:
+          type: string
+          enum:
+          - exact
+          - contains
+          - regex
+          - latency_under_ms
+          - cost_under_cents
+        params:
+          $ref: '#/components/schemas/EvalParams'
+    EvalDatasetSummary:
+      type: object
+      required:
+      - id
+      - name
+      - case_count
+      - created_at
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        case_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+    EvalDataset:
+      allOf:
+      - $ref: '#/components/schemas/EvalDatasetSummary'
+      - type: object
+        properties:
+          cases:
+            type: array
+            items:
+              $ref: '#/components/schemas/EvalCase'
+    EvalResult:
+      type: object
+      required:
+      - case_id
+      - output
+      - passed
+      - score
+      - latency_ms
+      - cost_cents
+      - error
+      properties:
+        case_id:
+          type: string
+        output:
+          type: string
+        passed:
+          type: boolean
+        score:
+          type: number
+          format: double
+          example: 1.0
+        latency_ms:
+          type: number
+          format: double
+        cost_cents:
+          type: number
+          format: double
+          description: 0 until the runtime exposes cost.
+        error:
+          type: string
+          description: Empty when the case executed and scored cleanly.
+    EvalSummary:
+      type: object
+      required:
+      - pass_rate
+      - avg_latency_ms
+      - total_cost_cents
+      - by_scorer
+      properties:
+        pass_rate:
+          type: number
+          format: double
+          example: 0.83
+        avg_latency_ms:
+          type: number
+          format: double
+          example: 420
+        total_cost_cents:
+          type: number
+          format: double
+          example: 37
+        by_scorer:
+          type: object
+          additionalProperties:
+            type: object
+            required:
+            - passed
+            - failed
+            properties:
+              passed:
+                type: integer
+              failed:
+                type: integer
+    EvalRunResponse:
+      type: object
+      required:
+      - id
+      - dataset_id
+      - agent_id
+      - status
+      - results
+      - summary
+      properties:
+        id:
+          type: string
+        dataset_id:
+          type: string
+        agent_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - running
+          - completed
+          - failed
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvalResult'
+        summary:
+          $ref: '#/components/schemas/EvalSummary'
+    EvalCaseComparison:
+      type: object
+      required:
+      - case_id
+      - baseline_passed
+      - candidate_passed
+      properties:
+        case_id:
+          type: string
+        baseline_passed:
+          type: boolean
+        candidate_passed:
+          type: boolean
+    EvalComparison:
+      type: object
+      required:
+      - baseline
+      - candidate
+      - regressions
+      - improvements
+      properties:
+        baseline:
+          $ref: '#/components/schemas/EvalSummary'
+        candidate:
+          $ref: '#/components/schemas/EvalSummary'
+        regressions:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvalCaseComparison'
+        improvements:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvalCaseComparison'
+    PolicyConditions:
+      type: object
+      description: |
+        Applicability predicates for a policy. An absent condition does not
+        restrict the policy. See POST /policies/evaluate for the semantics.
+      properties:
+        tool_allowlist:
+          type: array
+          description: Restricts the policy to the listed tool ids/names.
+          items:
+            type: string
+        max_cost_cents:
+          oneOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          description: |
+            When set, the policy applies to requests whose estimated cost
+            exceeds this cap (budget-guard condition).
+        environments:
+          type: array
+          description: Restricts the policy to the listed environments.
+          items:
+            type: string
+            enum:
+            - development
+            - staging
+            - production
+        require_approval:
+          type: boolean
+          description: |
+            Not a match predicate; when the winning policy carries it the
+            decision reason notes that approval is required.
+    Policy:
+      type: object
+      required:
+      - name
+      - effect
+      - resource_type
+      - actions
+      - conditions
+      - priority
+      - enabled
+      - created_at
+      - updated_at
+      properties:
+        id:
+          type: string
+          readOnly: true
+        name:
+          type: string
+        effect:
+          type: string
+          enum:
+          - allow
+          - deny
+        resource_type:
+          type: string
+          enum:
+          - tool
+          - agent
+          - workflow
+          - deployment
+          - '*'
+        actions:
+          type: array
+          description: |
+            Actions this policy governs, e.g. ["runs.execute","tools.call"].
+            An empty list matches every action.
+          items:
+            type: string
+        conditions:
+          $ref: '#/components/schemas/PolicyConditions'
+        priority:
+          type: integer
+          description: Higher wins; ties resolve deny-over-allow.
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC.
+        updated_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC.
+    PolicyResponse:
+      type: object
+      required:
+      - policy
+      properties:
+        policy:
+          $ref: '#/components/schemas/Policy'
+    PolicyListResponse:
+      type: object
+      required:
+      - policies
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+    PolicyEvaluateRequest:
+      type: object
+      required:
+      - action
+      - resource
+      - context
+      properties:
+        subject:
+          type: object
+          description: Informational caller identity.
+          properties:
+            user_id:
+              type: string
+            role:
+              type: string
+            api_key_id:
+              type: string
+        action:
+          type: string
+          description: The governed action, e.g. tools.call or runs.execute.
+        resource:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+              - tool
+              - agent
+              - workflow
+              - deployment
+              - '*'
+            id:
+              type: string
+            tenant_id:
+              type: string
+              description: Informational; the actual scope comes from auth.
+        context:
+          type: object
+          properties:
+            estimated_cost_cents:
+              type: integer
+              description: Estimated cost used by the max_cost_cents condition.
+            environment:
+              type: string
+              description: Target environment used by the environments condition.
+            tool:
+              type: string
+              description: Overrides resource.id for tool_allowlist matching.
+    PolicyEvaluateResponse:
+      type: object
+      required:
+      - decision
+      - matched_policy_id
+      - reason
+      properties:
+        decision:
+          type: string
+          enum:
+          - allow
+          - deny
+        matched_policy_id:
+          type: string
+          description: Empty when no policy matched (default allow).
+        reason:
+          type: string
+    Webhook:
+      type: object
+      required:
+      - id
+      - url
+      - events
+      - status
+      - secret_set
+      - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+          description: Absolute http(s) delivery URL.
+        events:
+          type: array
+          items:
+            type: string
+          description: |
+            Subscribed event types (e.g. "run.failed"). An empty array means
+            ALL event types.
+        status:
+          type: string
+          enum:
+          - active
+          - disabled
+        secret_set:
+          type: boolean
+          description: True when the record carries a signing-secret hash.
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC.
+    WebhookList:
+      type: object
+      required:
+      - webhooks
+      properties:
+        webhooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Webhook'
+    CreateWebhookRequest:
+      type: object
+      required:
+      - url
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Absolute http(s) URL that will receive deliveries.
+        events:
+          type: array
+          items:
+            type: string
+          description: Event types to subscribe to; empty/omitted = all.
+    CreateWebhookResponse:
+      type: object
+      required:
+      - webhook
+      - secret
+      properties:
+        webhook:
+          $ref: '#/components/schemas/Webhook'
+        secret:
+          type: string
+          description: |
+            The HMAC signing secret — returned EXACTLY ONCE in this response.
+            Store it safely; only its SHA-256 hash is persisted server-side.
+    WebhookDelivery:
+      type: object
+      required:
+      - id
+      - event_type
+      - status
+      - attempts
+      - last_status_code
+      - latency_ms
+      - error
+      - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          description: Event type that triggered the delivery (e.g. "run.failed").
+        status:
+          type: string
+          enum:
+          - delivered
+          - failed
+          - retrying
+          description: Outcome of the LATEST attempt.
+        attempts:
+          type: integer
+          description: Attempt count so far (max 3 under the default policy).
+        last_status_code:
+          type: integer
+          description: HTTP status of the latest attempt (0 = no response).
+        latency_ms:
+          type: integer
+          format: int64
+          description: Duration of the latest attempt in milliseconds.
+        error:
+          type: string
+          description: Latest attempt error (transport error or empty on success).
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC; set on the first attempt.
+    WebhookDeliveryList:
+      type: object
+      required:
+      - deliveries
+      properties:
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookDelivery'
+    WebhookDeleteResponse:
+      type: object
+      required:
+      - deleted
+      properties:
+        deleted:
+          type: boolean
+          enum:
+          - true
+    WebhookError:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              enum:
+              - INVALID_REQUEST
+              - VALIDATION_ERROR
+              - WEBHOOK_NOT_FOUND
+              - METHOD_NOT_ALLOWED
+              - INTERNAL
+            message:
+              type: string
+    WfErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (VALIDATION_ERROR, WORKFLOW_NOT_FOUND, WORKFLOW_RUN_NOT_FOUND,
+                APPROVAL_NOT_FOUND, RUN_NOT_FOUND, INVALID_DECISION, ALREADY_DECIDED, INVALID_STATE, ENGINE_NOT_WIRED,
+                INVALID_REQUEST, INTERNAL_ERROR, UNAUTHORIZED).
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    WorkflowStatus:
+      type: string
+      enum:
+      - draft
+      - published
+      - archived
+    DSLNodeType:
+      type: string
+      description: Node type; agent/tool require config, approval gates, the rest are structural.
+      enum:
+      - agent
+      - tool
+      - condition
+      - parallel
+      - approval
+      - delay
+      - webhook
+      - end
+    DSLEdgeCondition:
+      type: string
+      enum:
+      - on_success
+      - on_failure
+      - always
+    DSLNode:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique node id within the workflow.
+        type:
+          $ref: '#/components/schemas/DSLNodeType'
+        name:
+          type: string
+          description: Human-readable display name.
+        config:
+          type: object
+          description: |
+            Per-type config. Required keys: agent → agent_id; tool → tool_id;
+            condition → expression; delay → seconds (> 0); webhook → url.
+            Optional: input ({{input}} placeholder is replaced with the
+            workflow input), approval → action/reason/risk.
+          additionalProperties: true
+      required:
+      - id
+      - type
+    DSLEdge:
+      type: object
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        condition:
+          $ref: '#/components/schemas/DSLEdgeCondition'
+      required:
+      - from
+      - to
+    WorkflowDSL:
+      type: object
+      description: The workflow DAG stored as JSONB. Must be acyclic.
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/DSLNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/DSLEdge'
+      required:
+      - nodes
+      - edges
+    WorkflowSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: '#/components/schemas/WorkflowStatus'
+        current_version:
+          type: integer
+          description: 0 while the workflow has never been published.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - name
+      - status
+      - current_version
+      - created_at
+      - updated_at
+    WorkflowVersion:
+      type: object
+      description: One immutable published snapshot of the DSL.
+      properties:
+        version:
+          type: integer
+        status:
+          type: string
+          enum:
+          - published
+        created_at:
+          type: string
+          format: date-time
+        dsl_snapshot:
+          $ref: '#/components/schemas/WorkflowDSL'
+      required:
+      - version
+      - status
+      - created_at
+      - dsl_snapshot
+    WorkflowDetail:
+      type: object
+      description: Workflow with its current DSL (create response shape).
+      allOf:
+      - $ref: '#/components/schemas/WorkflowSummary'
+      - type: object
+        properties:
+          dsl:
+            $ref: '#/components/schemas/WorkflowDSL'
+        required:
+        - dsl
+    WorkflowListResponse:
+      type: object
+      properties:
+        workflows:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowSummary'
+      required:
+      - workflows
+    WorkflowDetailResponse:
+      type: object
+      properties:
+        workflow:
+          $ref: '#/components/schemas/WorkflowDetail'
+      required:
+      - workflow
+    WorkflowDetailWithVersionsResponse:
+      type: object
+      properties:
+        workflow:
+          type: object
+          allOf:
+          - $ref: '#/components/schemas/WorkflowDetail'
+          - type: object
+            properties:
+              versions:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorkflowVersion'
+      required:
+      - workflow
+    CreateWorkflowRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        dsl:
+          $ref: '#/components/schemas/WorkflowDSL'
+      required:
+      - name
+      - dsl
+    ExecuteWorkflowRequest:
+      type: object
+      properties:
+        input:
+          type: string
+          description: Workflow input; replaces {{input}} placeholders in node configs.
+      required:
+      - input
+    ValidationErrorItem:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        node_id:
+          type: string
+          description: Node the error refers to (when applicable).
+      required:
+      - code
+      - message
+    WorkflowValidationErrors:
+      type: object
+      properties:
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationErrorItem'
+      required:
+      - errors
+    ExecutionResult:
+      type: object
+      properties:
+        workflow_run_id:
+          type: string
+        run_ids:
+          type: array
+          description: One id per agent/tool node run, in topological order.
+          items:
+            type: string
+        status:
+          type: string
+          description: pending, or waiting_approval when the DAG contains an approval gate.
+          enum:
+          - pending
+          - waiting_approval
+      required:
+      - workflow_run_id
+      - run_ids
+      - status
+    WorkflowRunStatus:
+      type: string
+      enum:
+      - pending
+      - running
+      - waiting_approval
+      - completed
+      - failed
+      - cancelled
+    NodeRunStatus:
+      type: string
+      enum:
+      - pending
+      - running
+      - waiting_approval
+      - completed
+      - failed
+      - cancelled
+    NodeRun:
+      type: object
+      description: One node → agent-run mapping created by the DAG expansion.
+      properties:
+        id:
+          type: string
+        workflow_run_id:
+          type: string
+        node_id:
+          type: string
+        run_id:
+          type: string
+          description: The linked agent run (empty for structural nodes / bare tool tasks).
+        status:
+          $ref: '#/components/schemas/NodeRunStatus'
+        error:
+          type: string
+        started_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        finished_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - workflow_run_id
+      - node_id
+      - status
+      - created_at
+    WorkflowRun:
+      type: object
+      properties:
+        id:
+          type: string
+        workflow_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/WorkflowRunStatus'
+        node_runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeRun'
+      required:
+      - id
+      - workflow_id
+      - status
+      - node_runs
+    WorkflowRunResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        workflow_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/WorkflowRunStatus'
+        node_runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeRun'
+      required:
+      - id
+      - workflow_id
+      - status
+      - node_runs
+    ApprovalStatus:
+      type: string
+      enum:
+      - pending
+      - approved
+      - rejected
+      - cancelled
+    ApprovalRisk:
+      type: string
+      enum:
+      - low
+      - medium
+      - high
+    Approval:
+      type: object
+      properties:
+        id:
+          type: string
+        organization_id:
+          type: string
+        run_id:
+          type: string
+          description: Linked agent run; approving resumes it when paused.
+        workflow_run_id:
+          type: string
+        resource:
+          type: string
+        action:
+          type: string
+        reason:
+          type: string
+        risk:
+          $ref: '#/components/schemas/ApprovalRisk'
+        status:
+          $ref: '#/components/schemas/ApprovalStatus'
+        requester:
+          type: string
+        approver:
+          type: string
+        decision_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        decided_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+      required:
+      - id
+      - status
+      - created_at
+    ApprovalListResponse:
+      type: object
+      properties:
+        approvals:
+          type: array
+          items:
+            $ref: '#/components/schemas/Approval'
+      required:
+      - approvals
+    DecideApprovalRequest:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum:
+          - approved
+          - rejected
+        reason:
+          type: string
+      required:
+      - decision
+    RunControlResponse:
+      type: object
+      description: |
+        The updated runs.Run (legacy PascalCase serialization, no json tags):
+        ID, OrganizationID, AgentID, Input, Output, Status, CreatedAt,
+        UpdatedAt. Status uses the new lowercase vocabulary.
+      properties:
+        ID:
+          type: string
+        OrganizationID:
+          type: string
+        AgentID:
+          type: string
+        Input:
+          type: string
+        Output:
+          type: string
+        Status:
+          type: string
+          enum:
+          - pending
+          - running
+          - paused
+          - waiting_approval
+          - completed
+          - failed
+          - cancelled
+          - timeout
+        CreatedAt:
+          type: string
+          format: date-time
+        UpdatedAt:
+          type: string
+          format: date-time
+      required:
+      - ID
+      - Status
+    Schedule:
+      type: object
+      description: One tenant-scoped trigger definition.
+      required:
+      - id
+      - agent_id
+      - kind
+      - status
+      - timezone
+      - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          description: Agent that runs on every firing.
+        input:
+          type: string
+          description: Input payload passed to the created run.
+        kind:
+          type: string
+          enum:
+          - once
+          - recurring
+          - cron
+        run_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: Absolute fire time (kind=once only; RFC3339 UTC).
+        interval_seconds:
+          type: integer
+          description: Recurrence interval (kind=recurring, >= 60; 0 otherwise).
+        cron_expr:
+          type: string
+          description: 5-field cron expression (kind=cron; empty otherwise).
+        timezone:
+          type: string
+          description: IANA timezone the cron expression is evaluated in (default UTC).
+        status:
+          type: string
+          enum:
+          - active
+          - paused
+          - completed
+          description: completed is the terminal state of a fired once schedule.
+        next_run_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: Next pending fire instant (null when none pending).
+        last_run_id:
+          type: string
+          description: Run created by the most recent firing (empty before first fire).
+        last_fired_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: Catch-up bookkeeping instant of the last claimed firing.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ScheduleCreateRequest:
+      type: object
+      required:
+      - agent_id
+      - kind
+      properties:
+        agent_id:
+          type: string
+        input:
+          type: string
+          default: ''
+        kind:
+          type: string
+          enum:
+          - once
+          - recurring
+          - cron
+        run_at:
+          type: string
+          format: date-time
+          description: Required for kind=once (RFC3339).
+        interval_seconds:
+          type: integer
+          minimum: 60
+          description: Required for kind=recurring.
+        cron_expr:
+          type: string
+          description: Required for kind=cron (5 fields).
+        timezone:
+          type: string
+          description: IANA name; required for kind=cron, defaults to UTC.
+    ListSchedulesResponse:
+      type: object
+      required:
+      - schedules
+      properties:
+        schedules:
+          type: array
+          items:
+            $ref: '#/components/schemas/Schedule'
+    ScheduleResponse:
+      type: object
+      required:
+      - schedule
+      properties:
+        schedule:
+          $ref: '#/components/schemas/Schedule'
+    DeleteScheduleResponse:
+      type: object
+      required:
+      - deleted
+      properties:
+        deleted:
+          type: boolean
+    AgentSnapshot:
+      type: object
+      description: Full agent configuration captured at snapshot time (immutable once published).
+      properties:
+        name:
+          type: string
+          examples:
+          - Support Agent
+        description:
+          type: string
+        instructions:
+          type: string
+          examples:
+          - help users v1
+        model:
+          type: string
+          examples:
+          - gpt-4o-mini
+        status:
+          type: string
+      required:
+      - name
+      - description
+      - instructions
+      - model
+      - status
+    AgentVersionsResponse:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConfigVersion'
+      required:
+      - versions
+    VersionNumberResponse:
+      type: object
+      description: 'Create/publish result {"version": 3} per the wave-2 contract.'
+      properties:
+        version:
+          type: integer
+      required:
+      - version
+    CurrentVersionResponse:
+      type: object
+      description: 'Agent rollback result {"current_version": 2} per the contract.'
+      properties:
+        current_version:
+          type: integer
+      required:
+      - current_version
+    RollbackAgentRequest:
+      type: object
+      properties:
+        target_version:
+          type: integer
+          minimum: 1
+          description: Version to re-point the agent to (must exist).
+          examples:
+          - 2
+      required:
+      - target_version
+    DeploymentHealth:
+      type: object
+      description: Health payload; superseded_by/error appear only on demoted/failed rows.
+      properties:
+        error_rate:
+          type: number
+          format: double
+          examples:
+          - 0.0
+        last_check_at:
+          type: string
+          format: date-time
+          nullable: true
+          examples:
+          - '2025-01-02T03:04:05Z'
+        superseded_by:
+          type: string
+          description: ID of the deployment that replaced this (previously healthy) row.
+        error:
+          type: string
+          description: Failure reason when status is failed.
+    Deployment:
+      type: object
+      description: One lifecycle row for (agent, version, environment).
+      properties:
+        id:
+          type: string
+          examples:
+          - 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+        agent_id:
+          type: string
+          examples:
+          - agent-1
+        version:
+          type: integer
+          examples:
+          - 2
+        environment:
+          type: string
+          enum:
+          - development
+          - staging
+          - production
+        status:
+          type: string
+          enum:
+          - requested
+          - validated
+          - deploying
+          - healthy
+          - failed
+        health:
+          $ref: '#/components/schemas/DeploymentHealth'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - agent_id
+      - version
+      - environment
+      - status
+      - health
+      - created_at
+      - updated_at
+    DeploymentsResponse:
+      type: object
+      properties:
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Deployment'
+      required:
+      - deployments
+    DeploymentResponse:
+      type: object
+      properties:
+        deployment:
+          $ref: '#/components/schemas/Deployment'
+      required:
+      - deployment
+    CreateDeploymentRequest:
+      type: object
+      properties:
+        agent_id:
+          type: string
+          examples:
+          - agent-1
+        version:
+          type: integer
+          minimum: 1
+          description: Must reference an existing PUBLISHED agent version.
+          examples:
+          - 2
+        environment:
+          type: string
+          enum:
+          - development
+          - staging
+          - production
+      required:
+      - agent_id
+      - version
+      - environment
+    RollbackDeploymentResponse:
+      type: object
+      properties:
+        deployment:
+          $ref: '#/components/schemas/Deployment'
+        rolled_back_to_version:
+          type: integer
+          description: The version the environment serves after the rollback.
+          examples:
+          - 2
+      required:
+      - deployment
+      - rolled_back_to_version
+    ErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of AGENT_NOT_FOUND, VERSION_NOT_FOUND, VERSION_ARCHIVED, DEPLOYMENT_NOT_FOUND,
+                INVALID_STATE, NO_PREVIOUS_HEALTHY, VERSION_NOT_PUBLISHED, VALIDATION_ERROR, INVALID_REQUEST,
+                INTERNAL_ERROR.
+              examples:
+              - VERSION_NOT_PUBLISHED
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    AgentConfigVersion:
+      type: object
+      description: One immutable config version (wave-2 contract shape).
+      properties:
+        version:
+          type: integer
+          description: Version number (agent creation seeds legacy v1).
+          examples:
+          - 2
+        snapshot:
+          description: The frozen agent configuration document (embedded JSON object).
+          $ref: '#/components/schemas/AgentSnapshot'
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: RFC3339 UTC publication timestamp (null while draft).
+          examples:
+          - '2025-01-02T03:04:05Z'
+        published_by:
+          type: string
+          description: User ID that published the version.
+        status:
+          type: string
+          enum:
+          - draft
+          - published
+          - archived
+      required:
+      - version
+      - snapshot
+      - published_at
+      - published_by
+      - status

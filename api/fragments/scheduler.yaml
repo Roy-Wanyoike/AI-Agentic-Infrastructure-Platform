@@ -1,31 +1,14 @@
-# AgentOS API — OpenAPI 3.1 FRAGMENT for Track 2-f (Scheduler).
-#
-# This file is NOT part of the live spec by itself: the orchestrator merges
-# `paths:` and `schemas:` below into api/openapi.yaml (which owns the shared
-# components: securitySchemes bearerToken/apiKey and responses
-# Unauthorized/Forbidden/NotFound referenced here).
-#
-# Implementation notes:
-#   * All timestamps are RFC3339 UTC strings; unset optional timestamps
-#     (run_at on recurring/cron, next_run_at on completed schedules,
-#     last_fired_at before the first firing) serialize as null.
-#   * `last_fired_at` and `updated_at` are additive fields beyond the minimal
-#     contract shape (worker catch-up bookkeeping / audit).
-#   * Validation failures return 422 {"error":{"code":"VALIDATION_ERROR",...}};
-#     state conflicts (pause on paused, resume on active, transitions on
-#     completed schedules) return 409.
-#   * Tenant scope: organization_id is taken from the auth claims, never from
-#     the request body.
 paths:
   /schedules:
     get:
       operationId: listSchedules
       summary: List schedules of the caller's organization (oldest first)
       description: Requires `schedules.read`. Unpaginated.
-      tags: [Schedules]
+      tags:
+      - Schedules
       security:
-        - bearerToken: []
-        - apiKey: []
+      - bearerToken: []
+      - apiKey: []
       responses:
         '200':
           description: Schedules for the caller's tenant (possibly empty).
@@ -44,25 +27,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
       x-required-permission: schedules.read
-
   /schedules/create:
     post:
       operationId: createSchedule
       summary: Create a schedule (kind once | recurring | cron)
-      description: |
-        Requires `schedules.write`. Validation rules:
-          * `kind=once` requires `run_at` (RFC3339).
-          * `kind=recurring` requires `interval_seconds >= 60`.
-          * `kind=cron` requires a valid 5-field `cron_expr`
-            (minute hour day-of-month month day-of-week; supports
-            `*`, numbers, ranges `a-b`, lists `a,b,c`, steps `*/n`)
-            and an IANA `timezone` (e.g. `UTC`, `Europe/Berlin`).
-        `next_run_at` is computed server-side; timezone defaults to `UTC` for
-        once/recurring when omitted.
-      tags: [Schedules]
+      description: "Requires `schedules.write`. Validation rules:\n  * `kind=once` requires `run_at` (RFC3339).\n\
+        \  * `kind=recurring` requires `interval_seconds >= 60`.\n  * `kind=cron` requires a valid 5-field\
+        \ `cron_expr`\n    (minute hour day-of-month month day-of-week; supports\n    `*`, numbers, ranges\
+        \ `a-b`, lists `a,b,c`, steps `*/n`)\n    and an IANA `timezone` (e.g. `UTC`, `Europe/Berlin`).\n\
+        `next_run_at` is computed server-side; timezone defaults to `UTC` for\nonce/recurring when omitted.\n"
+      tags:
+      - Schedules
       security:
-        - bearerToken: []
-        - apiKey: []
+      - bearerToken: []
+      - apiKey: []
       requestBody:
         required: true
         content:
@@ -73,7 +51,7 @@ paths:
               agent_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
               input: daily digest
               kind: cron
-              cron_expr: '30 9 * * 1-5'
+              cron_expr: 30 9 * * 1-5
               timezone: Europe/Berlin
       responses:
         '201':
@@ -107,23 +85,23 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
       x-required-permission: schedules.write
-
   /schedules/{id}:
     get:
       operationId: getSchedule
       summary: Get one schedule
       description: Requires `schedules.read`. Foreign-tenant ids surface as 404.
-      tags: [Schedules]
+      tags:
+      - Schedules
       security:
-        - bearerToken: []
-        - apiKey: []
+      - bearerToken: []
+      - apiKey: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: Schedule identifier (UUID).
-          schema:
-            type: string
+      - name: id
+        in: path
+        required: true
+        description: Schedule identifier (UUID).
+        schema:
+          type: string
       responses:
         '200':
           description: The schedule.
@@ -149,19 +127,22 @@ paths:
     delete:
       operationId: deleteSchedule
       summary: Delete a schedule
-      description: |
-        Requires `schedules.write`. Deleting an unknown or foreign id returns
+      description: 'Requires `schedules.write`. Deleting an unknown or foreign id returns
+
         404. The worker stops firing deleted schedules on its next poll.
-      tags: [Schedules]
+
+        '
+      tags:
+      - Schedules
       security:
-        - bearerToken: []
-        - apiKey: []
+      - bearerToken: []
+      - apiKey: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
       responses:
         '200':
           description: Deleted.
@@ -184,25 +165,28 @@ paths:
                   code: SCHEDULE_NOT_FOUND
                   message: schedule not found
       x-required-permission: schedules.write
-
   /schedules/{id}/pause:
     post:
       operationId: pauseSchedule
       summary: Pause a schedule (active -> paused)
-      description: |
-        Requires `schedules.write`. Paused schedules never fire; `next_run_at`
+      description: 'Requires `schedules.write`. Paused schedules never fire; `next_run_at`
+
         is preserved so resume continues the cadence (an overdue schedule
+
         fires once on the next worker poll).
-      tags: [Schedules]
+
+        '
+      tags:
+      - Schedules
       security:
-        - bearerToken: []
-        - apiKey: []
+      - bearerToken: []
+      - apiKey: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
       responses:
         '200':
           description: Paused (returns the updated schedule).
@@ -235,22 +219,22 @@ paths:
                   code: SCHEDULE_NOT_FOUND
                   message: schedule not found
       x-required-permission: schedules.write
-
   /schedules/{id}/resume:
     post:
       operationId: resumeSchedule
       summary: Resume a paused schedule (paused -> active)
       description: Requires `schedules.write`.
-      tags: [Schedules]
+      tags:
+      - Schedules
       security:
-        - bearerToken: []
-        - apiKey: []
+      - bearerToken: []
+      - apiKey: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
       responses:
         '200':
           description: Resumed (returns the updated schedule).
@@ -283,19 +267,18 @@ paths:
                   code: SCHEDULE_NOT_FOUND
                   message: schedule not found
       x-required-permission: schedules.write
-
 components:
   schemas:
     Schedule:
       type: object
       description: One tenant-scoped trigger definition.
       required:
-        - id
-        - agent_id
-        - kind
-        - status
-        - timezone
-        - created_at
+      - id
+      - agent_id
+      - kind
+      - status
+      - timezone
+      - created_at
       properties:
         id:
           type: string
@@ -308,9 +291,14 @@ components:
           description: Input payload passed to the created run.
         kind:
           type: string
-          enum: [once, recurring, cron]
+          enum:
+          - once
+          - recurring
+          - cron
         run_at:
-          type: [string, 'null']
+          type:
+          - string
+          - 'null'
           format: date-time
           description: Absolute fire time (kind=once only; RFC3339 UTC).
         interval_seconds:
@@ -324,17 +312,24 @@ components:
           description: IANA timezone the cron expression is evaluated in (default UTC).
         status:
           type: string
-          enum: [active, paused, completed]
+          enum:
+          - active
+          - paused
+          - completed
           description: completed is the terminal state of a fired once schedule.
         next_run_at:
-          type: [string, 'null']
+          type:
+          - string
+          - 'null'
           format: date-time
           description: Next pending fire instant (null when none pending).
         last_run_id:
           type: string
           description: Run created by the most recent firing (empty before first fire).
         last_fired_at:
-          type: [string, 'null']
+          type:
+          - string
+          - 'null'
           format: date-time
           description: Catch-up bookkeeping instant of the last claimed firing.
         created_at:
@@ -343,10 +338,11 @@ components:
         updated_at:
           type: string
           format: date-time
-
     ScheduleCreateRequest:
       type: object
-      required: [agent_id, kind]
+      required:
+      - agent_id
+      - kind
       properties:
         agent_id:
           type: string
@@ -355,7 +351,10 @@ components:
           default: ''
         kind:
           type: string
-          enum: [once, recurring, cron]
+          enum:
+          - once
+          - recurring
+          - cron
         run_at:
           type: string
           format: date-time
@@ -370,41 +369,26 @@ components:
         timezone:
           type: string
           description: IANA name; required for kind=cron, defaults to UTC.
-
     ListSchedulesResponse:
       type: object
-      required: [schedules]
+      required:
+      - schedules
       properties:
         schedules:
           type: array
           items:
             $ref: '#/components/schemas/Schedule'
-
     ScheduleResponse:
       type: object
-      required: [schedule]
+      required:
+      - schedule
       properties:
         schedule:
           $ref: '#/components/schemas/Schedule'
-
     DeleteScheduleResponse:
       type: object
-      required: [deleted]
+      required:
+      - deleted
       properties:
         deleted:
           type: boolean
-
-    Error:
-      type: object
-      description: Wave-2 JSON error model (see api/openapi.yaml Error schema).
-      required: [error]
-      properties:
-        error:
-          type: object
-          required: [code, message]
-          properties:
-            code:
-              type: string
-              description: Machine-readable code (VALIDATION_ERROR, SCHEDULE_NOT_FOUND, INVALID_STATE, SCHEDULE_COMPLETED, INVALID_REQUEST, INTERNAL_ERROR).
-            message:
-              type: string
