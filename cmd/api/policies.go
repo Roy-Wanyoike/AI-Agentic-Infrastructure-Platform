@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -16,12 +17,12 @@ import (
 //
 // Routes (mounted on apiMux, served under both /v1 and /api/v1):
 //
-//	GET    /policies            -> {"policies":[...]}           (policies.read)
-//	POST   /policies/create     -> {"policy":{...}}             (policies.write)
-//	GET    /policies/{id}       -> {"policy":{...}}             (policies.read)
-//	PUT    /policies/{id}       -> {"policy":{...}}             (policies.write)
-//	DELETE /policies/{id}       -> {"deleted":true}             (policies.write)
-//	POST   /policies/evaluate   -> {"decision","matched_policy_id","reason"} (policies.read)
+//      GET    /policies            -> {"policies":[...]}           (policies.read)
+//      POST   /policies/create     -> {"policy":{...}}             (policies.write)
+//      GET    /policies/{id}       -> {"policy":{...}}             (policies.read)
+//      PUT    /policies/{id}       -> {"policy":{...}}             (policies.write)
+//      DELETE /policies/{id}       -> {"deleted":true}             (policies.write)
+//      POST   /policies/evaluate   -> {"decision","matched_policy_id","reason"} (policies.read)
 //
 // Errors use the structured envelope {"error":{"code","message"}}. Tenant
 // scope always comes from the authenticated claims, never from the body.
@@ -46,6 +47,19 @@ func registerPoliciesRoutes(apiMux *http.ServeMux, polSvc *policies.Service, aut
 	apiMux.Handle("GET /policies/{id}", readWrap(http.HandlerFunc(policyDetailHandler(polSvc))))
 	apiMux.Handle("PUT /policies/{id}", writeWrap(http.HandlerFunc(policyDetailHandler(polSvc))))
 	apiMux.Handle("DELETE /policies/{id}", writeWrap(http.HandlerFunc(policyDetailHandler(polSvc))))
+}
+
+// newPoliciesService builds the policy service for the app following the
+// dual-mode convention: Postgres-backed when db is available, in-memory
+// otherwise. The orchestrator wires it in routes() without touching the app
+// struct:
+//
+//	registerPoliciesRoutes(apiMux, newPoliciesService(a.db), a.authSvc, a.apiKeysSvc)
+func newPoliciesService(db *sql.DB) *policies.Service {
+	if db != nil {
+		return policies.NewServiceWithStore(policies.NewPostgresStore(db))
+	}
+	return policies.NewService()
 }
 
 // writeJSONPol emits a JSON response (distinct name to avoid clashing with

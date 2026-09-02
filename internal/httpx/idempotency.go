@@ -240,18 +240,18 @@ func (s *InMemoryIdempotencyStore) Put(_ context.Context, record *IdempotencyRec
 // SQL for the idempotency_keys table created by migrations/008_policies.sql.
 const (
 	sqlGetIdempotency = `SELECT key, organization_id, scope, status_code, content_type, response_body, created_at, expires_at
-		FROM idempotency_keys
-		WHERE organization_id = $1 AND key = $2 AND scope = $3 AND expires_at > NOW()`
+                FROM idempotency_keys
+                WHERE organization_id = $1 AND key = $2 AND scope = $3 AND expires_at > NOW()`
 
 	sqlPutIdempotency = `INSERT INTO idempotency_keys
-		(key, organization_id, scope, status_code, content_type, response_body, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (organization_id, key, scope) DO UPDATE SET
-			status_code = EXCLUDED.status_code,
-			content_type = EXCLUDED.content_type,
-			response_body = EXCLUDED.response_body,
-			created_at = EXCLUDED.created_at,
-			expires_at = EXCLUDED.expires_at`
+                (key, organization_id, scope, status_code, content_type, response_body, created_at, expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (organization_id, key, scope) DO UPDATE SET
+                        status_code = EXCLUDED.status_code,
+                        content_type = EXCLUDED.content_type,
+                        response_body = EXCLUDED.response_body,
+                        created_at = EXCLUDED.created_at,
+                        expires_at = EXCLUDED.expires_at`
 )
 
 // PostgresIdempotencyStore is the durable IdempotencyStore backed by the
@@ -300,6 +300,15 @@ func (s *PostgresIdempotencyStore) Put(ctx context.Context, record *IdempotencyR
 		record.Key, record.OrganizationID, record.Scope, record.StatusCode,
 		record.ContentType, string(record.Body), record.CreatedAt, record.ExpiresAt)
 	return err
+}
+
+// NewIdempotencyStoreFromDB follows the dual-mode convention: the durable
+// Postgres store when db is available, the in-memory store otherwise.
+func NewIdempotencyStoreFromDB(db *sql.DB) IdempotencyStore {
+	if db == nil {
+		return NewInMemoryIdempotencyStore()
+	}
+	return NewPostgresIdempotencyStore(db)
 }
 
 // NewIdempotencyKey is a convenience helper for handlers that mint keys.

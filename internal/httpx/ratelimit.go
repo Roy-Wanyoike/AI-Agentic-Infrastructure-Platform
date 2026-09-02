@@ -109,6 +109,24 @@ func RateLimitFromEnv() (limit int, window time.Duration) {
 	return limit, time.Minute
 }
 
+// RedisClientFromEnv returns a Redis client for the rate limiter from
+// REDIS_ADDR (host:port) or REDIS_URL (redis:// URL), or nil when neither is
+// set (zero-infrastructure mode). The middleware treats nil as "use the
+// in-memory fallback".
+func RedisClientFromEnv() *redis.Client {
+	if addr := strings.TrimSpace(os.Getenv("REDIS_ADDR")); addr != "" {
+		return redis.NewClient(&redis.Options{Addr: addr})
+	}
+	if rawURL := strings.TrimSpace(os.Getenv("REDIS_URL")); rawURL != "" {
+		opts, err := redis.ParseURL(rawURL)
+		if err == nil {
+			return redis.NewClient(opts)
+		}
+		slog.Warn("invalid REDIS_URL; rate limiter will use the in-memory fallback", "error", err.Error())
+	}
+	return nil
+}
+
 // rateLimitScript is an atomic sliding-window rate limiter. It trims entries
 // older than the window, rejects when the bucket is full (returning the
 // remaining backoff in milliseconds) and otherwise records the request.
