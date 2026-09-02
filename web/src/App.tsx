@@ -45,7 +45,8 @@ import {
 import { RunTimeline } from './views/runTimeline'
 import { WorkflowsView } from './views/workflows'
 import { ApprovalsView } from './views/approvals'
-import { canDecide } from './lib/rbac'
+import { EvaluationsView } from './views/evaluations'
+import { canDecide, canWrite } from './lib/rbac'
 
 const COMMON_MODELS = ['gpt-4o-mini', 'gpt-4o', 'claude-3-7-sonnet', 'llama-3.1-70b']
 
@@ -1172,19 +1173,6 @@ function RunDetailView({
 // Demo views (no live endpoints yet) — content kept, honestly badged
 // ---------------------------------------------------------------------------
 
-// Temporary honest stub — replaced by views/evaluations.tsx in the next commit.
-function EvaluationsView() {
-  return (
-    <>
-      <PageHeader eyebrow="Quality" title="Evaluations" />
-      <EmptyState
-        title="Evaluations are being wired up"
-        hint="Datasets, eval runs and comparisons will consume /eval-datasets and /eval-runs."
-      />
-    </>
-  )
-}
-
 const toolCards = [
   { name: 'Slack notifier', category: 'Communication', status: 'Healthy', latency: '180ms', permissions: 'write:messages' },
   { name: 'Postgres query', category: 'Data access', status: 'Running', latency: '590ms', permissions: 'read:analytics' },
@@ -1494,7 +1482,7 @@ export default function App() {
       case 'Approvals':
         return <ApprovalsView canDecide={canDecide(auth.user?.role)} />
       case 'Evaluations':
-        return <EvaluationsView />
+        return <EvaluationsView canWrite={canWrite(auth.user?.role)} />
       case 'Tools':
         return <ToolsView />
       case 'Knowledge':

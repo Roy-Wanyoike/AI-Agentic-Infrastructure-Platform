@@ -28,6 +28,15 @@ import {
 } from './api/workflows'
 import type { CreateWorkflowInput } from './api/workflows'
 import { decideApproval, listApprovals, type ApprovalDecision } from './api/approvals'
+import {
+  compareEvalRuns,
+  createEvalDataset,
+  getEvalDataset,
+  getEvalRun,
+  listEvalDatasets,
+  runEvalDataset,
+} from './api/evaluations'
+import type { CreateEvalDatasetInput } from './api/evaluations'
 
 export function useAgents() {
   return useQuery({ queryKey: ['agents'], queryFn: listAgents })
@@ -284,5 +293,58 @@ export function useDecideApproval() {
       void queryClient.invalidateQueries({ queryKey: ['runs'] })
       void queryClient.invalidateQueries({ queryKey: ['workflowRuns'] })
     },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Evaluations (track 2-d contract)
+// ---------------------------------------------------------------------------
+
+export function useEvalDatasets() {
+  return useQuery({ queryKey: ['evalDatasets'], queryFn: listEvalDatasets })
+}
+
+export function useEvalDataset(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['evalDatasets', id],
+    queryFn: () => getEvalDataset(id as string),
+    enabled: Boolean(id),
+  })
+}
+
+export function useCreateEvalDataset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateEvalDatasetInput) => createEvalDataset(input),
+    onSuccess: (dataset) => {
+      void queryClient.invalidateQueries({ queryKey: ['evalDatasets'] })
+      if (dataset.id) queryClient.setQueryData(['evalDatasets', dataset.id], dataset)
+    },
+  })
+}
+
+export function useRunEvalDataset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ datasetId, agentId }: { datasetId: string; agentId: string }) => runEvalDataset(datasetId, agentId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['evalDatasets'] })
+      void queryClient.invalidateQueries({ queryKey: ['runs'] })
+    },
+  })
+}
+
+export function useEvalRun(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['evalRuns', id],
+    queryFn: () => getEvalRun(id as string),
+    enabled: Boolean(id),
+  })
+}
+
+export function useCompareEvalRuns() {
+  return useMutation({
+    mutationFn: ({ baselineRunId, candidateRunId }: { baselineRunId: string; candidateRunId: string }) =>
+      compareEvalRuns(baselineRunId, candidateRunId),
   })
 }
