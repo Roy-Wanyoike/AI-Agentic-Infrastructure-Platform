@@ -1,0 +1,369 @@
+# OpenAPI 3.1 fragment — Track 2-d Evaluations.
+#
+# Merge target: api/openapi.yaml (paths + components.schemas).
+# Shapes match the handlers in cmd/api/evaluations.go exactly.
+paths:
+  /eval-datasets:
+    get:
+      operationId: listEvalDatasets
+      summary: List evaluation datasets (tenant-scoped)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      tags: [Evaluations]
+      responses:
+        '200':
+          description: Datasets of the caller's organization, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [datasets]
+                properties:
+                  datasets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EvalDatasetSummary'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /eval-datasets/create:
+    post:
+      operationId: createEvalDataset
+      summary: Create an evaluation dataset with its cases
+      description: |
+        Validates every case before persisting: supported scorers are
+        `exact`, `contains`, `regex`, `latency_under_ms`, `cost_under_cents`;
+        `regex` requires `params.pattern` (compilable), `latency_under_ms`
+        requires `params.threshold_ms > 0`, `cost_under_cents` requires
+        `params.threshold_cents > 0`; case ids must be unique (auto-generated
+        when omitted); at most 50 cases per dataset.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      tags: [Evaluations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                cases:
+                  type: array
+                  maxItems: 50
+                  items:
+                    $ref: '#/components/schemas/EvalCase'
+      responses:
+        '201':
+          description: Created dataset (echoes the ordered case list).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dataset]
+                properties:
+                  dataset:
+                    $ref: '#/components/schemas/EvalDataset'
+        '400':
+          description: Validation error (unknown scorer, bad params, duplicate case ids, >50 cases).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /eval-datasets/{id}:
+    get:
+      operationId: getEvalDataset
+      summary: Get one evaluation dataset including its cases
+      security:
+        - bearerToken: []
+        - apiKey: []
+      tags: [Evaluations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Dataset with cases.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dataset]
+                properties:
+                  dataset:
+                    $ref: '#/components/schemas/EvalDataset'
+        '404':
+          description: Dataset not found in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /eval-datasets/{id}/run:
+    post:
+      operationId: runEvalDataset
+      summary: Execute every case of a dataset against an agent (synchronous, bounded)
+      description: |
+        Runs each case through the agent runtime with a per-case context
+        deadline (30s) and at most 50 cases. Returns the completed run id;
+        fetch `GET /eval-runs/{id}` for results and summary. Cost is recorded
+        as 0 until the runtime exposes cost (token usage only today).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      tags: [Evaluations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              properties:
+                agent_id:
+                  type: string
+      responses:
+        '200':
+          description: Run finished; status is `completed` (per-case failures land in the results).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [eval_run_id, status]
+                properties:
+                  eval_run_id: { type: string }
+                  status: { type: string, enum: [completed, failed] }
+        '400':
+          description: Missing agent_id or validation error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '404':
+          description: Dataset or agent not found in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503':
+          description: Evals runner not wired into the API server.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+  /eval-runs/{id}:
+    get:
+      operationId: getEvalRun
+      summary: Get one evaluation run with per-case results and summary
+      security:
+        - bearerToken: []
+        - apiKey: []
+      tags: [Evaluations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Run with results and aggregate summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalRunResponse'
+        '404':
+          description: Run not found in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /eval-runs/compare:
+    post:
+      operationId: compareEvalRuns
+      summary: Compare a candidate run against a baseline run
+      description: |
+        Cases are matched by case_id; only the intersection of both runs is
+        judged. A regression is a case the baseline passed and the candidate
+        failed; an improvement is the reverse.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      tags: [Evaluations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [baseline_run_id, candidate_run_id]
+              properties:
+                baseline_run_id: { type: string }
+                candidate_run_id: { type: string }
+      responses:
+        '200':
+          description: Comparison with both summaries and case-level deltas.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalComparison'
+        '400':
+          description: Missing run ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '404':
+          description: Baseline or candidate run not found in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvalErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+# NOTE: '#/components/responses/Unauthorized' and 'Forbidden' resolve against
+# the EXISTING definitions in api/openapi.yaml (auth middleware responses);
+# this fragment intentionally does not redefine them.
+components:
+  schemas:
+    EvalErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: VALIDATION_ERROR }
+            message: { type: string }
+    EvalParams:
+      type: object
+      properties:
+        pattern:
+          type: string
+          description: Regular expression for the regex scorer.
+        threshold_ms:
+          type: number
+          format: double
+          description: Inclusive latency ceiling (ms) for latency_under_ms.
+        threshold_cents:
+          type: number
+          format: double
+          description: Inclusive cost ceiling (cents) for cost_under_cents.
+    EvalCase:
+      type: object
+      required: [scorer]
+      properties:
+        id:
+          type: string
+          description: Caller-supplied case id (auto-generated UUID when omitted); unique per dataset.
+          example: c1
+        input:
+          type: string
+        expected:
+          type: string
+          description: Expected output (exact/contains) — regex and threshold scorers use params.
+        scorer:
+          type: string
+          enum: [exact, contains, regex, latency_under_ms, cost_under_cents]
+        params:
+          $ref: '#/components/schemas/EvalParams'
+    EvalDatasetSummary:
+      type: object
+      required: [id, name, case_count, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        case_count: { type: integer }
+        created_at: { type: string, format: date-time }
+    EvalDataset:
+      allOf:
+        - $ref: '#/components/schemas/EvalDatasetSummary'
+        - type: object
+          properties:
+            cases:
+              type: array
+              items:
+                $ref: '#/components/schemas/EvalCase'
+    EvalResult:
+      type: object
+      required: [case_id, output, passed, score, latency_ms, cost_cents, error]
+      properties:
+        case_id: { type: string }
+        output: { type: string }
+        passed: { type: boolean }
+        score: { type: number, format: double, example: 1.0 }
+        latency_ms: { type: number, format: double }
+        cost_cents: { type: number, format: double, description: 0 until the runtime exposes cost. }
+        error: { type: string, description: Empty when the case executed and scored cleanly. }
+    EvalSummary:
+      type: object
+      required: [pass_rate, avg_latency_ms, total_cost_cents, by_scorer]
+      properties:
+        pass_rate: { type: number, format: double, example: 0.83 }
+        avg_latency_ms: { type: number, format: double, example: 420 }
+        total_cost_cents: { type: number, format: double, example: 37 }
+        by_scorer:
+          type: object
+          additionalProperties:
+            type: object
+            required: [passed, failed]
+            properties:
+              passed: { type: integer }
+              failed: { type: integer }
+    EvalRunResponse:
+      type: object
+      required: [id, dataset_id, agent_id, status, results, summary]
+      properties:
+        id: { type: string }
+        dataset_id: { type: string }
+        agent_id: { type: string }
+        status: { type: string, enum: [running, completed, failed] }
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvalResult'
+        summary:
+          $ref: '#/components/schemas/EvalSummary'
+    EvalCaseComparison:
+      type: object
+      required: [case_id, baseline_passed, candidate_passed]
+      properties:
+        case_id: { type: string }
+        baseline_passed: { type: boolean }
+        candidate_passed: { type: boolean }
+    EvalComparison:
+      type: object
+      required: [baseline, candidate, regressions, improvements]
+      properties:
+        baseline:
+          $ref: '#/components/schemas/EvalSummary'
+        candidate:
+          $ref: '#/components/schemas/EvalSummary'
+        regressions:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvalCaseComparison'
+        improvements:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvalCaseComparison'
