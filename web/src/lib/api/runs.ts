@@ -13,7 +13,7 @@
 // body. That works with Bearer tokens and X-API-Key headers alike.
 
 import { ApiError, apiFetch, apiUrl, applyAuthHeaders, extractErrorMessage } from './client'
-import { normalizeRun, normalizeRunEvent, pickField, type Run, type RunEvent } from './types'
+import { normalizeRun, normalizeRunEvent, normalizeRunStep, pickField, type Run, type RunEvent, type RunStep } from './types'
 
 export type CreateRunInput = {
   agentId: string
@@ -33,6 +33,17 @@ export async function listRuns(): Promise<Run[]> {
 
 export async function getRun(id: string): Promise<Run> {
   return normalizeRun(await apiFetch<unknown>(`/runs/${encodeURIComponent(id)}`))
+}
+
+/**
+ * GET /runs/{id}/steps → {"run_id": "...", "steps": [...]} (RunStepsResponse).
+ * Steps may be empty until the worker records the first model/tool call.
+ */
+export async function listRunSteps(runId: string): Promise<RunStep[]> {
+  const raw = await apiFetch<unknown>(`/runs/${encodeURIComponent(runId)}/steps`)
+  const wrapped = pickField(raw, 'steps', 'items', 'data')
+  const list = Array.isArray(raw) ? raw : Array.isArray(wrapped) ? wrapped : []
+  return list.map((step, index) => normalizeRunStep(step, index))
 }
 
 export async function createRun(payload: CreateRunInput): Promise<Run> {

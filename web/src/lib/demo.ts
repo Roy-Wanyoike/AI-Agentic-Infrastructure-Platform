@@ -4,11 +4,9 @@
 // (project rule: no silent mocking).
 
 export const IS_DEMO_VIEW: ReadonlySet<string> = new Set([
-  'Workflows',
   'Tools',
   'Knowledge',
   'Analytics',
-  'Usage',
   'Security',
   'Infrastructure',
 ])

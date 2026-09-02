@@ -8,15 +8,35 @@
 //   ['metrics']         — platform metrics snapshot
 //   ['health']          — healthz/readyz probes
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from './api/client'
 import { createAgent, deleteAgent, getAgent, listAgents, updateAgent } from './api/agents'
 import { getMetrics, getPlatformHealth } from './api/metrics'
-import { createRun, getRun, listRuns, subscribeRunEvents } from './api/runs'
+import { createRun, getRun, listRunSteps, listRuns, subscribeRunEvents } from './api/runs'
 import type { CreateAgentInput, UpdateAgentInput } from './api/agents'
 import type { CreateRunInput } from './api/runs'
 import { eventOutput, eventStatus, isTerminalRunStatus, type Run, type RunEvent } from './api/types'
+import {
+  createWorkflow,
+  executeWorkflow,
+  getWorkflow,
+  getWorkflowRun,
+  isTerminalWorkflowRunStatus,
+  listWorkflows,
+  publishWorkflow,
+} from './api/workflows'
+import type { CreateWorkflowInput } from './api/workflows'
+import { decideApproval, listApprovals, type ApprovalDecision } from './api/approvals'
+import {
+  compareEvalRuns,
+  createEvalDataset,
+  getEvalDataset,
+  getEvalRun,
+  listEvalDatasets,
+  runEvalDataset,
+} from './api/evaluations'
+import type { CreateEvalDatasetInput } from './api/evaluations'
 
 export function useAgents() {
   return useQuery({ queryKey: ['agents'], queryFn: listAgents })
@@ -79,6 +99,21 @@ export function useRun(id: string | null | undefined) {
   })
 }
 
+export function useRunSteps(runId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['runs', runId, 'steps'],
+    queryFn: () => listRunSteps(runId as string),
+    enabled: Boolean(runId),
+    // Keep the trace fresh while the run is still executing; SSE events below
+    // trigger targeted invalidations, this only covers dropped streams.
+    refetchInterval: (query) => {
+      const steps = query.state.data
+      const stillActive = (steps ?? []).some((step) => step.status === 'pending' || step.status === 'running')
+      return stillActive ? 5000 : false
+    },
+  })
+}
+
 export function useRunAgent() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -105,9 +140,17 @@ export function useHealth() {
  * (e.g. the server's write timeout) we reconnect with backoff until the run
  * reaches a terminal state. useRun's polling covers the same cache key, so a
  * dropped stream degrades gracefully instead of freezing the UI.
+ *
+ * An optional `onEvent` lets a view piggyback on the same connection (e.g. the
+ * run timeline refreshing its steps) without opening a second stream.
  */
-export function useRunEvents(runId: string | null | undefined) {
+export function useRunEvents(runId: string | null | undefined, onEvent?: (event: RunEvent) => void) {
   const queryClient = useQueryClient()
+  const onEventRef = useRef(onEvent)
+  // Keep the latest callback without re-subscribing the stream on re-renders.
+  useEffect(() => {
+    onEventRef.current = onEvent
+  }, [onEvent])
 
   useEffect(() => {
     if (!runId) return
@@ -121,6 +164,7 @@ export function useRunEvents(runId: string | null | undefined) {
     }
 
     const handleEvent = (event: RunEvent) => {
+      onEventRef.current?.(event)
       const status = eventStatus(event)
       if (status) patchRun({ status })
       const output = eventOutput(event)
@@ -161,4 +205,146 @@ export function useRunEvents(runId: string | null | undefined) {
       if (retryHandle !== undefined) window.clearTimeout(retryHandle)
     }
   }, [runId, queryClient])
+}
+
+// ---------------------------------------------------------------------------
+// Workflows (track 2-a contract)
+// ---------------------------------------------------------------------------
+
+export function useWorkflows() {
+  return useQuery({ queryKey: ['workflows'], queryFn: listWorkflows })
+}
+
+export function useWorkflow(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['workflows', id],
+    queryFn: () => getWorkflow(id as string),
+    enabled: Boolean(id),
+  })
+}
+
+export function useCreateWorkflow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateWorkflowInput) => createWorkflow(input),
+    onSuccess: (workflow) => {
+      void queryClient.invalidateQueries({ queryKey: ['workflows'] })
+      if (workflow.id) queryClient.setQueryData(['workflows', workflow.id], workflow)
+    },
+  })
+}
+
+export function usePublishWorkflow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => publishWorkflow(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workflows'] })
+    },
+  })
+}
+
+export function useExecuteWorkflow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: string }) => executeWorkflow(id, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workflows'] })
+      void queryClient.invalidateQueries({ queryKey: ['workflowRuns'] })
+      void queryClient.invalidateQueries({ queryKey: ['runs'] })
+      void queryClient.invalidateQueries({ queryKey: ['metrics'] })
+    },
+  })
+}
+
+export function useWorkflowRun(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['workflowRuns', id],
+    queryFn: () => getWorkflowRun(id as string),
+    enabled: Boolean(id),
+    // Workflow runs fan out to child runs; poll until terminal for a live view.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status && !isTerminalWorkflowRunStatus(status) ? 4000 : false
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Approvals (track 2-a contract)
+// ---------------------------------------------------------------------------
+
+export function useApprovals(status?: string) {
+  return useQuery({
+    queryKey: ['approvals', status ?? 'all'],
+    queryFn: () => listApprovals(status),
+    // Pending queues benefit from a light refresh; React Query dedupes.
+    refetchInterval: status === undefined || status === 'pending' ? 15000 : false,
+  })
+}
+
+export function useDecideApproval() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, decision, reason }: { id: string; decision: ApprovalDecision; reason?: string }) =>
+      decideApproval(id, decision, reason),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['approvals'] })
+      void queryClient.invalidateQueries({ queryKey: ['runs'] })
+      void queryClient.invalidateQueries({ queryKey: ['workflowRuns'] })
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Evaluations (track 2-d contract)
+// ---------------------------------------------------------------------------
+
+export function useEvalDatasets() {
+  return useQuery({ queryKey: ['evalDatasets'], queryFn: listEvalDatasets })
+}
+
+export function useEvalDataset(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['evalDatasets', id],
+    queryFn: () => getEvalDataset(id as string),
+    enabled: Boolean(id),
+  })
+}
+
+export function useCreateEvalDataset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateEvalDatasetInput) => createEvalDataset(input),
+    onSuccess: (dataset) => {
+      void queryClient.invalidateQueries({ queryKey: ['evalDatasets'] })
+      if (dataset.id) queryClient.setQueryData(['evalDatasets', dataset.id], dataset)
+    },
+  })
+}
+
+export function useRunEvalDataset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ datasetId, agentId }: { datasetId: string; agentId: string }) => runEvalDataset(datasetId, agentId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['evalDatasets'] })
+      void queryClient.invalidateQueries({ queryKey: ['runs'] })
+    },
+  })
+}
+
+export function useEvalRun(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['evalRuns', id],
+    queryFn: () => getEvalRun(id as string),
+    enabled: Boolean(id),
+  })
+}
+
+export function useCompareEvalRuns() {
+  return useMutation({
+    mutationFn: ({ baselineRunId, candidateRunId }: { baselineRunId: string; candidateRunId: string }) =>
+      compareEvalRuns(baselineRunId, candidateRunId),
+  })
 }

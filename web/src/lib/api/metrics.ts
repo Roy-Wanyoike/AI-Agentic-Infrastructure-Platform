@@ -12,7 +12,9 @@ export type PlatformHealth = {
 }
 
 export async function getMetrics(): Promise<MetricsSnapshot> {
-  return normalizeMetrics(await apiFetch<unknown>('/metrics'))
+  // ?format=json is a no-op today and keeps JSON responses once the Prometheus
+  // text exposition (wave-2 track 2-h) lands on the same path.
+  return normalizeMetrics(await apiFetch<unknown>('/metrics?format=json'))
 }
 
 async function fetchHealthText(path: string): Promise<string> {

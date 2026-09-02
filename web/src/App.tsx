@@ -1,4 +1,5 @@
-import { useMemo, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
+import { useMemo, useState, useSyncExternalStore, useRef, type FormEvent } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import './App.css'
 import {
   getAuthSnapshot,
@@ -8,7 +9,7 @@ import {
   register as performRegister,
   subscribeAuth,
 } from './lib/api/auth'
-import { API_BASE, APP_NAME, ApiError } from './lib/api/client'
+import { API_BASE, APP_NAME } from './lib/api/client'
 import { isTerminalRunStatus, type Agent, type Run } from './lib/api/types'
 import { isDemoView } from './lib/demo'
 import { formatDateTime, formatNumber, formatRelativeTime, shortenId } from './lib/format'
@@ -23,134 +24,38 @@ import {
   useRuns,
   useRunEvents,
 } from './lib/hooks'
-
-const navItems = ['Overview', 'Agents', 'Runs', 'Workflows', 'Tools', 'Knowledge', 'Analytics', 'Usage', 'Security', 'Infrastructure', 'Settings'] as const
-
-type ViewName = (typeof navItems)[number]
+import {
+  DemoBadge,
+  DemoStrip,
+  EmptyState,
+  ErrorBanner,
+  PageHeader,
+  Skeleton,
+  StatusPill,
+  SummaryStat,
+} from './views/shared'
+import {
+  countByStatus,
+  describeError,
+  navItems,
+  paletteShortcutLabel,
+  sortRunsDesc,
+  statusAccent,
+  type ViewName,
+} from './views/uiHelpers'
+import { CommandPalette, type PaletteAction } from './views/commandPalette'
+import { RunTimeline } from './views/runTimeline'
+import { WorkflowsView } from './views/workflows'
+import { ApprovalsView } from './views/approvals'
+import { EvaluationsView } from './views/evaluations'
+import { UsageView } from './views/usage'
+import { canDecide, canWrite } from './lib/rbac'
 
 const COMMON_MODELS = ['gpt-4o-mini', 'gpt-4o', 'claude-3-7-sonnet', 'llama-3.1-70b']
 
 // ---------------------------------------------------------------------------
-// Shared building blocks
+// Shared building blocks live in ./views/shared.tsx
 // ---------------------------------------------------------------------------
-
-function describeError(error: unknown): string {
-  if (error instanceof ApiError) {
-    const suffix = error.status ? ` (HTTP ${error.status})` : ''
-    return `${error.message}${suffix}`
-  }
-  if (error instanceof Error) return error.message
-  return typeof error === 'string' ? error : 'Unexpected error'
-}
-
-function PageHeader({ eyebrow, title, badge, actions }: { eyebrow: string; title: string; badge?: ReactNode; actions?: ReactNode }) {
-  return (
-    <header className="topbar">
-      <div>
-        <p className="eyebrow">{eyebrow}</p>
-        <h2>{title}</h2>
-      </div>
-      {badge || actions ? (
-        <div className="topbar-actions">
-          {badge}
-          {actions}
-        </div>
-      ) : null}
-    </header>
-  )
-}
-
-function SummaryStat({ label, value, accent = 'default' }: { label: string; value: string; accent?: 'default' | 'info' | 'success' | 'warning' }) {
-  return (
-    <article className={`mini-stat accent-${accent}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </article>
-  )
-}
-
-function StatusPill({ status }: { status: string }) {
-  return <span className={`status-badge ${status.toLowerCase().replace(/\s+/g, '-')}`}>{status}</span>
-}
-
-function Skeleton({ width, height = 14, style }: { width?: number | string; height?: number | string; style?: Record<string, string | number> }) {
-  return <span className="skeleton" style={{ display: 'block', width: width ?? '100%', height, ...style }} aria-hidden="true" />
-}
-
-function ErrorBanner({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  return (
-    <div className="error-banner" role="alert">
-      <div>
-        <strong>Could not load live data</strong>
-        <span>{describeError(error)}</span>
-      </div>
-      <button type="button" className="ghost-button small" onClick={onRetry}>
-        Retry
-      </button>
-    </div>
-  )
-}
-
-function EmptyState({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
-  return (
-    <div className="empty-state">
-      <strong>{title}</strong>
-      {hint ? <span>{hint}</span> : null}
-      {action}
-    </div>
-  )
-}
-
-function DemoBadge() {
-  return (
-    <span className="demo-badge" title="Demo content — this section is not backed by a live API endpoint yet">
-      Demo data
-    </span>
-  )
-}
-
-function DemoStrip({ note }: { note: string }) {
-  return (
-    <div className="demo-strip" role="note">
-      <DemoBadge />
-      <span>{note}</span>
-    </div>
-  )
-}
-
-function statusAccent(status: string): 'default' | 'info' | 'success' | 'warning' {
-  switch (status) {
-    case 'COMPLETED':
-      return 'success'
-    case 'FAILED':
-      return 'warning'
-    case 'RUNNING':
-      return 'info'
-    default:
-      return 'default'
-  }
-}
-
-function sortRunsDesc(runs: Run[]): Run[] {
-  return [...runs].sort((a, b) => {
-    const aTime = Date.parse(a.updatedAt ?? a.createdAt ?? '') || 0
-    const bTime = Date.parse(b.updatedAt ?? b.createdAt ?? '') || 0
-    return bTime - aTime
-  })
-}
-
-type StatusCounts = Record<'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED', number>
-
-function countByStatus(runs: Run[]): StatusCounts {
-  const counts: StatusCounts = { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0 }
-  for (const run of runs) {
-    const status = run.status?.toUpperCase()
-    if (status === 'QUEUED' || status === 'RUNNING' || status === 'COMPLETED' || status === 'FAILED') {
-      counts[status] += 1
-    }
-  }
-  return counts
-}
 
 // ---------------------------------------------------------------------------
 // Auth gate
@@ -559,19 +464,31 @@ function AgentsView({
   selectedAgentId,
   onSelectAgent,
   onOpenRun,
+  canWrite,
+  createOpen,
+  onCreateOpenChange,
 }: {
   selectedAgentId: string | null
   onSelectAgent: (id: string | null) => void
   onOpenRun: (runId: string) => void
+  canWrite: boolean
+  createOpen: boolean
+  onCreateOpenChange: (open: boolean) => void
 }) {
   const agentsQuery = useAgents()
-  const [showCreate, setShowCreate] = useState(false)
   const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
   const draftCount = agents.filter((agent) => agent.status.toUpperCase() === 'DRAFT').length
   const modelCount = new Set(agents.map((agent) => agent.model).filter(Boolean)).size
 
   if (selectedAgentId) {
-    return <AgentDetailView agentId={selectedAgentId} onBack={() => onSelectAgent(null)} onRunStarted={onOpenRun} />
+    return (
+      <AgentDetailView
+        agentId={selectedAgentId}
+        onBack={() => onSelectAgent(null)}
+        onRunStarted={onOpenRun}
+        canWrite={canWrite}
+      />
+    )
   }
 
   return (
@@ -584,20 +501,24 @@ function AgentsView({
             <button type="button" className="ghost-button">
               Filters
             </button>
-            <button type="button" className="primary-button" onClick={() => setShowCreate((open) => !open)}>
-              New agent
-            </button>
+            {canWrite ? (
+              <button type="button" className="primary-button" onClick={() => onCreateOpenChange(!createOpen)}>
+                New agent
+              </button>
+            ) : (
+              <span className="form-note">Viewer role — creating agents needs MEMBER and above</span>
+            )}
           </>
         }
       />
 
-      {showCreate ? (
+      {createOpen ? (
         <CreateAgentForm
           onCreated={(agent) => {
-            setShowCreate(false)
+            onCreateOpenChange(false)
             onSelectAgent(agent.id)
           }}
-          onCancel={() => setShowCreate(false)}
+          onCancel={() => onCreateOpenChange(false)}
         />
       ) : null}
 
@@ -637,9 +558,11 @@ function AgentsView({
               title="No agents yet — create your first agent"
               hint="Agents bundle instructions, a model, and tool access. Register one and it appears here immediately."
               action={
-                <button type="button" className="primary-button" onClick={() => setShowCreate(true)}>
-                  Create agent
-                </button>
+                canWrite ? (
+                  <button type="button" className="primary-button" onClick={() => onCreateOpenChange(true)}>
+                    Create agent
+                  </button>
+                ) : undefined
               }
             />
           </div>
@@ -673,9 +596,11 @@ function AgentsView({
                 <button type="button" className="ghost-button" onClick={() => onSelectAgent(agent.id)}>
                   Inspect
                 </button>
-                <button type="button" className="primary-button small" onClick={() => onSelectAgent(agent.id)}>
-                  Run
-                </button>
+                {canWrite ? (
+                  <button type="button" className="primary-button small" onClick={() => onSelectAgent(agent.id)}>
+                    Run
+                  </button>
+                ) : null}
               </div>
             </article>
           ))
@@ -771,10 +696,12 @@ function AgentDetailView({
   agentId,
   onBack,
   onRunStarted,
+  canWrite,
 }: {
   agentId: string
   onBack: () => void
   onRunStarted: (runId: string) => void
+  canWrite: boolean
 }) {
   const agentQuery = useAgent(agentId)
   const runAgent = useRunAgent()
@@ -854,27 +781,31 @@ function AgentDetailView({
                 </div>
               </div>
 
-              {runAgent.isError ? <div className="form-error">{describeError(runAgent.error)}</div> : null}
-
-              <form onSubmit={startRun}>
-                <div className="field">
-                  <label htmlFor="run-input">Input</label>
-                  <textarea
-                    id="run-input"
-                    rows={5}
-                    value={runInput}
-                    onChange={(event) => setRunInput(event.target.value)}
-                    placeholder="Give this agent something to do…"
-                    required
-                  />
-                </div>
-                <div className="form-actions">
-                  <span className="form-note">Queues a run via POST /runs</span>
-                  <button type="submit" className="primary-button" disabled={runAgent.isPending}>
-                    {runAgent.isPending ? 'Queuing…' : 'Start run'}
-                  </button>
-                </div>
-              </form>
+              {!canWrite ? (
+                <p className="detail-copy muted">Viewer role — running agents needs MEMBER and above.</p>
+              ) : null}
+              {canWrite && runAgent.isError ? <div className="form-error">{describeError(runAgent.error)}</div> : null}
+              {canWrite ? (
+                <form onSubmit={startRun}>
+                  <div className="field">
+                    <label htmlFor="run-input">Input</label>
+                    <textarea
+                      id="run-input"
+                      rows={5}
+                      value={runInput}
+                      onChange={(event) => setRunInput(event.target.value)}
+                      placeholder="Give this agent something to do…"
+                      required
+                    />
+                  </div>
+                  <div className="form-actions">
+                    <span className="form-note">Queues a run via POST /runs</span>
+                    <button type="submit" className="primary-button" disabled={runAgent.isPending}>
+                      {runAgent.isPending ? 'Queuing…' : 'Start run'}
+                    </button>
+                  </div>
+                </form>
+              ) : null}
             </article>
           </section>
         </>
@@ -901,10 +832,12 @@ function RunsView({
   selectedRunId,
   onSelectRun,
   onNavigate,
+  canWrite,
 }: {
   selectedRunId: string | null
   onSelectRun: (id: string | null) => void
   onNavigate: (view: ViewName) => void
+  canWrite: boolean
 }) {
   const runsQuery = useRuns()
   const agentsQuery = useAgents()
@@ -928,9 +861,13 @@ function RunsView({
             <button type="button" className="ghost-button">
               Filters
             </button>
-            <button type="button" className="primary-button" onClick={() => setShowTrigger((open) => !open)}>
-              Trigger run
-            </button>
+            {canWrite ? (
+              <button type="button" className="primary-button" onClick={() => setShowTrigger((open) => !open)}>
+                Trigger run
+              </button>
+            ) : (
+              <span className="form-note">Viewer role — triggering runs needs MEMBER and above</span>
+            )}
           </>
         }
       />
@@ -989,9 +926,11 @@ function RunsView({
               hint="Trigger a run against one of your agents to see live status and output here."
               action={
                 agents.length > 0 ? (
-                  <button type="button" className="primary-button" onClick={() => setShowTrigger(true)}>
-                    Trigger run
-                  </button>
+                  canWrite ? (
+                    <button type="button" className="primary-button" onClick={() => setShowTrigger(true)}>
+                      Trigger run
+                    </button>
+                  ) : undefined
                 ) : (
                   <button type="button" className="primary-button" onClick={() => onNavigate('Agents')}>
                     Create an agent first
@@ -1158,8 +1097,17 @@ function RunDetailView({
   agentName: (id?: string) => string
   onClose: () => void
 }) {
+  const queryClient = useQueryClient()
   const runQuery = useRun(runId)
-  useRunEvents(runId) // patches the same ['runs', id] cache entry over SSE
+  const lastStepRefreshRef = useRef(0)
+  // The SSE stream doubles as the timeline refresh signal: step events on
+  // /runs/{id}/events trigger a refetch of /runs/{id}/steps (throttled).
+  useRunEvents(runId, () => {
+    const now = Date.now()
+    if (now - lastStepRefreshRef.current < 1200) return
+    lastStepRefreshRef.current = now
+    void queryClient.invalidateQueries({ queryKey: ['runs', runId, 'steps'] })
+  })
   const run = runQuery.data
   const live = run ? !isTerminalRunStatus(run.status) : true
 
@@ -1190,6 +1138,8 @@ function RunDetailView({
             <SummaryStat label="Queued" value={formatRelativeTime(run.createdAt)} accent="success" />
             <SummaryStat label="Updated" value={formatRelativeTime(run.updatedAt)} accent="warning" />
           </section>
+
+          <RunTimeline runId={runId} live={live} />
 
           <section className="content-grid">
             <article className="panel wide">
@@ -1260,25 +1210,11 @@ function RunDetailView({
 // Demo views (no live endpoints yet) — content kept, honestly badged
 // ---------------------------------------------------------------------------
 
-const workflowRows = [
-  { name: 'Customer handoff', status: 'Live', owner: 'Support ops', steps: '5 steps', latency: '3.1s' },
-  { name: 'Incident response', status: 'Paused', owner: 'Platform', steps: '9 steps', latency: '5.4s' },
-  { name: 'Release audit', status: 'Review', owner: 'Engineering', steps: '4 steps', latency: '1.9s' },
-  { name: 'Billing sync', status: 'Healthy', owner: 'Finance', steps: '6 steps', latency: '2.2s' },
-]
-
 const toolCards = [
   { name: 'Slack notifier', category: 'Communication', status: 'Healthy', latency: '180ms', permissions: 'write:messages' },
   { name: 'Postgres query', category: 'Data access', status: 'Running', latency: '590ms', permissions: 'read:analytics' },
   { name: 'Kubernetes deploy', category: 'Infrastructure', status: 'Review', latency: '1.2s', permissions: 'deploy:staging' },
   { name: 'CRM sync', category: 'Sales ops', status: 'Healthy', latency: '240ms', permissions: 'write:records' },
-]
-
-const usageRows = [
-  { label: 'Agent calls', value: '1.28M', delta: '+12.6%' },
-  { label: 'Inference spend', value: '$18.4K', delta: '+3.8%' },
-  { label: 'Storage', value: '942 GB', delta: '+6.1%' },
-  { label: 'Peak concurrency', value: '3,842', delta: '-2.2%' },
 ]
 
 const securityRows = [
@@ -1294,65 +1230,6 @@ const infrastructureRows = [
   { name: 'Queue broker', region: 'us-west-2', replicas: '3', status: 'Review' },
   { name: 'Storage', region: 'global', replicas: '4', status: 'Healthy' },
 ]
-
-function WorkflowsView() {
-  return (
-    <>
-      <PageHeader
-        eyebrow="Automation"
-        title="Workflows"
-        badge={<DemoBadge />}
-        actions={
-          <>
-            <button type="button" className="ghost-button">Templates</button>
-            <button type="button" className="primary-button">Create workflow</button>
-          </>
-        }
-      />
-
-      <section className="summary-grid">
-        <SummaryStat label="Live workflows" value="12" accent="default" />
-        <SummaryStat label="Review queue" value="7" accent="info" />
-        <SummaryStat label="Avg duration" value="2.6m" accent="success" />
-        <SummaryStat label="Success" value="94%" accent="warning" />
-      </section>
-
-      <section className="workflow-grid">
-        {workflowRows.map((workflow) => (
-          <article key={workflow.name} className="workflow-card">
-            <div className="workflow-card-header">
-              <div>
-                <p className="eyebrow small">Workflow</p>
-                <h3>{workflow.name}</h3>
-              </div>
-              <StatusPill status={workflow.status} />
-            </div>
-
-            <div className="workflow-meta">
-              <div>
-                <label>Owner</label>
-                <strong>{workflow.owner}</strong>
-              </div>
-              <div>
-                <label>Steps</label>
-                <strong>{workflow.steps}</strong>
-              </div>
-              <div>
-                <label>Latency</label>
-                <strong>{workflow.latency}</strong>
-              </div>
-            </div>
-
-            <div className="card-actions">
-              <button type="button" className="ghost-button">Inspect</button>
-              <button type="button" className="primary-button small">Run</button>
-            </div>
-          </article>
-        ))}
-      </section>
-    </>
-  )
-}
 
 function ToolsView() {
   return (
@@ -1404,81 +1281,6 @@ function ToolsView() {
             </div>
           </article>
         ))}
-      </section>
-    </>
-  )
-}
-
-function UsageView() {
-  return (
-    <>
-      <PageHeader
-        eyebrow="Billing"
-        title="Usage"
-        badge={<DemoBadge />}
-        actions={
-          <>
-            <button type="button" className="ghost-button">Adjust plan</button>
-            <button type="button" className="primary-button">Export report</button>
-          </>
-        }
-      />
-
-      <section className="summary-grid">
-        {usageRows.map((item) => (
-          <article key={item.label} className="mini-stat">
-            <span>{item.label}</span>
-            <strong>{item.value}</strong>
-            <div className="delta positive" style={{ marginTop: 10 }}>{item.delta}</div>
-          </article>
-        ))}
-      </section>
-
-      <section className="content-grid">
-        <article className="panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Forecast</p>
-              <h3>Consumption trend</h3>
-            </div>
-            <button type="button" className="link-button">View detail</button>
-          </div>
-
-          <div className="usage-chart">
-            {[64, 72, 54, 81, 92, 88, 96].map((value, index) => (
-              <div key={index} className="usage-bar-wrap">
-                <span className="usage-bar" style={{ height: `${value}%` }} />
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Allocations</p>
-              <h3>Quota overview</h3>
-            </div>
-          </div>
-
-          <div className="quality-list">
-            <div>
-              <label>Inference budget</label>
-              <div className="meter"><span style={{ width: '76%' }} /></div>
-              <strong>76% consumed</strong>
-            </div>
-            <div>
-              <label>Storage pool</label>
-              <div className="meter"><span style={{ width: '54%' }} /></div>
-              <strong>54% used</strong>
-            </div>
-            <div>
-              <label>API requests</label>
-              <div className="meter"><span style={{ width: '91%' }} /></div>
-              <strong>91% of cap</strong>
-            </div>
-          </div>
-        </article>
       </section>
     </>
   )
@@ -1611,6 +1413,52 @@ export default function App() {
   const [activeView, setActiveView] = useState<ViewName>('Overview')
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  // Lifted so the ⌘K palette's "Create agent" can open the Agents form.
+  const [agentCreateOpen, setAgentCreateOpen] = useState(false)
+
+  // RBAC-aware nav: write actions are hidden for roles without the matching
+  // permission (mirrors the backend matrix — the API still enforces it).
+  const canWriteRole = canWrite(auth.user?.role)
+  const canDecideRole = canDecide(auth.user?.role)
+
+  const navigateTo = (view: ViewName) => {
+    setSelectedAgentId(null)
+    setSelectedRunId(null)
+    setActiveView(view)
+  }
+
+  const paletteActions = useMemo<PaletteAction[]>(() => {
+    const items: PaletteAction[] = (
+      [
+        ['Agents', 'agents fleet catalog'],
+        ['Workflows', 'workflows automation dsl'],
+        ['Runs', 'runs executions traces'],
+        ['Approvals', 'approvals pending review risk'],
+        ['Evaluations', 'evals evaluations datasets quality pass rate'],
+        ['Usage', 'usage metrics tokens cost'],
+      ] as const
+    ).map(([view, keywords]) => ({
+      id: `nav-${view}`,
+      label: `Go to ${view}`,
+      hint: 'Navigate',
+      keywords,
+      run: () => navigateTo(view),
+    }))
+    if (canWriteRole) {
+      items.push({
+        id: 'create-agent',
+        label: 'Create agent',
+        hint: 'Write action',
+        keywords: 'new agent add create register',
+        run: () => {
+          navigateTo('Agents')
+          setAgentCreateOpen(true)
+        },
+      })
+    }
+    return items
+  }, [canWriteRole])
 
   if (!authed) return <AuthGate />
 
@@ -1627,11 +1475,26 @@ export default function App() {
       case 'Overview':
         return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} />
       case 'Agents':
-        return <AgentsView selectedAgentId={selectedAgentId} onSelectAgent={setSelectedAgentId} onOpenRun={openRun} />
+        return (
+          <AgentsView
+            selectedAgentId={selectedAgentId}
+            onSelectAgent={setSelectedAgentId}
+            onOpenRun={openRun}
+            canWrite={canWriteRole}
+            createOpen={agentCreateOpen}
+            onCreateOpenChange={setAgentCreateOpen}
+          />
+        )
       case 'Runs':
-        return <RunsView selectedRunId={selectedRunId} onSelectRun={setSelectedRunId} onNavigate={setActiveView} />
+        return (
+          <RunsView selectedRunId={selectedRunId} onSelectRun={setSelectedRunId} onNavigate={setActiveView} canWrite={canWriteRole} />
+        )
       case 'Workflows':
-        return <WorkflowsView />
+        return <WorkflowsView onOpenRun={openRun} canWrite={canWriteRole} />
+      case 'Approvals':
+        return <ApprovalsView canDecide={canDecideRole} />
+      case 'Evaluations':
+        return <EvaluationsView canWrite={canWriteRole} />
       case 'Tools':
         return <ToolsView />
       case 'Knowledge':
@@ -1699,10 +1562,17 @@ export default function App() {
 
       <main className="main-panel">
         <header className="global-header">
-          <div className="searchbox">
+          <button
+            type="button"
+            className="searchbox"
+            onClick={() => setPaletteOpen(true)}
+            aria-label="Open command palette"
+            title="Command palette"
+          >
             <span className="search-icon">⌕</span>
             <span>Search AgentOS...</span>
-          </div>
+            <kbd className="search-kbd">{paletteShortcutLabel()}</kbd>
+          </button>
           <div className="global-header-actions">
             <div className="status-chip">
               <span className={healthOnline ? 'status-dot online' : 'status-dot offline'} />
@@ -1717,6 +1587,8 @@ export default function App() {
 
         {renderView()}
       </main>
+
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} actions={paletteActions} />
     </div>
   )
 }
