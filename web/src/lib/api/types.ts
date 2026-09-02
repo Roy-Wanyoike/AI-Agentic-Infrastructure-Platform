@@ -48,6 +48,34 @@ export type RunEvent = {
   createdAt?: string
 }
 
+export type RunStepTokens = {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+}
+
+/**
+ * One recorded execution step of a run's timeline (backend `runs.Step`).
+ * The Go struct currently marshals PascalCase (ID, StepType, TokenUsage, …);
+ * the normalizer is case-insensitive so snake_case from future json tags
+ * works too. Status values: succeeded | failed | pending.
+ */
+export type RunStep = {
+  id: string
+  runId: string
+  index: number
+  stepType: string
+  status: string
+  inputMeta: Record<string, unknown>
+  outputMeta: Record<string, unknown>
+  error?: string
+  tokenUsage: RunStepTokens
+  cost?: number
+  startedAt?: string
+  completedAt?: string
+  createdAt?: string
+}
+
 export type MetricsSnapshot = {
   counts: Record<string, number>
   latency: Record<string, number>
@@ -223,4 +251,29 @@ export function normalizeAuthUser(raw: unknown): AuthUser {
 
 export function isTerminalRunStatus(status?: string | null): boolean {
   return status === 'COMPLETED' || status === 'FAILED'
+}
+
+export function normalizeRunStep(raw: unknown, fallbackIndex = 0): RunStep {
+  const usageRecord = asRecord(pickField(raw, 'tokenUsage', 'tokens', 'usage'))
+  const inputRecord = asRecord(pickField(raw, 'inputMeta', 'input'))
+  const outputRecord = asRecord(pickField(raw, 'outputMeta', 'output'))
+  return {
+    id: asString(pickField(raw, 'id', 'stepId')) ?? '',
+    runId: asString(pickField(raw, 'runId')) ?? '',
+    index: asNumber(pickField(raw, 'index', 'stepIndex', 'sequence')) ?? fallbackIndex,
+    stepType: (asString(pickField(raw, 'stepType', 'type')) ?? 'unknown').toLowerCase(),
+    status: (asString(pickField(raw, 'status', 'state')) ?? 'unknown').toLowerCase(),
+    inputMeta: inputRecord ? { ...inputRecord } : {},
+    outputMeta: outputRecord ? { ...outputRecord } : {},
+    error: asString(pickField(raw, 'error', 'errorMessage')),
+    tokenUsage: {
+      promptTokens: asNumber(pickField(usageRecord, 'promptTokens', 'prompt_tokens', 'prompt')),
+      completionTokens: asNumber(pickField(usageRecord, 'completionTokens', 'completion_tokens', 'completion')),
+      totalTokens: asNumber(pickField(usageRecord, 'totalTokens', 'total_tokens', 'total')),
+    },
+    cost: asNumber(pickField(raw, 'cost', 'costCents', 'cost_usd')),
+    startedAt: asString(pickField(raw, 'startedAt', 'startTime')),
+    completedAt: asString(pickField(raw, 'completedAt', 'endTime', 'finishedAt')),
+    createdAt: asString(pickField(raw, 'createdAt', 'created')),
+  }
 }

@@ -8,12 +8,12 @@
 //   ['metrics']         — platform metrics snapshot
 //   ['health']          — healthz/readyz probes
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from './api/client'
 import { createAgent, deleteAgent, getAgent, listAgents, updateAgent } from './api/agents'
 import { getMetrics, getPlatformHealth } from './api/metrics'
-import { createRun, getRun, listRuns, subscribeRunEvents } from './api/runs'
+import { createRun, getRun, listRunSteps, listRuns, subscribeRunEvents } from './api/runs'
 import type { CreateAgentInput, UpdateAgentInput } from './api/agents'
 import type { CreateRunInput } from './api/runs'
 import { eventOutput, eventStatus, isTerminalRunStatus, type Run, type RunEvent } from './api/types'
@@ -79,6 +79,21 @@ export function useRun(id: string | null | undefined) {
   })
 }
 
+export function useRunSteps(runId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['runs', runId, 'steps'],
+    queryFn: () => listRunSteps(runId as string),
+    enabled: Boolean(runId),
+    // Keep the trace fresh while the run is still executing; SSE events below
+    // trigger targeted invalidations, this only covers dropped streams.
+    refetchInterval: (query) => {
+      const steps = query.state.data
+      const stillActive = (steps ?? []).some((step) => step.status === 'pending' || step.status === 'running')
+      return stillActive ? 5000 : false
+    },
+  })
+}
+
 export function useRunAgent() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -105,9 +120,17 @@ export function useHealth() {
  * (e.g. the server's write timeout) we reconnect with backoff until the run
  * reaches a terminal state. useRun's polling covers the same cache key, so a
  * dropped stream degrades gracefully instead of freezing the UI.
+ *
+ * An optional `onEvent` lets a view piggyback on the same connection (e.g. the
+ * run timeline refreshing its steps) without opening a second stream.
  */
-export function useRunEvents(runId: string | null | undefined) {
+export function useRunEvents(runId: string | null | undefined, onEvent?: (event: RunEvent) => void) {
   const queryClient = useQueryClient()
+  const onEventRef = useRef(onEvent)
+  // Keep the latest callback without re-subscribing the stream on re-renders.
+  useEffect(() => {
+    onEventRef.current = onEvent
+  }, [onEvent])
 
   useEffect(() => {
     if (!runId) return
@@ -121,6 +144,7 @@ export function useRunEvents(runId: string | null | undefined) {
     }
 
     const handleEvent = (event: RunEvent) => {
+      onEventRef.current?.(event)
       const status = eventStatus(event)
       if (status) patchRun({ status })
       const output = eventOutput(event)

@@ -1,4 +1,5 @@
-import { useMemo, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
+import { useMemo, useState, useSyncExternalStore, useRef, type FormEvent } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import './App.css'
 import {
   getAuthSnapshot,
@@ -8,7 +9,7 @@ import {
   register as performRegister,
   subscribeAuth,
 } from './lib/api/auth'
-import { API_BASE, APP_NAME, ApiError } from './lib/api/client'
+import { API_BASE, APP_NAME } from './lib/api/client'
 import { isTerminalRunStatus, type Agent, type Run } from './lib/api/types'
 import { isDemoView } from './lib/demo'
 import { formatDateTime, formatNumber, formatRelativeTime, shortenId } from './lib/format'
@@ -23,134 +24,31 @@ import {
   useRuns,
   useRunEvents,
 } from './lib/hooks'
-
-const navItems = ['Overview', 'Agents', 'Runs', 'Workflows', 'Tools', 'Knowledge', 'Analytics', 'Usage', 'Security', 'Infrastructure', 'Settings'] as const
-
-type ViewName = (typeof navItems)[number]
+import {
+  DemoBadge,
+  DemoStrip,
+  EmptyState,
+  ErrorBanner,
+  PageHeader,
+  Skeleton,
+  StatusPill,
+  SummaryStat,
+} from './views/shared'
+import {
+  countByStatus,
+  describeError,
+  navItems,
+  sortRunsDesc,
+  statusAccent,
+  type ViewName,
+} from './views/uiHelpers'
+import { RunTimeline } from './views/runTimeline'
 
 const COMMON_MODELS = ['gpt-4o-mini', 'gpt-4o', 'claude-3-7-sonnet', 'llama-3.1-70b']
 
 // ---------------------------------------------------------------------------
-// Shared building blocks
+// Shared building blocks live in ./views/shared.tsx
 // ---------------------------------------------------------------------------
-
-function describeError(error: unknown): string {
-  if (error instanceof ApiError) {
-    const suffix = error.status ? ` (HTTP ${error.status})` : ''
-    return `${error.message}${suffix}`
-  }
-  if (error instanceof Error) return error.message
-  return typeof error === 'string' ? error : 'Unexpected error'
-}
-
-function PageHeader({ eyebrow, title, badge, actions }: { eyebrow: string; title: string; badge?: ReactNode; actions?: ReactNode }) {
-  return (
-    <header className="topbar">
-      <div>
-        <p className="eyebrow">{eyebrow}</p>
-        <h2>{title}</h2>
-      </div>
-      {badge || actions ? (
-        <div className="topbar-actions">
-          {badge}
-          {actions}
-        </div>
-      ) : null}
-    </header>
-  )
-}
-
-function SummaryStat({ label, value, accent = 'default' }: { label: string; value: string; accent?: 'default' | 'info' | 'success' | 'warning' }) {
-  return (
-    <article className={`mini-stat accent-${accent}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </article>
-  )
-}
-
-function StatusPill({ status }: { status: string }) {
-  return <span className={`status-badge ${status.toLowerCase().replace(/\s+/g, '-')}`}>{status}</span>
-}
-
-function Skeleton({ width, height = 14, style }: { width?: number | string; height?: number | string; style?: Record<string, string | number> }) {
-  return <span className="skeleton" style={{ display: 'block', width: width ?? '100%', height, ...style }} aria-hidden="true" />
-}
-
-function ErrorBanner({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  return (
-    <div className="error-banner" role="alert">
-      <div>
-        <strong>Could not load live data</strong>
-        <span>{describeError(error)}</span>
-      </div>
-      <button type="button" className="ghost-button small" onClick={onRetry}>
-        Retry
-      </button>
-    </div>
-  )
-}
-
-function EmptyState({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
-  return (
-    <div className="empty-state">
-      <strong>{title}</strong>
-      {hint ? <span>{hint}</span> : null}
-      {action}
-    </div>
-  )
-}
-
-function DemoBadge() {
-  return (
-    <span className="demo-badge" title="Demo content — this section is not backed by a live API endpoint yet">
-      Demo data
-    </span>
-  )
-}
-
-function DemoStrip({ note }: { note: string }) {
-  return (
-    <div className="demo-strip" role="note">
-      <DemoBadge />
-      <span>{note}</span>
-    </div>
-  )
-}
-
-function statusAccent(status: string): 'default' | 'info' | 'success' | 'warning' {
-  switch (status) {
-    case 'COMPLETED':
-      return 'success'
-    case 'FAILED':
-      return 'warning'
-    case 'RUNNING':
-      return 'info'
-    default:
-      return 'default'
-  }
-}
-
-function sortRunsDesc(runs: Run[]): Run[] {
-  return [...runs].sort((a, b) => {
-    const aTime = Date.parse(a.updatedAt ?? a.createdAt ?? '') || 0
-    const bTime = Date.parse(b.updatedAt ?? b.createdAt ?? '') || 0
-    return bTime - aTime
-  })
-}
-
-type StatusCounts = Record<'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED', number>
-
-function countByStatus(runs: Run[]): StatusCounts {
-  const counts: StatusCounts = { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0 }
-  for (const run of runs) {
-    const status = run.status?.toUpperCase()
-    if (status === 'QUEUED' || status === 'RUNNING' || status === 'COMPLETED' || status === 'FAILED') {
-      counts[status] += 1
-    }
-  }
-  return counts
-}
 
 // ---------------------------------------------------------------------------
 // Auth gate
@@ -1158,8 +1056,17 @@ function RunDetailView({
   agentName: (id?: string) => string
   onClose: () => void
 }) {
+  const queryClient = useQueryClient()
   const runQuery = useRun(runId)
-  useRunEvents(runId) // patches the same ['runs', id] cache entry over SSE
+  const lastStepRefreshRef = useRef(0)
+  // The SSE stream doubles as the timeline refresh signal: step events on
+  // /runs/{id}/events trigger a refetch of /runs/{id}/steps (throttled).
+  useRunEvents(runId, () => {
+    const now = Date.now()
+    if (now - lastStepRefreshRef.current < 1200) return
+    lastStepRefreshRef.current = now
+    void queryClient.invalidateQueries({ queryKey: ['runs', runId, 'steps'] })
+  })
   const run = runQuery.data
   const live = run ? !isTerminalRunStatus(run.status) : true
 
@@ -1190,6 +1097,8 @@ function RunDetailView({
             <SummaryStat label="Queued" value={formatRelativeTime(run.createdAt)} accent="success" />
             <SummaryStat label="Updated" value={formatRelativeTime(run.updatedAt)} accent="warning" />
           </section>
+
+          <RunTimeline runId={runId} live={live} />
 
           <section className="content-grid">
             <article className="panel wide">

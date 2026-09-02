@@ -39,3 +39,31 @@ export function shortenId(value?: string | null): string {
   if (!value) return '—'
   return value.length <= 14 ? value : `${value.slice(0, 11)}…`
 }
+
+export function formatDurationMs(ms?: number | null): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return '—'
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 2 : 1)}s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds % 60)
+  return `${minutes}m ${rest}s`
+}
+
+/**
+ * Cost formatting. The API contract exposes `Cost` as a plain double without
+ * pinning the unit; the platform prices in cents elsewhere (max_cost_cents),
+ * so a value is treated as USD cents when < 1000 and as USD otherwise.
+ * Displayed honestly with the assumed unit, never invented precision.
+ */
+export function formatCost(value?: number | null): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—'
+  if (value === 0) return '$0.00'
+  if (Math.abs(value) < 1000) return `${value.toFixed(value < 10 ? 4 : 2)}¢`
+  return `$${(value / 100).toFixed(2)}`
+}
+
+export function formatCents(value?: number | null): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—'
+  return `$${(value / 100).toFixed(value === 0 ? 2 : Math.abs(value) < 1 ? 4 : 2)}`
+}
