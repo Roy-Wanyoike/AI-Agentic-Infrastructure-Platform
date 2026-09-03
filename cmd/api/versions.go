@@ -1,19 +1,21 @@
 package main
 
-// Track 2-b (agent versions + deployments) HTTP handlers.
+// Track 2-b (agent versions + deployments) HTTP handlers, extended by wave-3
+// track 3-e with the field-level version diff endpoint.
 //
 // Endpoints (registered on apiMux by registerVersionsRoutes /
 // registerDeploymentsRoutes; served under BOTH /v1 and /api/v1):
 //
-//	GET    /agents/{id}/versions                   -> agents.read
-//	POST   /agents/{id}/versions/create            -> agents.write
-//	POST   /agents/{id}/versions/{version}/publish -> agents.write
-//	POST   /agents/{id}/rollback                   -> agents.write
-//	GET    /deployments?agent_id=                  -> deployments.read
-//	POST   /deployments/create                     -> deployments.write
-//	GET    /deployments/{id}                       -> deployments.read
-//	POST   /deployments/{id}/promote               -> deployments.deploy
-//	POST   /deployments/{id}/rollback              -> deployments.deploy
+//      GET    /agents/{id}/versions                   -> agents.read
+//      GET    /agents/{id}/versions/diff?from&to      -> agents.read   (3-e)
+//      POST   /agents/{id}/versions/create            -> agents.write
+//      POST   /agents/{id}/versions/{version}/publish -> agents.write
+//      POST   /agents/{id}/rollback                   -> agents.write
+//      GET    /deployments?agent_id=                  -> deployments.read
+//      POST   /deployments/create                     -> deployments.write
+//      GET    /deployments/{id}                       -> deployments.read
+//      POST   /deployments/{id}/promote               -> deployments.deploy
+//      POST   /deployments/{id}/rollback              -> deployments.deploy
 //
 // The tenant is taken from the auth claims only; client-supplied organization
 // ids are never trusted. Error bodies use the shared
@@ -409,6 +411,53 @@ func rollbackDeploymentHandler(depSvc *deployments.Service) http.HandlerFunc {
 	}
 }
 
+// versionDiffHandler serves GET /agents/{id}/versions/diff?from={n}&to={m}:
+// the structured field-level diff between two config versions of one agent
+// (wave-3 contract). The response body IS the diff document:
+// {"agent_id","from","to","fields":[{field,from,to,changed}]}. Unknown
+// from/to (or a cross-agent mismatch) surfaces as 404 VERSION_NOT_FOUND via
+// the shared error mapping; invalid query params are 400 INVALID_REQUEST.
+func versionDiffHandler(versionsSvc *agents.VersionsService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agentID := r.PathValue("id")
+		if strings.TrimSpace(agentID) == "" {
+			writeErrorVD(w, http.StatusNotFound, "AGENT_NOT_FOUND", "agent not found")
+			return
+		}
+		parseVersionParam := func(name string) (int, bool) {
+			raw := strings.TrimSpace(r.URL.Query().Get(name))
+			value, err := strconv.Atoi(raw)
+			if err != nil || value <= 0 {
+				writeErrorVD(w, http.StatusBadRequest, "INVALID_REQUEST", name+" must be a positive integer")
+				return 0, false
+			}
+			return value, true
+		}
+		from, ok := parseVersionParam("from")
+		if !ok {
+			return
+		}
+		to, ok := parseVersionParam("to")
+		if !ok {
+			return
+		}
+		orgID, ok := claimsOrgIDVD(w, r)
+		if !ok {
+			return
+		}
+		// Tenant guard: both versions resolve strictly within the caller's org
+		// and agent (the service maps foreign-tenant/unknown rows to 404).
+		diff, err := versionsSvc.DiffVersionsCtx(r.Context(), orgID, agentID, from, to)
+		if err != nil {
+			if !writeAgentVersionsError(w, err) {
+				writeErrorVD(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+			}
+			return
+		}
+		writeJSONVD(w, http.StatusOK, diff)
+	}
+}
+
 // registerVersionsRoutes mounts the agent config-version routes on apiMux.
 // Versions are agent configuration, so they reuse the existing agents.* grants
 // (the wave-2 contract pins no dedicated versions permission).
@@ -417,6 +466,8 @@ func registerVersionsRoutes(apiMux *http.ServeMux, versionsSvc *agents.VersionsS
 		return auth.RequireAuthOrAPIKey(authSvc, apiKeysSvc)(auth.RequirePermission(authSvc, perm)(h))
 	}
 	apiMux.Handle("GET /agents/{id}/versions", wrap(auth.PermissionAgentsRead, listAgentVersionsHandler(versionsSvc)))
+	// Wave-3 track 3-e: field-level diff (agents.read — a read-only view).
+	apiMux.Handle("GET /agents/{id}/versions/diff", wrap(auth.PermissionAgentsRead, versionDiffHandler(versionsSvc)))
 	apiMux.Handle("POST /agents/{id}/versions/create", wrap(auth.PermissionAgentsWrite, createAgentVersionHandler(versionsSvc)))
 	apiMux.Handle("POST /agents/{id}/versions/{version}/publish", wrap(auth.PermissionAgentsWrite, publishAgentVersionHandler(versionsSvc)))
 	apiMux.Handle("POST /agents/{id}/rollback", wrap(auth.PermissionAgentsWrite, rollbackAgentHandler(versionsSvc)))

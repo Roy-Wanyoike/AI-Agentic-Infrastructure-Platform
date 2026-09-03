@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -323,6 +325,145 @@ func (s *VersionsService) RollbackVersionCtx(ctx context.Context, orgID, agentID
 		return nil, err
 	}
 	return target, nil
+}
+
+// VersionDiffField is one comparable field's from/to pair. From/To carry the
+// raw JSON values from each snapshot (nil when the field is absent on that
+// side); Changed reports whether the values differ.
+type VersionDiffField struct {
+	Field   string `json:"field"`
+	From    any    `json:"from"`
+	To      any    `json:"to"`
+	Changed bool   `json:"changed"`
+}
+
+// VersionDiff is the structured field-level diff between two config versions
+// of the same agent (the GET .../versions/diff response body, snake_case).
+type VersionDiff struct {
+	AgentID string             `json:"agent_id"`
+	From    int                `json:"from"`
+	To      int                `json:"to"`
+	Fields  []VersionDiffField `json:"fields"`
+}
+
+// comparableSnapshotFields pins the diff fields named by the wave-3 contract
+// (model, system_prompt, temperature/params, tools, description). Canonical is
+// the response field name; Keys lists the snapshot JSON keys that may carry
+// the value (first present key wins per side), which keeps legacy snapshots
+// (instructions) and future ones (system_prompt) comparable.
+var comparableSnapshotFields = []struct {
+	Canonical string
+	Keys      []string
+}{
+	{Canonical: "model", Keys: []string{"model"}},
+	{Canonical: "system_prompt", Keys: []string{"system_prompt", "instructions"}},
+	{Canonical: "temperature", Keys: []string{"temperature"}},
+	{Canonical: "params", Keys: []string{"params"}},
+	{Canonical: "tools", Keys: []string{"tools"}},
+	{Canonical: "description", Keys: []string{"description"}},
+}
+
+// parseSnapshotObject decodes a snapshot document into a key/value map;
+// malformed or non-object snapshots degrade to an empty map (a diff against
+// them reports the other side's values as changed, never a 500).
+func parseSnapshotObject(snapshot string) map[string]any {
+	out := map[string]any{}
+	if strings.TrimSpace(snapshot) == "" {
+		return out
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(snapshot), &decoded); err != nil || decoded == nil {
+		return map[string]any{}
+	}
+	return decoded
+}
+
+// lookupSnapshotValue returns the first non-null value found for any of keys.
+func lookupSnapshotValue(snapshot map[string]any, keys []string) any {
+	for _, key := range keys {
+		if value, ok := snapshot[key]; ok && value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+// DiffVersionsCtx computes the structured field-level diff between two config
+// versions of one agent within one tenant. Both versions are fetched through
+// the tenant+agent scoped GetVersionCtx, so unknown versions, foreign-tenant
+// agents and cross-agent version numbers all surface as ErrVersionNotFound
+// (ErrAgentNotFound when the agent itself does not exist for the caller).
+//
+// The result always contains one entry per comparable field (null when absent
+// on a side) in a stable order, followed by any additional snapshot keys
+// (sorted) so future snapshot fields diff without a service change.
+func (s *VersionsService) DiffVersionsCtx(ctx context.Context, orgID, agentID string, from, to int) (*VersionDiff, error) {
+	if s == nil {
+		return nil, errors.New("versions service is nil")
+	}
+	fromVersion, err := s.GetVersionCtx(ctx, orgID, agentID, from)
+	if err != nil {
+		return nil, err
+	}
+	toVersion, err := s.GetVersionCtx(ctx, orgID, agentID, to)
+	if err != nil {
+		return nil, err
+	}
+	// Defense in depth: both rows must belong to the requested agent (stores
+	// are already agent-scoped; this guards against future store drift).
+	if fromVersion.AgentID != agentID || toVersion.AgentID != agentID {
+		return nil, ErrVersionNotFound
+	}
+
+	fromSnap := parseSnapshotObject(fromVersion.Snapshot)
+	toSnap := parseSnapshotObject(toVersion.Snapshot)
+
+	fields := make([]VersionDiffField, 0, len(comparableSnapshotFields)+len(fromSnap)+len(toSnap))
+	covered := make(map[string]bool, len(comparableSnapshotFields))
+	for _, comparableField := range comparableSnapshotFields {
+		fromValue := lookupSnapshotValue(fromSnap, comparableField.Keys)
+		toValue := lookupSnapshotValue(toSnap, comparableField.Keys)
+		for _, key := range comparableField.Keys {
+			covered[key] = true
+		}
+		fields = append(fields, VersionDiffField{
+			Field:   comparableField.Canonical,
+			From:    fromValue,
+			To:      toValue,
+			Changed: !reflect.DeepEqual(fromValue, toValue),
+		})
+	}
+
+	// Extra snapshot keys (e.g. name/status today, future fields) diff too so
+	// the viewer never hides a change the snapshots recorded. Keys present on
+	// both sides are emitted exactly once (union), sorted.
+	extras := make([]string, 0, len(fromSnap)+len(toSnap))
+	seenExtras := make(map[string]bool, len(fromSnap)+len(toSnap))
+	for _, snap := range []map[string]any{fromSnap, toSnap} {
+		for key := range snap {
+			if covered[key] || snap[key] == nil || seenExtras[key] {
+				continue
+			}
+			seenExtras[key] = true
+			extras = append(extras, key)
+		}
+	}
+	sort.Strings(extras)
+	for _, key := range extras {
+		fields = append(fields, VersionDiffField{
+			Field:   key,
+			From:    fromSnap[key],
+			To:      toSnap[key],
+			Changed: !reflect.DeepEqual(fromSnap[key], toSnap[key]),
+		})
+	}
+
+	return &VersionDiff{
+		AgentID: agentID,
+		From:    from,
+		To:      to,
+		Fields:  fields,
+	}, nil
 }
 
 // ResolvePublishedVersion verifies that a version exists AND is published;

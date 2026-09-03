@@ -1,0 +1,178 @@
+openapi: 3.1.0
+info:
+  title: AgentOS — agent version diff (wave-3 track 3-e fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the field-level agent version diff endpoint added by
+  wave-3 track 3-e. Components carry the track-unique `Vdf*` prefix and every
+  local $ref resolves inside this file, so the orchestrator can merge the path
+  and components into api/openapi.yaml without collisions.
+paths:
+  /agents/{id}/versions/diff:
+    get:
+      operationId: diffAgentVersions
+      summary: Structured field-level diff between two config versions of one agent
+      description: |
+        Compares the immutable snapshot documents of version `from` and version
+        `to` of the same agent. The response always contains one entry per
+        comparable field (model, system_prompt, temperature, params, tools,
+        description — null when a snapshot does not capture the field) plus any
+        additional snapshot keys, sorted, so future snapshot fields diff too.
+        `changed` is true when the from/to values differ. Both versions are
+        resolved strictly within the caller's organization; unknown versions,
+        cross-agent version numbers and foreign-tenant agents surface as 404.
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/VdfAgentID'
+      - $ref: '#/components/parameters/VdfFromVersion'
+      - $ref: '#/components/parameters/VdfToVersion'
+      responses:
+        '200':
+          description: The field-level diff document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VdfVersionDiffResponse'
+        '400':
+          description: from/to missing, non-integer, or not positive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VdfErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/VdfUnauthorized'
+        '403':
+          $ref: '#/components/responses/VdfForbidden'
+        '404':
+          description: |
+            Agent or version not found within the caller's organization
+            (error.code AGENT_NOT_FOUND or VERSION_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VdfErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VdfErrorEnvelope'
+components:
+  parameters:
+    VdfAgentID:
+      name: id
+      in: path
+      required: true
+      description: Agent identifier (UUID v4 string).
+      schema:
+        type: string
+      example: 3f9d6c5e-8b21-4f0a-9c3d-7a1e5b2c4d6f
+    VdfFromVersion:
+      name: from
+      in: query
+      required: true
+      description: Base version number of the diff (positive integer; may equal `to`).
+      schema:
+        type: integer
+        minimum: 1
+      example: 2
+    VdfToVersion:
+      name: to
+      in: query
+      required: true
+      description: Target version number of the diff (positive integer; may equal `from`).
+      schema:
+        type: integer
+        minimum: 1
+      example: 3
+  responses:
+    VdfUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VdfErrorEnvelope'
+    VdfForbidden:
+      description: Authenticated but lacking the agents.read permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VdfErrorEnvelope'
+  schemas:
+    VdfDiffValue:
+      description: |
+        Raw JSON value of a snapshot field (string, number, boolean, array or
+        object). Null when the field is absent from that side's snapshot.
+      type: [string, number, boolean, array, object, 'null']
+    VdfVersionDiffField:
+      type: object
+      description: One comparable field's from/to pair.
+      properties:
+        field:
+          type: string
+          description: Canonical field name (model, system_prompt, temperature, params, tools, description) or an extra snapshot key.
+          examples:
+          - model
+        from:
+          $ref: '#/components/schemas/VdfDiffValue'
+        to:
+          $ref: '#/components/schemas/VdfDiffValue'
+        changed:
+          type: boolean
+          description: True when the from/to values differ.
+      required:
+      - field
+      - from
+      - to
+      - changed
+    VdfVersionDiffResponse:
+      type: object
+      description: Wave-3 contract shape {"agent_id","from","to","fields":[…]} (snake_case).
+      properties:
+        agent_id:
+          type: string
+          description: The agent the diffed versions belong to.
+          examples:
+          - 3f9d6c5e-8b21-4f0a-9c3d-7a1e5b2c4d6f
+        from:
+          type: integer
+          description: Echoes the from query parameter.
+          examples:
+          - 2
+        to:
+          type: integer
+          description: Echoes the to query parameter.
+          examples:
+          - 3
+        fields:
+          type: array
+          description: Comparable fields in stable order, extra snapshot keys appended sorted.
+          items:
+            $ref: '#/components/schemas/VdfVersionDiffField'
+      required:
+      - agent_id
+      - from
+      - to
+      - fields
+    VdfErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of AGENT_NOT_FOUND, VERSION_NOT_FOUND, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - VERSION_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error

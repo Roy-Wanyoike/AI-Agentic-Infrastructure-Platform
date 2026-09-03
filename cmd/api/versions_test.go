@@ -140,6 +140,7 @@ func TestVersionsEndpointsRequireAuth(t *testing.T) {
 	env := newVersionsHandlerEnv(t)
 	paths := []struct{ method, path string }{
 		{http.MethodGet, "/agents/" + env.agentID + "/versions"},
+		{http.MethodGet, "/agents/" + env.agentID + "/versions/diff?from=1&to=2"},
 		{http.MethodPost, "/agents/" + env.agentID + "/versions/create"},
 		{http.MethodPost, "/agents/" + env.agentID + "/versions/2/publish"},
 		{http.MethodPost, "/agents/" + env.agentID + "/rollback"},
@@ -565,4 +566,154 @@ func TestDeploymentsHandlerCreateValidation(t *testing.T) {
 	if rr.Code != http.StatusNotFound || errCode(t, body) != "DEPLOYMENT_NOT_FOUND" {
 		t.Fatalf("promote unknown id: expected 404 DEPLOYMENT_NOT_FOUND, got %d %v", rr.Code, body)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Version diff endpoint (wave-3 track 3-e)
+// ---------------------------------------------------------------------------
+
+// TestVersionsDiffHandler drives GET /agents/{id}/versions/diff through the
+// full middleware chain: contract JSON shape, same-version no-op, known
+// diffs in both directions, error mapping, and the tenant guard.
+func TestVersionsDiffHandler(t *testing.T) {
+	env := newVersionsHandlerEnv(t)
+	ctx := context.Background()
+
+	// Seed v2 from the initial config, drift the agent, seed + publish v3.
+	if _, err := env.versionsSvc.CreateVersionCtx(ctx, env.orgID, env.agentID, "user-1"); err != nil {
+		t.Fatalf("seed v2 failed: %v", err)
+	}
+	agent, _ := env.agentsSvc.GetAgentCtx(ctx, env.orgID, env.agentID)
+	agent.Instructions = "help users v2"
+	agent.Model = "gpt-4o"
+	if err := env.agentsSvc.UpdateAgentCtx(ctx, env.orgID, agent); err != nil {
+		t.Fatalf("drift agent failed: %v", err)
+	}
+	v3, err := env.versionsSvc.CreateVersionCtx(ctx, env.orgID, env.agentID, "user-1")
+	if err != nil {
+		t.Fatalf("seed v3 failed: %v", err)
+	}
+	if _, err := env.versionsSvc.PublishVersionCtx(ctx, env.orgID, env.agentID, v3.Version, "user-1"); err != nil {
+		t.Fatalf("publish v3 failed: %v", err)
+	}
+
+	type diffField struct {
+		Field   string `json:"field"`
+		From    any    `json:"from"`
+		To      any    `json:"to"`
+		Changed bool   `json:"changed"`
+	}
+	type diffDoc struct {
+		AgentID string      `json:"agent_id"`
+		From    int         `json:"from"`
+		To      int         `json:"to"`
+		Fields  []diffField `json:"fields"`
+	}
+	parse := func(t *testing.T, body map[string]any) diffDoc {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		var doc diffDoc
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("diff response is not the contract document: %v (%s)", err, raw)
+		}
+		return doc
+	}
+	fieldMap := func(doc diffDoc) map[string]diffField {
+		out := make(map[string]diffField, len(doc.Fields))
+		for _, field := range doc.Fields {
+			out[field.Field] = field
+		}
+		return out
+	}
+
+	t.Run("same version diff is all unchanged", func(t *testing.T) {
+		rr, body := env.do(t, http.MethodGet, "/agents/"+env.agentID+"/versions/diff?from=2&to=2", env.ownerToken, "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		doc := parse(t, body)
+		if doc.AgentID != env.agentID || doc.From != 2 || doc.To != 2 || len(doc.Fields) == 0 {
+			t.Fatalf("unexpected diff header/fields: %+v", doc)
+		}
+		for _, field := range doc.Fields {
+			if field.Changed {
+				t.Fatalf("same-version diff reported %q changed (%v -> %v)", field.Field, field.From, field.To)
+			}
+		}
+	})
+
+	t.Run("known diffs are reported field by field", func(t *testing.T) {
+		rr, body := env.do(t, http.MethodGet, "/agents/"+env.agentID+"/versions/diff?from=2&to=3", env.memberToken, "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		doc := parse(t, body)
+		if doc.AgentID != env.agentID || doc.From != 2 || doc.To != 3 {
+			t.Fatalf("unexpected diff header: %+v", doc)
+		}
+		fields := fieldMap(doc)
+		if f := fields["model"]; !f.Changed || f.From != "gpt-4o-mini" || f.To != "gpt-4o" {
+			t.Fatalf("unexpected model diff: %+v", f)
+		}
+		if f := fields["system_prompt"]; !f.Changed || f.From != "help users v1" || f.To != "help users v2" {
+			t.Fatalf("instructions must surface as system_prompt: %+v", f)
+		}
+		if f := fields["tools"]; f.Changed || f.From != nil || f.To != nil {
+			t.Fatalf("absent tools must be null/unchanged: %+v", f)
+		}
+	})
+
+	t.Run("direction is preserved from->to", func(t *testing.T) {
+		rr, body := env.do(t, http.MethodGet, "/agents/"+env.agentID+"/versions/diff?from=3&to=2", env.ownerToken, "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		doc := parse(t, body)
+		if doc.From != 3 || doc.To != 2 {
+			t.Fatalf("from/to must echo the query, got %+v", doc)
+		}
+		fields := fieldMap(doc)
+		if f := fields["model"]; !f.Changed || f.From != "gpt-4o" || f.To != "gpt-4o-mini" {
+			t.Fatalf("reverse diff must swap from/to: %+v", f)
+		}
+	})
+
+	t.Run("unknown version is 404 VERSION_NOT_FOUND", func(t *testing.T) {
+		rr, body := env.do(t, http.MethodGet, "/agents/"+env.agentID+"/versions/diff?from=99&to=2", env.ownerToken, "")
+		if rr.Code != http.StatusNotFound || errCode(t, body) != "VERSION_NOT_FOUND" {
+			t.Fatalf("expected 404 VERSION_NOT_FOUND, got %d %v", rr.Code, body)
+		}
+		rr, body = env.do(t, http.MethodGet, "/agents/"+env.agentID+"/versions/diff?from=2&to=99", env.ownerToken, "")
+		if rr.Code != http.StatusNotFound || errCode(t, body) != "VERSION_NOT_FOUND" {
+			t.Fatalf("expected 404 VERSION_NOT_FOUND, got %d %v", rr.Code, body)
+		}
+	})
+
+	t.Run("unknown agent is 404 AGENT_NOT_FOUND", func(t *testing.T) {
+		rr, body := env.do(t, http.MethodGet, "/agents/agent-missing/versions/diff?from=1&to=2", env.ownerToken, "")
+		if rr.Code != http.StatusNotFound || errCode(t, body) != "AGENT_NOT_FOUND" {
+			t.Fatalf("expected 404 AGENT_NOT_FOUND, got %d %v", rr.Code, body)
+		}
+	})
+
+	t.Run("cross-tenant access is 404 (tenant guard)", func(t *testing.T) {
+		rr, _ := env.do(t, http.MethodGet, "/agents/"+env.agentID+"/versions/diff?from=2&to=3", env.otherToken, "")
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("cross-tenant diff: expected %d, got %d body=%s", http.StatusNotFound, rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("invalid query params are 400 INVALID_REQUEST", func(t *testing.T) {
+		for _, path := range []string{
+			"/agents/" + env.agentID + "/versions/diff",
+			"/agents/" + env.agentID + "/versions/diff?from=0&to=2",
+			"/agents/" + env.agentID + "/versions/diff?from=2&to=abc",
+			"/agents/" + env.agentID + "/versions/diff?from=-1&to=2",
+		} {
+			rr, body := env.do(t, http.MethodGet, path, env.ownerToken, "")
+			if rr.Code != http.StatusBadRequest || errCode(t, body) != "INVALID_REQUEST" {
+				t.Fatalf("%s: expected 400 INVALID_REQUEST, got %d %v", path, rr.Code, body)
+			}
+		}
+	})
 }

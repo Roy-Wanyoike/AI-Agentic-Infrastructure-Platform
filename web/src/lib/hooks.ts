@@ -37,6 +37,22 @@ import {
   runEvalDataset,
 } from './api/evaluations'
 import type { CreateEvalDatasetInput } from './api/evaluations'
+import {
+  createAgentVersion,
+  createDeployment,
+  diffAgentVersions,
+  listAgentVersions,
+  listDeployments,
+  promoteDeployment,
+  publishAgentVersion,
+  rollbackAgent,
+  rollbackDeployment,
+} from './api/versions'
+import { createPolicy, evaluatePolicy, listPolicies } from './api/policies'
+import { createSchedule, listSchedules, pauseSchedule, resumeSchedule } from './api/schedules'
+import { createWebhook, deleteWebhook, listWebhookDeliveries, listWebhooks } from './api/webhooks'
+import type { CreateScheduleInput } from './api/schedules'
+import type { CreatePolicyInput } from './api/policies'
 
 export function useAgents() {
   return useQuery({ queryKey: ['agents'], queryFn: listAgents })
@@ -346,5 +362,188 @@ export function useCompareEvalRuns() {
   return useMutation({
     mutationFn: ({ baselineRunId, candidateRunId }: { baselineRunId: string; candidateRunId: string }) =>
       compareEvalRuns(baselineRunId, candidateRunId),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Versions + deployments (track 2-b contract + track 3-e diff)
+// ---------------------------------------------------------------------------
+
+export function useAgentVersions(agentId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['agentVersions', agentId],
+    queryFn: () => listAgentVersions(agentId as string),
+    enabled: Boolean(agentId),
+  })
+}
+
+export function useVersionDiff(agentId: string | null | undefined, from: number | null, to: number | null) {
+  return useQuery({
+    queryKey: ['versionDiff', agentId, from, to],
+    queryFn: () => diffAgentVersions(agentId as string, from as number, to as number),
+    enabled: Boolean(agentId) && from !== null && to !== null,
+    retry: false, // 404 VERSION_NOT_FOUND should surface immediately
+  })
+}
+
+export function useCreateAgentVersion(agentId: string | null | undefined) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => createAgentVersion(agentId as string),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agentVersions', agentId] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+}
+
+export function usePublishAgentVersion(agentId: string | null | undefined) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (version: number) => publishAgentVersion(agentId as string, version),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agentVersions', agentId] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      void queryClient.invalidateQueries({ queryKey: ['versionDiff'] })
+    },
+  })
+}
+
+export function useRollbackAgent(agentId: string | null | undefined) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (targetVersion: number) => rollbackAgent(agentId as string, targetVersion),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agentVersions', agentId] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
+    },
+  })
+}
+
+export function useDeployments(agentId?: string | null) {
+  return useQuery({
+    queryKey: ['deployments', agentId ?? 'all'],
+    queryFn: () => listDeployments(agentId ?? undefined),
+  })
+}
+
+export function useCreateDeployment() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { agentId: string; version: number; environment: string }) => createDeployment(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['deployments'] })
+    },
+  })
+}
+
+export function usePromoteDeployment() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => promoteDeployment(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['deployments'] })
+    },
+  })
+}
+
+export function useRollbackDeployment() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => rollbackDeployment(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['deployments'] })
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Policies (track 2-c contract)
+// ---------------------------------------------------------------------------
+
+export function usePolicies() {
+  return useQuery({ queryKey: ['policies'], queryFn: listPolicies })
+}
+
+export function useCreatePolicy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreatePolicyInput) => createPolicy(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['policies'] })
+    },
+  })
+}
+
+export function useEvaluatePolicy() {
+  return useMutation({ mutationFn: (request: unknown) => evaluatePolicy(request) })
+}
+
+// ---------------------------------------------------------------------------
+// Schedules (track 2-f contract)
+// ---------------------------------------------------------------------------
+
+export function useSchedules() {
+  return useQuery({ queryKey: ['schedules'], queryFn: listSchedules })
+}
+
+export function useCreateSchedule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateScheduleInput) => createSchedule(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['schedules'] })
+    },
+  })
+}
+
+export function useScheduleTransition() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, action }: { id: string; action: 'pause' | 'resume' }) =>
+      action === 'pause' ? pauseSchedule(id) : resumeSchedule(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['schedules'] })
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Webhooks (track 2-e contract)
+// ---------------------------------------------------------------------------
+
+export function useWebhooks() {
+  return useQuery({ queryKey: ['webhooks'], queryFn: listWebhooks })
+}
+
+export function useCreateWebhook() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { url: string; events: string[] }) => createWebhook(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['webhooks'] })
+    },
+  })
+}
+
+export function useDeleteWebhook() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => deleteWebhook(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['webhooks'] })
+      void queryClient.invalidateQueries({ queryKey: ['webhookDeliveries'] })
+    },
+  })
+}
+
+export function useWebhookDeliveries(webhookId: string | null | undefined, limit = 50) {
+  return useQuery({
+    queryKey: ['webhookDeliveries', webhookId, limit],
+    queryFn: () => listWebhookDeliveries(webhookId as string, limit),
+    enabled: Boolean(webhookId),
+    // Deliveries land asynchronously while events fire; keep them fresh.
+    refetchInterval: 10000,
   })
 }
