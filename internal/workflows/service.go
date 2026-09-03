@@ -19,7 +19,9 @@ const (
 )
 
 // Workflow run statuses. pending|running|waiting_approval are control-plane
-// states; completed|failed|cancelled are terminal.
+// states; completed|failed|cancelled are terminal. timeout is the terminal
+// state assigned by the recovery watchdog when deadline_at passes
+// (wave-3 track 3-c).
 const (
 	RunStatusPending         = "pending"
 	RunStatusRunning         = "running"
@@ -27,6 +29,7 @@ const (
 	RunStatusCompleted       = "completed"
 	RunStatusFailed          = "failed"
 	RunStatusCancelled       = "cancelled"
+	RunStatusTimeout         = "timeout"
 )
 
 var (
@@ -62,41 +65,63 @@ type Version struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
-// WorkflowRun is one execution of a workflow (expansion of its DAG).
+// WorkflowRun is one execution of a workflow (expansion of its DAG). The
+// durability fields (attempt/locked_at/heartbeat_at/finished_at/deadline_at/
+// error_code) are maintained by the durable-execution layer (durable.go,
+// recovery.go) and the columns were added by migration 013.
 type WorkflowRun struct {
-	ID             string    `json:"id"`
-	WorkflowID     string    `json:"workflow_id"`
-	OrganizationID string    `json:"organization_id"`
-	Input          string    `json:"input,omitempty"`
-	Status         string    `json:"status"`
-	CreatedBy      string    `json:"created_by,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string     `json:"id"`
+	WorkflowID     string     `json:"workflow_id"`
+	OrganizationID string     `json:"organization_id"`
+	Input          string     `json:"input,omitempty"`
+	Status         string     `json:"status"`
+	CreatedBy      string     `json:"created_by,omitempty"`
+	Attempt        int        `json:"attempt"`
+	LockedAt       *time.Time `json:"locked_at,omitempty"`
+	HeartbeatAt    *time.Time `json:"heartbeat_at,omitempty"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	DeadlineAt     *time.Time `json:"deadline_at,omitempty"`
+	ErrorCode      string     `json:"error_code,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
-// NodeRun records the node -> run mapping created while expanding the DAG.
+// NodeRun records one checkpointed execution attempt of a DAG node. Rows are
+// keyed idempotently by (workflow_run_id, node_id, attempt): a replayed task
+// never re-executes a node whose latest attempt is already terminal.
+// OrganizationID is the tenant scope of the row; it is persisted in the
+// organization_id column (via the store's orgID argument) but excluded from
+// the JSON wire shape for backwards compatibility.
 type NodeRun struct {
-	ID            string     `json:"id"`
-	WorkflowRunID string     `json:"workflow_run_id"`
-	NodeID        string     `json:"node_id"`
-	RunID         string     `json:"run_id,omitempty"`
-	Status        string     `json:"status"`
-	Error         string     `json:"error,omitempty"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
-	FinishedAt    *time.Time `json:"finished_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	ID             string     `json:"id"`
+	WorkflowRunID  string     `json:"workflow_run_id"`
+	NodeID         string     `json:"node_id"`
+	RunID          string     `json:"run_id,omitempty"`
+	Status         string     `json:"status"`
+	Error          string     `json:"error,omitempty"`
+	Attempt        int        `json:"attempt"`
+	LockedAt       *time.Time `json:"locked_at,omitempty"`
+	HeartbeatAt    *time.Time `json:"heartbeat_at,omitempty"`
+	ErrorCode      string     `json:"error_code,omitempty"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	OrganizationID string     `json:"-"`
 }
 
 // Service is the dual-mode workflow service: in-memory maps by default,
 // Postgres-backed when constructed with NewServiceWithStore.
 type Service struct {
-	mu           sync.Mutex
-	workflows    map[string]*Workflow
-	versions     map[string][]*Version
-	workflowRuns map[string]*WorkflowRun
-	nodeRuns     map[string][]*NodeRun
-	store        Store
-	engine       Engine
+	mu              sync.Mutex
+	workflows       map[string]*Workflow
+	versions        map[string][]*Version
+	workflowRuns    map[string]*WorkflowRun
+	nodeRuns        map[string][]*NodeRun
+	nodeRunIndex    map[string]*NodeRun
+	store           Store
+	engine          Engine
+	staleAfter      time.Duration
+	defaultDeadline time.Duration
 }
 
 func NewService() *Service {
@@ -105,6 +130,8 @@ func NewService() *Service {
 		versions:     make(map[string][]*Version),
 		workflowRuns: make(map[string]*WorkflowRun),
 		nodeRuns:     make(map[string][]*NodeRun),
+		nodeRunIndex: make(map[string]*NodeRun),
+		staleAfter:   DefaultStaleAfter,
 	}
 }
 
@@ -113,6 +140,18 @@ func NewService() *Service {
 func NewServiceWithStore(store Store) *Service {
 	s := NewService()
 	s.store = store
+	return s
+}
+
+// NewServiceWithOptions builds a service with durability knobs applied
+// (WithoutStore: purely in-memory). See WithStaleAfter / WithDefaultRunDeadline.
+func NewServiceWithOptions(store Store, opts ...Option) *Service {
+	s := NewServiceWithStore(store)
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
 	return s
 }
 
