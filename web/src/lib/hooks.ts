@@ -7,6 +7,9 @@
 //   ['runs', id]        — run detail (shared by SSE subscription + polling)
 //   ['metrics']         — platform metrics snapshot
 //   ['health']          — healthz/readyz probes
+//   ['knowledge']       — knowledge document list
+//   ['memory', scope]   — memory snippets (scope = agent id or 'all')
+//   ['usageCosts', …]   — usage cost report (from/to/group_by)
 
 import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -51,6 +54,16 @@ import {
 import { createPolicy, evaluatePolicy, listPolicies } from './api/policies'
 import { createSchedule, listSchedules, pauseSchedule, resumeSchedule } from './api/schedules'
 import { createWebhook, deleteWebhook, listWebhookDeliveries, listWebhooks } from './api/webhooks'
+import {
+  createKnowledgeDocument,
+  listKnowledgeDocuments,
+  searchKnowledge,
+} from './api/knowledge'
+import { listMemorySnippets, putMemorySnippets } from './api/memory'
+import { getUsageCosts } from './api/usage'
+import type { CreateKnowledgeDocumentInput } from './api/knowledge'
+import type { PutMemoryInput } from './api/memory'
+import type { UsageCostWindow } from './api/usage'
 import type { CreateScheduleInput } from './api/schedules'
 import type { CreatePolicyInput } from './api/policies'
 
@@ -545,5 +558,64 @@ export function useWebhookDeliveries(webhookId: string | null | undefined, limit
     enabled: Boolean(webhookId),
     // Deliveries land asynchronously while events fire; keep them fresh.
     refetchInterval: 10000,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge / RAG (wave-3 knowledge endpoints; backend reuses agents.read /
+// agents.write — the views gate writes with the canWrite capability)
+// ---------------------------------------------------------------------------
+
+export function useKnowledgeDocuments() {
+  return useQuery({ queryKey: ['knowledge'], queryFn: listKnowledgeDocuments })
+}
+
+export function useCreateKnowledgeDocument() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateKnowledgeDocumentInput) => createKnowledgeDocument(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledge'] })
+    },
+  })
+}
+
+export function useSearchKnowledge() {
+  return useMutation({
+    mutationFn: ({ query, k }: { query: string; k?: number }) => searchKnowledge(query, k),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Memory (wave-3 memory endpoints; same agents.read/agents.write fallback).
+// agentId === undefined/'' lists the whole organization; a specific id filters.
+// ---------------------------------------------------------------------------
+
+export function useMemorySnippets(agentId?: string | null) {
+  return useQuery({
+    queryKey: ['memory', agentId ?? 'all'],
+    queryFn: () => listMemorySnippets(agentId ?? undefined),
+  })
+}
+
+export function usePutMemory() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: PutMemoryInput) => putMemorySnippets(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['memory'] })
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Usage costs (wave-3 cost report, GET /usage/costs, usage.read)
+// ---------------------------------------------------------------------------
+
+export function useUsageCosts(window: UsageCostWindow = {}) {
+  const { from = '', to = '', groupBy = 'day' } = window
+  return useQuery({
+    queryKey: ['usageCosts', from, to, groupBy],
+    queryFn: () => getUsageCosts(window),
   })
 }

@@ -65,20 +65,3 @@ export function EmptyState({ title, hint, action }: { title: string; hint?: stri
   )
 }
 
-export function DemoBadge() {
-  return (
-    <span className="demo-badge" title="Demo content — this section is not backed by a live API endpoint yet">
-      Demo data
-    </span>
-  )
-}
-
-export function DemoStrip({ note }: { note: string }) {
-  return (
-    <div className="demo-strip" role="note">
-      <DemoBadge />
-      <span>{note}</span>
-    </div>
-  )
-}
-

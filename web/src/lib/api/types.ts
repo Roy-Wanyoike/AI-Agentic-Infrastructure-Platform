@@ -76,10 +76,28 @@ export type RunStep = {
   createdAt?: string
 }
 
+/**
+ * One bucketed histogram from the /metrics?format=json "histograms" section
+ * (backend observability.HistogramSummary): cumulative bucket counts with
+ * p50/p95/p99 estimates. Duration values are seconds; count/sum/buckets are
+ * raw observations. Percentiles are 0 while the histogram is empty.
+ */
+export type HistogramSummary = {
+  count: number
+  sum: number
+  min?: number
+  max?: number
+  p50: number
+  p95: number
+  p99: number
+  buckets?: Record<string, number>
+}
+
 export type MetricsSnapshot = {
   counts: Record<string, number>
   latency: Record<string, number>
   queueLength: number
+  histograms: Record<string, HistogramSummary>
 }
 
 export type AuthUser = {
@@ -217,10 +235,37 @@ export function normalizeMetrics(raw: unknown): MetricsSnapshot {
       if (parsed !== undefined) latency[key] = parsed
     }
   }
+  const histograms: Record<string, HistogramSummary> = {}
+  const histogramsRecord = asRecord(pickField(raw, 'histograms'))
+  if (histogramsRecord) {
+    for (const [key, value] of Object.entries(histogramsRecord)) {
+      const summary = asRecord(value)
+      if (!summary) continue
+      const bucketRecord = asRecord(summary.buckets)
+      const buckets: Record<string, number> = {}
+      if (bucketRecord) {
+        for (const [bound, count] of Object.entries(bucketRecord)) {
+          const parsed = asNumber(count)
+          if (parsed !== undefined) buckets[bound] = parsed
+        }
+      }
+      histograms[key] = {
+        count: asNumber(pickField(summary, 'count')) ?? 0,
+        sum: asNumber(pickField(summary, 'sum')) ?? 0,
+        min: asNumber(pickField(summary, 'min')),
+        max: asNumber(pickField(summary, 'max')),
+        p50: asNumber(pickField(summary, 'p50')) ?? 0,
+        p95: asNumber(pickField(summary, 'p95')) ?? 0,
+        p99: asNumber(pickField(summary, 'p99')) ?? 0,
+        buckets,
+      }
+    }
+  }
   return {
     counts,
     latency,
-    queueLength: asNumber(pickField(raw, 'queueLength', 'queueDepth')) ?? 0,
+    queueLength: asNumber(pickField(raw, 'queueLength', 'queueDepth', 'queue_length')) ?? 0,
+    histograms,
   }
 }
 
