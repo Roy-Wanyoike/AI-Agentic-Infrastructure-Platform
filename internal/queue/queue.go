@@ -24,6 +24,7 @@ type Task struct {
 type Queue struct {
 	mu    sync.Mutex
 	tasks []*Task
+	redis *RedisQueue // non-nil ⇒ redis-backed mode: operations delegate to Redis
 }
 
 func NewQueue() *Queue {
@@ -45,7 +46,7 @@ func NewRedisQueue(addr string) (*RedisQueue, error) {
 		return nil, err
 	}
 
-	return &RedisQueue{client: client, key: "agentos:queue"}, nil
+	return &RedisQueue{client: client, key: DefaultQueueKey}, nil
 }
 
 func encodeTask(task *Task) (string, error) {
@@ -172,6 +173,9 @@ func (q *RedisQueue) Requeue(task *Task) {
 }
 
 func (q *Queue) Enqueue(taskType string, payload map[string]any) *Task {
+	if q.redis != nil {
+		return q.redis.Enqueue(taskType, payload)
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	task := &Task{
@@ -188,6 +192,10 @@ func (q *Queue) Enqueue(taskType string, payload map[string]any) *Task {
 }
 
 func (q *Queue) MarkStarted(task *Task) {
+	if q.redis != nil {
+		q.redis.MarkStarted(task)
+		return
+	}
 	if task == nil {
 		return
 	}
@@ -199,6 +207,10 @@ func (q *Queue) MarkStarted(task *Task) {
 }
 
 func (q *Queue) MarkFailed(task *Task, errMsg string) {
+	if q.redis != nil {
+		q.redis.MarkFailed(task, errMsg)
+		return
+	}
 	if task == nil {
 		return
 	}
@@ -216,12 +228,18 @@ func (q *Queue) MarkFailed(task *Task, errMsg string) {
 }
 
 func (q *Queue) Length() int {
+	if q.redis != nil {
+		return q.redis.Length()
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.tasks)
 }
 
 func (q *Queue) Peek() *Task {
+	if q.redis != nil {
+		return q.redis.Peek()
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.tasks) == 0 {
@@ -231,6 +249,10 @@ func (q *Queue) Peek() *Task {
 }
 
 func (q *Queue) Ack(task *Task) {
+	if q.redis != nil {
+		q.redis.Ack(task)
+		return
+	}
 	if task == nil {
 		return
 	}
@@ -244,6 +266,9 @@ func (q *Queue) Ack(task *Task) {
 	}
 }
 func (q *Queue) Dequeue() *Task {
+	if q.redis != nil {
+		return q.redis.Dequeue()
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.tasks) == 0 {
@@ -255,6 +280,10 @@ func (q *Queue) Dequeue() *Task {
 }
 
 func (q *Queue) Requeue(task *Task) {
+	if q.redis != nil {
+		q.redis.Requeue(task)
+		return
+	}
 	if task == nil {
 		return
 	}
@@ -263,6 +292,16 @@ func (q *Queue) Requeue(task *Task) {
 	task.Status = "queued"
 	task.UpdatedAt = time.Now().UTC()
 	q.tasks = append(q.tasks, task)
+}
+
+// Close releases the queue's resources. The in-memory queue holds none and
+// always returns nil; a redis-backed queue closes the Redis client (see
+// NewFromConfig / NewRedisBackedQueue). Safe to defer in main.
+func (q *Queue) Close() error {
+	if q == nil || q.redis == nil {
+		return nil
+	}
+	return q.redis.Close()
 }
 
 type ScaleReport struct {
