@@ -135,6 +135,12 @@ func NewServiceWithStore(db *sql.DB) *Service {
 	return newService(NewPostgresStore(db), NewEmbedderFromEnv())
 }
 
+// NewServiceWithEmbedder returns an in-memory service with a custom embedder
+// (used by tests and by callers wiring a specific embeddings backend).
+func NewServiceWithEmbedder(embedder Embedder) *Service {
+	return newService(nil, embedder)
+}
+
 func newService(store Store, embedder Embedder) *Service {
 	if embedder == nil {
 		embedder = NewHashEmbedder()

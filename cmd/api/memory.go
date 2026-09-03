@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"agentos/internal/apikeys"
@@ -118,6 +119,11 @@ func putMemoryHandler(svc *memory.Service) http.HandlerFunc {
 		}
 		inputs := make([]memory.SnippetInput, 0, len(req.Snippets))
 		for i, in := range req.Snippets {
+			if strings.TrimSpace(in.Content) == "" {
+				writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR",
+					"snippets["+strconv.Itoa(i)+"].content is required")
+				return
+			}
 			input := memory.SnippetInput{
 				Scope:      in.Scope,
 				Content:    in.Content,
