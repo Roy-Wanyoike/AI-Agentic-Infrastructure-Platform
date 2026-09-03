@@ -385,3 +385,162 @@ func TestVersionsStoreSQLMock(t *testing.T) {
 		t.Fatalf("pending expectations: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Version diff (wave-3 track 3-e)
+// ---------------------------------------------------------------------------
+
+// TestDiffVersionsCtxSameVersionUnchanged verifies that diffing a version
+// against itself reports every comparable field unchanged (contract case:
+// "same-version diff -> all unchanged").
+func TestDiffVersionsCtxSameVersionUnchanged(t *testing.T) {
+	ctx := context.Background()
+	_, versionsSvc, agent := newVersionsFixture(t)
+
+	created, err := versionsSvc.CreateVersionCtx(ctx, "org-1", agent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("CreateVersionCtx returned error: %v", err)
+	}
+
+	diff, err := versionsSvc.DiffVersionsCtx(ctx, "org-1", agent.ID, created.Version, created.Version)
+	if err != nil {
+		t.Fatalf("DiffVersionsCtx returned error: %v", err)
+	}
+	if diff.AgentID != agent.ID || diff.From != created.Version || diff.To != created.Version {
+		t.Fatalf("unexpected diff header: %+v", diff)
+	}
+	if len(diff.Fields) == 0 {
+		t.Fatal("expected at least one comparable field")
+	}
+	for _, field := range diff.Fields {
+		if field.Changed {
+			t.Fatalf("same-version diff reported %q as changed (%v -> %v)", field.Field, field.From, field.To)
+		}
+	}
+}
+
+// TestDiffVersionsCtxKnownDiffs verifies the field mapping for a known config
+// drift: instructions map to system_prompt, model diffs, extras (name, status)
+// surface unchanged, absent fields come back null/unchanged.
+func TestDiffVersionsCtxKnownDiffs(t *testing.T) {
+	ctx := context.Background()
+	agentSvc, versionsSvc, agent := newVersionsFixture(t)
+
+	v2, err := versionsSvc.CreateVersionCtx(ctx, "org-1", agent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("CreateVersionCtx(v2) returned error: %v", err)
+	}
+	// Drift the live config, then snapshot v3.
+	agent.Instructions = "help users v2"
+	agent.Model = "gpt-4o"
+	agent.Description = "tier-1 support"
+	if err := agentSvc.UpdateAgentCtx(ctx, "org-1", agent); err != nil {
+		t.Fatalf("UpdateAgentCtx returned error: %v", err)
+	}
+	v3, err := versionsSvc.CreateVersionCtx(ctx, "org-1", agent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("CreateVersionCtx(v3) returned error: %v", err)
+	}
+
+	byField := func(diff *VersionDiff) map[string]VersionDiffField {
+		out := make(map[string]VersionDiffField, len(diff.Fields))
+		for _, field := range diff.Fields {
+			out[field.Field] = field
+		}
+		return out
+	}
+
+	diff, err := versionsSvc.DiffVersionsCtx(ctx, "org-1", agent.ID, v2.Version, v3.Version)
+	if err != nil {
+		t.Fatalf("DiffVersionsCtx returned error: %v", err)
+	}
+	fields := byField(diff)
+
+	model, ok := fields["model"]
+	if !ok || !model.Changed || model.From != "gpt-4o-mini" || model.To != "gpt-4o" {
+		t.Fatalf("unexpected model diff: %+v", model)
+	}
+	prompt, ok := fields["system_prompt"]
+	if !ok || !prompt.Changed || prompt.From != "help users v1" || prompt.To != "help users v2" {
+		t.Fatalf("instructions must diff as system_prompt, got: %+v", prompt)
+	}
+	description, ok := fields["description"]
+	if !ok || !description.Changed || description.To != "tier-1 support" {
+		t.Fatalf("unexpected description diff: %+v", description)
+	}
+	// temperature/params/tools are absent from today's snapshots: present in
+	// the payload but null on both sides and unchanged.
+	for _, absent := range []string{"temperature", "params", "tools"} {
+		field, ok := fields[absent]
+		if !ok {
+			t.Fatalf("comparable field %q missing from diff payload", absent)
+		}
+		if field.Changed || field.From != nil || field.To != nil {
+			t.Fatalf("absent field %q must be null/unchanged, got %+v", absent, field)
+		}
+	}
+	// Extra snapshot keys (name, status) still diff, unchanged here.
+	name, ok := fields["name"]
+	if !ok || name.Changed || name.From != "Support Agent" {
+		t.Fatalf("unexpected name diff: %+v", name)
+	}
+	if fields["status"].Changed {
+		t.Fatalf("status must be unchanged, got %+v", fields["status"])
+	}
+}
+
+// TestDiffVersionsCtxUnknownVersionAndCrossTenant pins the error contract:
+// unknown from/to -> ErrVersionNotFound; a foreign-tenant caller cannot diff
+// versions of an agent it does not own (ErrAgentNotFound via the tenant guard).
+func TestDiffVersionsCtxUnknownVersionAndCrossTenant(t *testing.T) {
+	ctx := context.Background()
+	agentSvc, versionsSvc, agent := newVersionsFixture(t)
+	created, err := versionsSvc.CreateVersionCtx(ctx, "org-1", agent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("CreateVersionCtx returned error: %v", err)
+	}
+
+	cases := []struct {
+		name     string
+		agentID  string
+		orgID    string
+		from, to int
+		want     error
+	}{
+		{"unknown from version", agent.ID, "org-1", 99, created.Version, ErrVersionNotFound},
+		{"unknown to version", agent.ID, "org-1", created.Version, 99, ErrVersionNotFound},
+		{"unknown agent", "agent-missing", "org-1", 1, 2, ErrAgentNotFound},
+		{"cross-tenant agent guard", agent.ID, "org-other", created.Version, created.Version, ErrAgentNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := versionsSvc.DiffVersionsCtx(ctx, tc.orgID, tc.agentID, tc.from, tc.to)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("expected %v, got %v", tc.want, err)
+			}
+		})
+	}
+
+	// Cross-agent defense in depth: a version row stamped with a foreign
+	// agentID must surface as ErrVersionNotFound, never leak a diff.
+	other, err := agentSvc.CreateAgentCtx(ctx, "org-1", "Other Agent", "d", "i", "m")
+	if err != nil {
+		t.Fatalf("CreateAgentCtx(other) returned error: %v", err)
+	}
+	foreign := &ConfigVersion{
+		ID:             "av-foreign",
+		AgentID:        other.ID,
+		OrganizationID: "org-1",
+		Version:        created.Version + 10,
+		Snapshot:       `{"model":"m"}`,
+		Status:         VersionStatusDraft,
+	}
+	// Plant the foreign-agent row under the requested agent's key to simulate
+	// a store that returns a mismatched row.
+	versionsSvc.mu.Lock()
+	versionsSvc.items[agent.ID] = append(versionsSvc.items[agent.ID], foreign)
+	versionsSvc.mu.Unlock()
+	if _, err := versionsSvc.DiffVersionsCtx(ctx, "org-1", agent.ID, created.Version+10, created.Version+10); !errors.Is(err, ErrVersionNotFound) {
+		t.Fatalf("cross-agent mismatch must be ErrVersionNotFound, got %v", err)
+	}
+}
