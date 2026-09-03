@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -123,36 +122,14 @@ func main() {
 	registry.Register(tools.NewCalculatorTool())
 	registry.Register(tools.NewHTTPRequestTool())
 
-	// Provider wiring: when OPENAI_API_KEY is set the worker runs real model
-	// calls against any OpenAI-compatible endpoint (OPENAI_BASE_URL to point
-	// at OpenRouter/Groq/Ollama/vLLM). Without a key the runner stays in its
+	// Provider wiring (issue #15): the env-driven construction moved into
+	// models.ProviderFromEnv so the worker and the API's evaluation runner
+	// share one configuration path — same env vars (OPENAI_API_KEY,
+	// OPENAI_BASE_URL, AGENTOS_WORKER_MODEL), same defaults, same failover
+	// chaining (AGENTOS_FALLBACK_API_KEY/AGENTOS_FALLBACK_BASE_URL) and the
+	// same log-line semantics. Without OPENAI_API_KEY the runner keeps the
 	// deterministic offline mode so local development needs no credentials.
-	var provider models.Provider
-	if apiKey := os.Getenv("OPENAI_API_KEY"); strings.TrimSpace(apiKey) != "" {
-		baseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
-		if baseURL == "" {
-			baseURL = "https://api.openai.com/v1"
-		}
-		model := strings.TrimSpace(os.Getenv("AGENTOS_WORKER_MODEL"))
-		primary := models.NewOpenAIProvider("openai-compatible", apiKey, baseURL, model, &http.Client{Timeout: 120 * time.Second})
-		if fbKey := os.Getenv("AGENTOS_FALLBACK_API_KEY"); strings.TrimSpace(fbKey) != "" {
-			fbBase := strings.TrimSpace(os.Getenv("AGENTOS_FALLBACK_BASE_URL"))
-			if fbBase == "" {
-				fbBase = "https://api.openai.com/v1"
-			}
-			fallback := models.NewOpenAIProvider("fallback", fbKey, fbBase, model, &http.Client{Timeout: 120 * time.Second})
-			if chained, cerr := models.NewFailoverProvider(primary, fallback); cerr == nil {
-				provider = chained
-			} else {
-				provider = primary
-			}
-		} else {
-			provider = primary
-		}
-		logr.Info("model provider configured", "base_url", baseURL, "model", model)
-	} else {
-		logr.Warn("no OPENAI_API_KEY set; worker runs in offline deterministic mode")
-	}
+	provider, _ := models.ProviderFromEnv(logr)
 
 	// Task queue (wave-3 3-a): same AGENTOS_QUEUE selection as the API so both
 	// processes cooperate on one task flow (redis mode) or stay self-contained

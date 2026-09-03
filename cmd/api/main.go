@@ -29,6 +29,7 @@ import (
 	"agentos/internal/knowledge"
 	"agentos/internal/logger"
 	"agentos/internal/memory"
+	"agentos/internal/models"
 	"agentos/internal/observability"
 	"agentos/internal/organizations"
 	"agentos/internal/queue"
@@ -144,9 +145,20 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 			a.logr.Info("dev api key created", "api_key", key.Value)
 		}
 	}
-	// wave-2: evaluation runner + service (deterministic offline mode unless a
-	// provider is configured via env in the worker; the API runner stays offline)
-	a.evalRunner = runtime.NewRunnerWithOptions(a.agentsSvc, nil)
+	// wave-2: evaluation runner + service. Issue #15: the API process now
+	// shares the worker's env-driven provider construction — when
+	// OPENAI_API_KEY is set, eval cases execute against the configured
+	// OpenAI-compatible endpoint (real token usage on runtime.Run.Tokens,
+	// priced into per-case cost_cents by the ComputeCostCents hook below);
+	// without it the runner keeps the deterministic offline mode so
+	// zero-infrastructure development is unchanged.
+	provider, haveProvider := models.ProviderFromEnv(a.logr)
+	a.evalRunner = runtime.NewRunnerWithOptions(a.agentsSvc, nil, runtime.WithProvider(provider))
+	if haveProvider {
+		a.logr.Info("eval runner: live model provider configured", "provider", provider.Name())
+	} else {
+		a.logr.Info("eval runner: offline deterministic mode (no OPENAI_API_KEY)")
+	}
 	if db != nil {
 		a.evalSvc = evaluations.NewServiceWithStore(evaluations.NewPostgresStore(db), evaluations.Deps{
 			Agents: a.agentsSvc,
