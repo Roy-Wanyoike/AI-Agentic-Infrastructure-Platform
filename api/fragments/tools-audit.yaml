@@ -1,0 +1,188 @@
+# OpenAPI 3.1 fragment — Issue #18: public tool registry + audit trail
+# (wave 5-b). Feeds the dashboard's former "Tools" and "Security" sections
+# with real data.
+#
+# Merge target: api/openapi.yaml (paths + components.schemas).
+# Shapes match the handlers in cmd/api/tools.go and cmd/api/audit_events.go
+# exactly. Every operation carries x-required-permission — the permission
+# ACTUALLY enforced by auth.RequirePermission:
+#   - GET /tools reuses agents.read (internal/auth has no tools.read
+#     constant; same fallback the knowledge routes use — orchestrator
+#     decision, documented in the handler file);
+#   - GET /audit-events uses the dedicated audit.read permission added in
+#     internal/auth/permissions_audit.go (OWNER/ADMIN only).
+openapi: 3.1.0
+info:
+  title: AgentOS — tool registry + audit trail (wave 5-b fragment)
+  version: 3.0.0-fragment
+paths:
+  /tools:
+    get:
+      operationId: listRegisteredTools
+      summary: List the runtime's registered tools (name, description, input schema)
+      description: |
+        Read-only catalog of the agent tool registry: the built-in tools plus
+        anything else registered by the serving process. Tool registrations
+        are runtime surface (not tenant data), so the response carries no
+        organization fields; access is still authenticated and RBAC-gated.
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Tools]
+      responses:
+        '200':
+          description: The registered tools, sorted by name; empty when none are registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolListResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolErrorEnvelope'
+  /audit-events:
+    get:
+      operationId: listAuditEvents
+      summary: List the caller organization's audit trail (newest first, keyset-paginated)
+      description: |
+        The append-only audit trail of the caller's organization, newest
+        first. The tenant is taken from the auth claims only — client-supplied
+        organization ids are never trusted. Pagination is keyset-based on
+        (created_at, id): pass the returned next_cursor back as the cursor
+        query parameter; appends between pages can neither duplicate nor skip
+        rows. next_cursor is the empty string when the trail is exhausted.
+      x-required-permission: audit.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Audit]
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        description: |
+          Page size (1-200; defaults to 50). Values above 200 are clamped
+          server-side instead of erroring.
+        schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      - name: cursor
+        in: query
+        required: false
+        description: Opaque continuation token from a previous page's next_cursor.
+        schema: { type: string }
+      responses:
+        '200':
+          description: One page of the tenant's audit trail (empty array when nothing is recorded yet).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventsResponse'
+        '400':
+          description: Invalid query (non-integer/zero limit, or malformed cursor).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500':
+          description: Unexpected server failure (e.g. store unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditErrorEnvelope'
+# NOTE: '#/components/responses/Unauthorized' and 'Forbidden' resolve against
+# the EXISTING definitions in api/openapi.yaml (auth middleware responses);
+# this fragment intentionally does not redefine them.
+components:
+  schemas:
+    ToolErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of INTERNAL_ERROR (500); 401/403 use the shared auth responses.
+              examples:
+              - INTERNAL_ERROR
+            message: { type: string }
+    ToolInfo:
+      type: object
+      description: |
+        One read-only registry entry. description/input_schema are omitted
+        for tools that publish no catalog metadata (they still execute).
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Registry key the model uses in tool calls (e.g. "calculator").
+        description:
+          type: string
+          description: Human-readable summary of what the tool does.
+        input_schema:
+          type: object
+          description: JSON-Schema-style contract the tool arguments must satisfy.
+          additionalProperties: true
+    ToolListResponse:
+      type: object
+      required: [tools]
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolInfo'
+    AuditErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of INVALID_REQUEST (bad limit), INVALID_CURSOR (malformed cursor), INTERNAL_ERROR.
+              examples:
+              - INVALID_CURSOR
+            message: { type: string }
+    AuditEvent:
+      type: object
+      description: One append-only audit entry (tenant stays server-side; organization_id is implied by the caller's claims).
+      required: [id, actor, action, created_at]
+      properties:
+        id: { type: string }
+        actor: { type: string }
+        action:
+          type: string
+          description: Dotted event name (e.g. "agent.created", "run.failed").
+        resource:
+          type: string
+          description: Resource reference the action applies to (e.g. "agents/a-1"); omitted when empty.
+        metadata:
+          type: object
+          description: Free-form action context; omitted when empty.
+          additionalProperties: true
+        created_at: { type: string, format: date-time }
+    AuditEventsResponse:
+      type: object
+      required: [events, next_cursor]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        next_cursor:
+          type: string
+          description: |
+            Opaque continuation token for the next page; the empty string
+            means the trail is exhausted.
