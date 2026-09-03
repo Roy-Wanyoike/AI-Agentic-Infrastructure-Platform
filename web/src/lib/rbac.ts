@@ -16,7 +16,7 @@ export function normalizeRole(role?: string | null): Role {
 
 const WRITE_ROLES: ReadonlySet<Role> = new Set(['OWNER', 'ADMIN', 'MEMBER'])
 
-/** agents.write / workflows.write / workflows.execute / evaluations.write (MEMBER and above). */
+/** agents.write / workflows.write / workflows.execute / evaluations.write / schedules.write / webhooks.write / deployments.write (MEMBER and above). */
 export function canWrite(role?: string | null): boolean {
   return WRITE_ROLES.has(normalizeRole(role))
 }
@@ -25,4 +25,26 @@ export function canWrite(role?: string | null): boolean {
 export function canDecide(role?: string | null): boolean {
   const normalized = normalizeRole(role)
   return normalized === 'OWNER' || normalized === 'ADMIN'
+}
+
+const OWNER_ADMIN_ROLES: ReadonlySet<Role> = new Set(['OWNER', 'ADMIN'])
+
+/** True for OWNER and ADMIN (the base rolePermissions matrix and the wave-2 deployments.deploy / policies.write grants). */
+function isOwnerOrAdmin(role?: string | null): boolean {
+  return OWNER_ADMIN_ROLES.has(normalizeRole(role))
+}
+
+/** agents.write — config-version snapshot/publish + agent rollback (base matrix: OWNER and ADMIN only). */
+export function canManageVersions(role?: string | null): boolean {
+  return isOwnerOrAdmin(role)
+}
+
+/** deployments.deploy — promote/rollback deployments (wave-2 table: OWNER and ADMIN). */
+export function canDeploy(role?: string | null): boolean {
+  return isOwnerOrAdmin(role)
+}
+
+/** policies.write — create/update/delete policies (wave-2 table: OWNER and ADMIN). */
+export function canManagePolicies(role?: string | null): boolean {
+  return isOwnerOrAdmin(role)
 }
