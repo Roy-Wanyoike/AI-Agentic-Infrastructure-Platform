@@ -1,0 +1,678 @@
+# AgentOS API — OpenAPI 3.1 fragment for SSO (OIDC) login and SCIM 2.0 user
+# provisioning (issue #29, wave-7 track 7-b).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/secrets.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/sso.yaml` passes.
+# Components carry the track-unique `Sso*` / `Scim*` prefixes; operationIds
+# (beginSsoLogin, completeSsoLogin, createScimToken, listScimUsers,
+# createScimUser, getScimUser, replaceScimUser, patchScimUser) are unique
+# against every operationId in api/openapi.yaml.
+#
+# Conventions reused from the base spec:
+#   * x-required-permission documents the RBAC permission per operation where
+#     the platform RBAC surface applies. No new permission enum was added:
+#       - POST /scim/tokens -> organization.manage (matrix EXACTLY OWNER)
+#     The /auth/sso/* and /scim/v2/* operations are NOT behind the platform
+#     RBAC at all (see security below), so they carry no
+#     x-required-permission — instead each documents its own credential
+#     scheme explicitly.
+#
+# SECURITY (two separate credential planes, deliberately non-interchangeable):
+#   * /auth/sso/*: the OIDC browser flow. No session or API key is accepted —
+#     the IdP authenticates the user and the callback mints the platform's
+#     EXISTING HMAC session token (the same format as POST /auth/login).
+#     Responses set Cache-Control: no-store.
+#   * /scim/v2/*: a DEDICATED bearer credential minted by POST /scim/tokens
+#     (prefix `scim_`). Session tokens and API keys are rejected on this
+#     plane, so a directory credential can never read the rest of the API and
+#     a user session can never act as directory automation. Only the SHA-256
+#     hex hash of the secret is stored (the api_keys.key_hash pattern); the
+#     plaintext appears exactly once, in the createScimToken response.
+#   * SCIM deprovisioning is load-bearing: PATCH/PUT with active=false blocks
+#     password login through the shared auth lifecycle check
+#     (403 ACCOUNT_DISABLED on every login path).
+openapi: 3.1.0
+info:
+  title: AgentOS — SSO (OIDC) + SCIM 2.0 provisioning (wave-7 track 7-b fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the SSO and SCIM operations added by issue #29.
+
+  SSO: an org-scoped OIDC authorization-code flow. `GET /auth/sso/{org_slug}/login`
+  resolves the tenant by URL slug, validates its stored configuration against
+  live discovery and 302-redirects to the IdP authorize endpoint; the callback
+  exchanges the code, verifies the RS256 ID token end-to-end (signature via
+  JWKS, issuer, audience, expiry, nonce), JIT-provisions or links the local
+  identity by the email claim and returns the platform session token. The
+  state/nonce pair is single-use with a 10-minute TTL (replay-proof).
+
+  SCIM 2.0: an org-scoped RFC 7643/7644 user lifecycle over the platform
+  identity table, guarded by dedicated bearer credentials. Created users are
+  pinned to MEMBER and carry no password (invite-pending), so directory sync
+  can never mint privilege or credentials. userName IS the login email: it is
+  validated as an email address, stored lowercased, and immutable through
+  PUT/PATCH. Disabling a user (active=false) blocks password login.
+paths:
+  /auth/sso/{org_slug}/login:
+    get:
+      operationId: beginSsoLogin
+      summary: Start the OIDC login flow (302 to the IdP authorize URL)
+      description: |
+        Resolves the organization by its URL slug, validates the stored
+        sso_config against the live discovery document and returns a 302
+        redirect to the IdP authorization endpoint carrying client_id,
+        redirect_uri (the derived callback
+        `<scheme>://<host>/auth/sso/callback`, overridable by a config-pinned
+        redirect_uri), state, nonce and scopes. Unknown slugs and
+        unconfigured organizations both answer 404. No authentication header
+        applies: this endpoint exists to start a browser login.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SsoOrgSlug'
+      responses:
+        '302':
+          description: Redirect to the IdP authorization endpoint (Location header).
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                format: uri
+            Cache-Control:
+              schema:
+                type: string
+        '404':
+          description: |
+            No organization matches the slug (ORG_NOT_FOUND) or the
+            organization has no sso_config (SSO_NOT_CONFIGURED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '502':
+          description: |
+            The identity provider is unreachable or its discovery document is
+            invalid (SSO_UPSTREAM_ERROR). The upstream URL is never echoed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+  /auth/sso/callback:
+    get:
+      operationId: completeSsoLogin
+      summary: Complete the OIDC login flow (returns the platform session token)
+      description: |
+        The IdP redirects here with `code` and `state`. The single-use state
+        is consumed (replays and 10-minute-expired states are 401), the code
+        is exchanged (client_secret_post; inline secret or
+        client_secret_ref resolved from the platform secrets store), the
+        RS256 ID token is verified end-to-end and the local identity is
+        JIT-provisioned or linked by the email claim. Returns the platform's
+        existing HMAC session token — the same format as POST /auth/login —
+        plus a credential-free user view. Disabled accounts (SCIM
+        active=false) are refused with 403 ACCOUNT_DISABLED.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          description: Authorization code issued by the IdP.
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          description: Opaque single-use state issued by beginSsoLogin.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Login completed; the identity is provisioned/linked.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoLoginResponse'
+        '400':
+          description: Missing code or state (SSO_INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '401':
+          description: |
+            Unknown/expired/replayed state (SSO_STATE_INVALID) or a failed
+            identity-provider exchange / ID-token validation
+            (SSO_LOGIN_FAILED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '403':
+          description: Account deprovisioned (ACCOUNT_DISABLED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '409':
+          description: |
+            The email belongs to another organization
+            (SSO_EMAIL_FOREIGN_ORG) or the account is linked to a different
+            IdP subject (SSO_SUBJECT_MISMATCH — potential account takeover).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '502':
+          description: Identity provider unreachable or misconfigured (SSO_UPSTREAM_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+  /scim/tokens:
+    post:
+      operationId: createScimToken
+      summary: Mint a SCIM bearer credential (plaintext shown exactly once)
+      description: |
+        OWNER-only (organization.manage). Creates one org-scoped SCIM bearer
+        credential of the form `scim_<64 hex>`. Only the SHA-256 hex hash is
+        persisted (UNIQUE, the api_keys.key_hash trust model); the plaintext
+        is returned exactly once in `secret` and never stored or logged. The
+        response metadata never echoes the hash.
+      x-required-permission: organization.manage
+      security:
+        - bearerToken: []
+        - apiKey: []
+      responses:
+        '201':
+          description: Credential minted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScimTokenCreated'
+        '401':
+          $ref: '#/components/schemas/SsoUnauthorized'
+        '403':
+          description: Caller is not an OWNER (organization.manage).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+  /scim/v2/Users:
+    get:
+      operationId: listScimUsers
+      summary: List (SCIM 2.0 ListResponse) with optional userName-eq filter
+      description: |
+        Returns the tenant's identities as a standard SCIM 2.0 ListResponse
+        (urn:ietf:params:scim:api:messages:2.0:ListResponse) with
+        totalResults/startIndex/itemsPerPage and an always-present `Resources`
+        array (never null). The only supported filter is
+        `userName eq "<email>"` (RFC 7644 §3.4.2.2, case-insensitive, exact);
+        any other filter is 400 and NEVER degrades into a full listing.
+        Authentication is the dedicated scim_ bearer credential ONLY.
+      security:
+        - scimBearer: []
+      parameters:
+        - name: filter
+          in: query
+          required: false
+          description: Supported form — userName eq "user@example.com"
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The tenant's users (possibly an empty Resources array).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimListResponse'
+        '400':
+          description: Unsupported filter (ScimError, RFC 7644 §3.12 envelope).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '401':
+          description: |
+            Missing/unknown/revoked scim_ bearer credential (indistinguishable
+            on purpose).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+    post:
+      operationId: createScimUser
+      summary: JIT-provision one identity (SCIM 2.0 create)
+      description: |
+        Creates the identity from a SCIM 2.0 core-user document. userName is
+        the login email (validated, lowercased) and `active` defaults to
+        true. The user is created passwordless (invite-pending) and pinned to
+        MEMBER — directory sync never mints privilege. Extra attributes
+        (name, displayName, externalId, emails, password) are accepted and
+        ignored by design. Duplicate emails conflict with 409 regardless of
+        tenant (users.email is globally UNIQUE).
+      security:
+        - scimBearer: []
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimUserRequest'
+      responses:
+        '201':
+          description: Identity provisioned; Location carries the resource URL.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+        '400':
+          description: Malformed body or invalid userName.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '401':
+          description: Missing/unknown/revoked scim_ bearer credential.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '409':
+          description: A user with this email already exists.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+  /scim/v2/Users/{id}:
+    get:
+      operationId: getScimUser
+      summary: Read one identity (SCIM 2.0 core user)
+      description: |
+        Point read of one identity by SCIM id. Unknown AND foreign-tenant ids
+        both answer 404 without an existence leak.
+      security:
+        - scimBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ScimUserId'
+      responses:
+        '200':
+          description: The identity.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+        '401':
+          description: Missing/unknown/revoked scim_ bearer credential.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '404':
+          description: Unknown or foreign id (no existence leak).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+    put:
+      operationId: replaceScimUser
+      summary: Replace an identity (userName immutable)
+      description: |
+        SCIM 2.0 full replace of the mutable attributes. userName is
+        immutable in this deployment (it IS the login credential): a
+        mismatching userName is 400, so a directory rename can never hijack
+        an account. Full-replace semantics per RFC 7644 §3.5.1: an omitted
+        `active` resets to the default true.
+      security:
+        - scimBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ScimUserId'
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimUserRequest'
+      responses:
+        '200':
+          description: The replaced identity.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+        '400':
+          description: Malformed body, invalid userName or userName mismatch (immutable).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '401':
+          description: Missing/unknown/revoked scim_ bearer credential.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '404':
+          description: Unknown or foreign id.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+    patch:
+      operationId: patchScimUser
+      summary: Patch an identity (replace active — deprovisioning)
+      description: |
+        SCIM 2.0 PATCH. Supports the standard deprovisioning operations:
+        `{"op":"replace","path":"active","value":false}` and the pathless
+        `{"op":"replace","value":{"active":false}}` (op case-insensitive,
+        boolean values may be string-encoded for stock IdP connectors).
+        Anything else is 400 and applied nothing. Disabling the user blocks
+        password login platform-wide; re-enabling restores it.
+      security:
+        - scimBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ScimUserId'
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimPatchRequest'
+      responses:
+        '200':
+          description: The patched identity.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+        '400':
+          description: Unsupported or malformed patch operations (nothing applied).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '401':
+          description: Missing/unknown/revoked scim_ bearer credential.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '404':
+          description: Unknown or foreign id.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+components:
+  parameters:
+    SsoOrgSlug:
+      name: org_slug
+      in: path
+      required: true
+      description: URL slug of the organization (case-insensitive).
+      schema:
+        type: string
+    ScimUserId:
+      name: id
+      in: path
+      required: true
+      description: SCIM resource id (the platform user id).
+      schema:
+        type: string
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+    scimBearer:
+      type: http
+      scheme: bearer
+      description: |
+        Dedicated SCIM credential minted by POST /scim/tokens
+        (`Authorization: Bearer scim_...`). ONLY valid on /scim/v2/* —
+        session tokens and API keys are rejected here, and scim_ credentials
+        are rejected everywhere else.
+  schemas:
+    SsoError:
+      type: object
+      description: Shared structured error envelope.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (ORG_NOT_FOUND, SSO_NOT_CONFIGURED, SSO_STATE_INVALID, SSO_LOGIN_FAILED, ACCOUNT_DISABLED, SSO_EMAIL_FOREIGN_ORG, SSO_SUBJECT_MISMATCH, SSO_UPSTREAM_ERROR, ...).
+            message:
+              type: string
+    SsoUnauthorized:
+      description: Missing or invalid platform credentials (session/API key).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SsoError'
+    SsoLoginResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token:
+          type: string
+          description: The platform's existing HMAC session token (same format as POST /auth/login).
+        user:
+          type: object
+          description: Credential-free view of the logged-in identity.
+          required: [id, email, role, new]
+          properties:
+            id:
+              type: string
+            email:
+              type: string
+              format: email
+            role:
+              type: string
+              description: Platform role (JIT-provisioned users default to MEMBER unless the config overrides default_role).
+            new:
+              type: boolean
+              description: True when this login freshly JIT-provisioned a passwordless identity.
+    ScimTokenCreated:
+      type: object
+      required: [token, secret]
+      properties:
+        token:
+          type: object
+          description: Credential metadata (the stored hash is deliberately NOT included).
+          required: [id, organization_id, created_by, created_at]
+          properties:
+            id:
+              type: string
+            organization_id:
+              type: string
+            created_by:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+        secret:
+          type: string
+          description: |
+            The plaintext `scim_<64 hex>` bearer credential, shown EXACTLY
+            ONCE. Store it now; only its SHA-256 hash is persisted.
+    ScimUserEmail:
+      type: object
+      required: [value, primary]
+      properties:
+        value:
+          type: string
+          format: email
+        primary:
+          type: boolean
+    ScimResourceMeta:
+      type: object
+      required: [resourceType, created, lastModified, location]
+      properties:
+        resourceType:
+          type: string
+        created:
+          type: string
+          description: SCIM dateTime (ISO-8601).
+        lastModified:
+          type: string
+          description: SCIM dateTime (ISO-8601).
+        location:
+          type: string
+          description: Canonical relative resource path (/scim/v2/Users/{id}).
+    ScimUser:
+      type: object
+      description: |
+        RFC 7643 core user projection. Deliberate omissions (never invented
+        here): name/displayName (no platform columns), password/credential
+        material (SCIM users stay invite-pending), roles/groups (directory
+        sync never mints privilege — SCIM users are pinned MEMBER).
+      required: [schemas, id, userName, active, meta]
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example: ["urn:ietf:params:scim:schemas:core:2.0:User"]
+        id:
+          type: string
+        userName:
+          type: string
+          format: email
+          description: The login email (lowercased, immutable).
+        active:
+          type: boolean
+          description: |
+            Lifecycle flag. active=false blocks password login platform-wide.
+        emails:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScimUserEmail'
+        meta:
+          $ref: '#/components/schemas/ScimResourceMeta'
+    ScimUserRequest:
+      type: object
+      description: |
+        Create (POST) / replace (PUT) body. Fields beyond userName/active are
+        accepted and IGNORED (a permissive body keeps stock IdP connectors
+        working without pretending the platform persists what it does not).
+      required: [userName]
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+        userName:
+          type: string
+          format: email
+          description: The login email; validated, stored lowercased.
+        active:
+          type: boolean
+          description: |
+            Defaults to true on create; on PUT an omitted active resets to
+            true (RFC 7644 full-replace semantics).
+        password:
+          type: string
+          writeOnly: true
+          description: Accepted and NEVER stored (users stay invite-pending).
+        name:
+          type: object
+          properties:
+            givenName:
+              type: string
+            familyName:
+              type: string
+        displayName:
+          type: string
+        externalId:
+          type: string
+        emails:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScimUserEmail'
+    ScimPatchOperation:
+      type: object
+      required: [op]
+      properties:
+        op:
+          type: string
+          description: replace (case-insensitive) is the only supported op.
+        path:
+          type: string
+          description: "active (or omitted for the pathless value-object form)."
+        value:
+          description: "Boolean (or string 'true'/'false') for path form; object {'active': bool} for the pathless form."
+    ScimPatchRequest:
+      type: object
+      description: RFC 7644 §3.5.2 patch envelope ("Operations" with a capital O).
+      required: [Operations]
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"]
+        Operations:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ScimPatchOperation'
+    ScimListResponse:
+      type: object
+      description: RFC 7644 §3.4.2 listing envelope; Resources is always an array (never null).
+      required: [schemas, totalResults, startIndex, itemsPerPage, Resources]
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example: ["urn:ietf:params:scim:api:messages:2.0:ListResponse"]
+        totalResults:
+          type: integer
+        startIndex:
+          type: integer
+        itemsPerPage:
+          type: integer
+        Resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScimUser'
+    ScimError:
+      type: object
+      description: RFC 7644 §3.12 error envelope (application/scim+json).
+      required: [schemas, status, detail]
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example: ["urn:ietf:params:scim:api:messages:2.0:Error"]
+        status:
+          type: string
+          description: HTTP status as a string.
+        detail:
+          type: string
