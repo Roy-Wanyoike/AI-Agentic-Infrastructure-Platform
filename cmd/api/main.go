@@ -22,6 +22,7 @@ import (
 	"agentos/internal/auth"
 	"agentos/internal/billing"
 	"agentos/internal/config"
+	"agentos/internal/connectors"
 	"agentos/internal/database"
 	"agentos/internal/deployments"
 	"agentos/internal/evaluations"
@@ -29,6 +30,7 @@ import (
 	"agentos/internal/httpx"
 	"agentos/internal/knowledge"
 	"agentos/internal/logger"
+	"agentos/internal/marketplace"
 	"agentos/internal/memory"
 	"agentos/internal/models"
 	"agentos/internal/observability"
@@ -80,6 +82,8 @@ type app struct {
 	schedSvc       *scheduler.Service
 	billingSvc     *billing.Service
 	secretsSvc     *secrets.Service
+	mktSvc         *marketplace.Service
+	connSvc        *connectors.Service
 	whSvc          *webhooks.Service
 	publisher      events.Publisher
 }
@@ -135,6 +139,15 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 			os.Exit(1)
 		}
 		a.secretsSvc = secretsSvc
+		// issue #28: agent marketplace (publish/browse/install from version snapshots)
+		a.mktSvc = marketplace.NewServiceWithStore(marketplace.NewPostgresStore(db), a.agentsSvc, a.versionsSvc)
+		// issue #30: connectors resolving secret refs through the secrets service
+		connSvc, cerr := connectors.NewServiceWithStore(connectors.NewPostgresStore(db), connectors.SecretResolverFunc(a.secretsSvc.Resolve))
+		if cerr != nil {
+			logr.Error("connectors service init failed", "error", cerr)
+			os.Exit(1)
+		}
+		a.connSvc = connSvc
 		a.logr.Info("postgres stores enabled")
 	} else {
 		a.authSvc = auth.NewService(defaultJWTSecret)
@@ -155,6 +168,9 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		// issue #24/#25: zero-infrastructure billing + secrets (no master key needed)
 		a.billingSvc = billing.NewService()
 		a.secretsSvc = secrets.NewService()
+		// issue #28/#30: zero-infrastructure marketplace + connectors
+		a.mktSvc = marketplace.NewService(a.agentsSvc)
+		a.connSvc = connectors.NewService()
 		// create a dev API key for local worker polling convenience (only
 		// possible in-memory: the api_keys FK requires a real organization row)
 		if key, err := a.apiKeysSvc.Create("org-demo", "dev-user", "dev-key"); err != nil {
@@ -287,6 +303,10 @@ func (a *app) routes() http.Handler {
 	registerBillingRoutes(apiMux, a.billingSvc, a.authSvc, a.apiKeysSvc)
 	// issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)
 	registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	// issue #28: agent marketplace
+	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	// issue #30: connectors CRUD + health checks
+	registerConnectorsRoutes(apiMux, a.connSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 
 	apiMux.HandleFunc("/", serviceInfoHandler)
 
