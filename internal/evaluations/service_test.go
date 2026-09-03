@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"agentos/internal/agents"
+	"agentos/internal/models"
 	"agentos/internal/runtime"
 )
 
@@ -181,8 +183,20 @@ func TestCreateDatasetValidation(t *testing.T) {
 
 func TestRunDatasetScoresAndSummary(t *testing.T) {
 	s := newTestService(func(_ context.Context, _ string, input string) (*runtime.Run, error) {
-		return &runtime.Run{Status: runtime.StatusCompleted, Output: "answer for " + input}, nil
+		return &runtime.Run{Status: runtime.StatusCompleted, Output: "answer for " + input,
+			Tokens: models.Usage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+		}, nil
 	})
+	// Attach the pricing usage source exactly like the API-process wiring
+	// does (docs/wiring/cost.md): the model is resolved from the agent's
+	// configuration and the pricing hook prices the reported usage.
+	s.AttachUsageSource(UsageSourceFunc(func(orgID, agentID string) (string, bool) {
+		agent, err := s.deps.Agents.GetAgentCtx(context.Background(), orgID, agentID)
+		if err != nil {
+			return "", false
+		}
+		return agent.Model, true
+	}))
 	ds := mustCreateDataset(t, s, []Case{
 		{ID: "c1", Input: "q1", Expected: "answer for q1", Scorer: ScorerExact},
 		{ID: "c2", Input: "q2", Expected: "answer for q2", Scorer: ScorerExact},
@@ -218,11 +232,23 @@ func TestRunDatasetScoresAndSummary(t *testing.T) {
 	if run.Results[0].LatencyMS <= 0 {
 		t.Fatalf("latency should be measured, got %v", run.Results[0].LatencyMS)
 	}
-	if run.Results[0].CostCents != 0 {
-		t.Fatalf("cost is not exposed by the runtime today, want 0 got %v", run.Results[0].CostCents)
+	// Cost: the eval agent is served by gpt-4o-mini; every case reported
+	// the same 1000 prompt / 500 completion tokens, so each result carries
+	// the pricing-hook cost (1000*0.15 + 500*0.60)/1M*100 = 0.045 cents.
+	wantCost := models.ComputeCostCents("gpt-4o-mini", 1000, 500)
+	if wantCost <= 0 {
+		t.Fatalf("pricing hook should return a positive cost, got %v", wantCost)
+	}
+	for i, res := range run.Results {
+		if res.CostCents != wantCost {
+			t.Fatalf("result %d (%s) cost should be computed by the pricing hook, got %v want %v", i, res.CaseID, res.CostCents, wantCost)
+		}
 	}
 	if run.Summary == nil {
 		t.Fatal("summary should be computed")
+	}
+	if wantTotal := 4 * wantCost; math.Abs(run.Summary.TotalCostCents-wantTotal) > 1e-9 {
+		t.Fatalf("summary total cost should be %v, got %v", wantTotal, run.Summary.TotalCostCents)
 	}
 	want := 3.0 / 4.0
 	if run.Summary.PassRate != want {
@@ -247,6 +273,51 @@ func TestRunDatasetScoresAndSummary(t *testing.T) {
 	}
 	if len(fetched.Results) != 4 || fetched.Summary == nil || fetched.Summary.PassRate != want {
 		t.Fatalf("fetched run should round-trip results and summary: %+v", fetched)
+	}
+	if math.Abs(fetched.Summary.TotalCostCents-4*wantCost) > 1e-9 {
+		t.Fatalf("fetched summary should keep the priced totals, got %v want %v", fetched.Summary.TotalCostCents, 4*wantCost)
+	}
+}
+
+// TestRunDatasetCostWithoutUsageSource pins the documented offline behavior:
+// without an attached usage source (or without reported token usage) the case
+// cost stays 0 and nothing fails.
+func TestRunDatasetCostWithoutUsageSource(t *testing.T) {
+	s := newTestService(func(_ context.Context, _ string, input string) (*runtime.Run, error) {
+		return &runtime.Run{Status: runtime.StatusCompleted, Output: "answer for " + input,
+			Tokens: models.Usage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+		}, nil
+	})
+	ds := mustCreateDataset(t, s, []Case{
+		{ID: "c1", Input: "q1", Expected: "answer for q1", Scorer: ScorerExact},
+	})
+	agent := s.deps.Agents.List("org-1")[0]
+	run, err := s.RunDataset(context.Background(), "org-1", ds.ID, agent.ID)
+	if err != nil {
+		t.Fatalf("RunDataset returned error: %v", err)
+	}
+	if run.Results[0].CostCents != 0 || run.Summary.TotalCostCents != 0 {
+		t.Fatalf("no usage source should keep cost at 0, got result=%v summary=%v", run.Results[0].CostCents, run.Summary.TotalCostCents)
+	}
+
+	// An attached source that cannot resolve the model also yields 0.
+	s.AttachUsageSource(UsageSourceFunc(func(_, _ string) (string, bool) { return "", false }))
+	run, err = s.RunDataset(context.Background(), "org-1", ds.ID, agent.ID)
+	if err != nil {
+		t.Fatalf("RunDataset returned error: %v", err)
+	}
+	if run.Results[0].CostCents != 0 {
+		t.Fatalf("unresolvable model should keep cost at 0, got %v", run.Results[0].CostCents)
+	}
+
+	// Detaching (nil) restores the offline behavior.
+	s.AttachUsageSource(nil)
+	run, err = s.RunDataset(context.Background(), "org-1", ds.ID, agent.ID)
+	if err != nil {
+		t.Fatalf("RunDataset returned error: %v", err)
+	}
+	if run.Results[0].CostCents != 0 {
+		t.Fatalf("detached source should keep cost at 0, got %v", run.Results[0].CostCents)
 	}
 }
 

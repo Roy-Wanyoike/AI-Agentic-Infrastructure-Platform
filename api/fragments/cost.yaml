@@ -1,0 +1,172 @@
+# AgentOS API — OpenAPI 3.1 fragment for Track 3-b (Cost tracking +
+# tenant usage-cost report).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment
+# (securitySchemes/responses follow the api/fragments/workflows.yaml
+# pattern, with the track-unique `Usg*` schema prefix).
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (see base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation
+#     (`usage.read` — the dot convention used by every permission constant
+#     in internal/auth; the wave-3 contract sketch wrote "usage:read")
+#   * structured error model {"error":{"code","message"}}
+paths:
+  /usage/costs:
+    get:
+      operationId: getUsageCosts
+      summary: Tenant usage-cost report aggregated from run costs
+      description: |
+        Aggregates `runs.cost_cents` for the caller's organization over the
+        half-open [from, to) window. `from`/`to` accept RFC3339 timestamps or
+        bare `YYYY-MM-DD` UTC dates; when omitted the window defaults to the
+        30 days ending now (capped at 366 days). `group_by` selects the
+        aggregation dimension: `day` (UTC day buckets), `agent` (runs grouped
+        by the run's agent_id) or `model` (grouped by the serving model,
+        resolved from the agents catalog at query time).
+        Costs are USD cents; runs without pricing data count as 0 and are
+        still included in the `runs` counters.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: usage.read
+      tags: [Usage]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Window start (inclusive). RFC3339 or YYYY-MM-DD (UTC). Defaults to `to` minus 30 days.
+          schema:
+            type: string
+            example: "2026-09-01T00:00:00Z"
+        - name: to
+          in: query
+          required: false
+          description: Window end (exclusive). RFC3339 or YYYY-MM-DD (UTC). Defaults to now.
+          schema:
+            type: string
+            example: "2026-10-01T00:00:00Z"
+        - name: group_by
+          in: query
+          required: false
+          description: Aggregation dimension (default `day`).
+          schema:
+            type: string
+            enum: [day, agent, model]
+            default: day
+      responses:
+        '200':
+          description: Aggregated cost report for the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsgUsageCostsResponse'
+        '400':
+          description: |
+            Invalid query: unknown `group_by` (machine code
+            `INVALID_GROUP_BY`) or an unparsable/inverted/too-wide window
+            (machine code `INVALID_TIME_RANGE`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsgErrorEnvelope'
+        '401': { $ref: '#/components/responses/UsgUnauthorized' }
+        '403': { $ref: '#/components/responses/UsgForbidden' }
+        '405':
+          description: Method not allowed (only GET is served).
+          content:
+            text/plain:
+              schema: { type: string }
+        '503':
+          description: Runs service not wired into the API server (machine code `USAGE_UNAVAILABLE`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsgErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  responses:
+    UsgUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UsgErrorEnvelope'
+    UsgForbidden:
+      description: Authenticated but lacking the `usage.read` permission.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UsgErrorEnvelope'
+  schemas:
+    UsgErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: INVALID_GROUP_BY
+            message:
+              type: string
+    UsgCostBucket:
+      type: object
+      description: |
+        One aggregated row of the report. Exactly one of `bucket` /
+        `agent_id` / `model` is populated depending on `group_by`; the other
+        identity fields are omitted.
+      required: [cost_cents, runs]
+      properties:
+        bucket:
+          type: string
+          description: UTC day (YYYY-MM-DD); present only for group_by=day.
+          example: "2026-09-03"
+        agent_id:
+          type: string
+          description: Present only for group_by=agent.
+        model:
+          type: string
+          description: Present only for group_by=model (empty label for runs whose agent was deleted).
+        cost_cents:
+          type: number
+          format: double
+          description: Summed cost of the bucket in USD cents (0 = unpriced).
+          example: 1.75
+        runs:
+          type: integer
+          description: Number of runs in the bucket.
+          example: 4
+    UsgUsageCostsResponse:
+      type: object
+      required: [total_cost_cents, series]
+      properties:
+        total_cost_cents:
+          type: number
+          format: double
+          description: Sum of every bucket's cost_cents (USD cents).
+          example: 1.75
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsgCostBucket'
