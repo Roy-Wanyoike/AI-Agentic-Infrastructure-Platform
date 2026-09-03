@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
+	"agentos/internal/audit"
 	"agentos/internal/auth"
 	"agentos/internal/queue"
 	"agentos/internal/runs"
@@ -12,7 +14,7 @@ import (
 
 var runsServiceVar *runs.Service
 
-func createRunHandler(workQueue *queue.Queue) http.HandlerFunc {
+func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -48,7 +50,8 @@ func createRunHandler(workQueue *queue.Queue) http.HandlerFunc {
 			rs = runsServiceVar
 		}
 		if rs != nil {
-			run, err := rs.Create(req.OrganizationID, req.AgentID, req.Input)
+			// Tenant guard: the run row is created with the caller's organization_id.
+			run, err := rs.CreateRunCtx(r.Context(), req.OrganizationID, req.AgentID, req.Input)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -70,6 +73,13 @@ func createRunHandler(workQueue *queue.Queue) http.HandlerFunc {
 		if runID == "" {
 			runID = task.ID
 		}
+		if auditSvc != nil {
+			// best-effort audit trail entry (tenant-scoped insert)
+			claims, claimsErr := auth.ExtractClaims(r.Context())
+			if claimsErr == nil {
+				_, _ = auditSvc.LogCtx(r.Context(), claims.UserID, "run.created", req.OrganizationID, "runs/"+runID, nil)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": runID, "status": "queued"})
@@ -82,8 +92,8 @@ func getRunHandler(runsService *runs.Service) http.HandlerFunc {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		path := strings.TrimPrefix(r.URL.Path, "/v1/runs/")
-		if path == "" || strings.Contains(path, "/") {
+		runID := trimRoutePrefix(r.URL.Path, "/runs/")
+		if runID == "" || strings.Contains(runID, "/") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -91,16 +101,57 @@ func getRunHandler(runsService *runs.Service) http.HandlerFunc {
 			http.Error(w, "runs service not available", http.StatusInternalServerError)
 			return
 		}
-		run, ok := runsService.Get(path)
+		orgID, ok := claimsOrganizationID(w, r, "")
 		if !ok {
-			http.Error(w, "run not found", http.StatusNotFound)
 			return
 		}
-		if !requireOrganizationAccess(w, r, run.OrganizationID) {
+		// Tenant guard: the lookup requires the run's organization_id to match
+		// the caller's tenant; foreign runs surface as 404.
+		run, err := runsService.GetRunCtx(r.Context(), orgID, runID)
+		if err != nil {
+			if errors.Is(err, runs.ErrRunNotFound) {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(run)
+	}
+}
+
+func runStepsHandler(runsService *runs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		runID := strings.TrimSuffix(trimRoutePrefix(r.URL.Path, "/runs/"), "/steps")
+		if runID == "" || strings.Contains(runID, "/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if runsService == nil {
+			http.Error(w, "runs service not available", http.StatusInternalServerError)
+			return
+		}
+		orgID, ok := claimsOrganizationID(w, r, "")
+		if !ok {
+			return
+		}
+		// Tenant guard: steps are read via a join scoped to organization_id.
+		steps, err := runsService.Steps(r.Context(), orgID, runID)
+		if err != nil {
+			if errors.Is(err, runs.ErrRunNotFound) {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": runID, "steps": steps})
 	}
 }
 
@@ -114,10 +165,18 @@ func listRunsHandler(runsService *runs.Service) http.HandlerFunc {
 			http.Error(w, "runs service not available", http.StatusInternalServerError)
 			return
 		}
-		// TODO: filter by organization in future; return all runs for now
-		runs := runsService.List()
+		orgID, ok := claimsOrganizationID(w, r, "")
+		if !ok {
+			return
+		}
+		// Tenant guard: the listing filters on organization_id.
+		list, err := runsService.ListRunsCtx(r.Context(), orgID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"runs": runs})
+		_ = json.NewEncoder(w).Encode(map[string]any{"runs": list})
 	}
 }
 

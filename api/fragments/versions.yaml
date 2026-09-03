@@ -1,0 +1,589 @@
+openapi: 3.1.0
+info:
+  title: AgentOS — agent versions + deployments (track 2-b fragment)
+  version: 2.0.0-fragment
+paths:
+  /agents/{id}/versions:
+    get:
+      operationId: listAgentVersions
+      summary: List an agent's immutable config versions (ascending)
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AgentID'
+      responses:
+        '200':
+          description: Config versions of the agent, ascending by version number.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /agents/{id}/versions/create:
+    post:
+      operationId: createAgentVersion
+      summary: Snapshot the agent's current configuration into a new draft version
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AgentID'
+      responses:
+        '201':
+          description: Draft version created (numbered after the highest existing version).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionNumberResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /agents/{id}/versions/{version}/publish:
+    post:
+      operationId: publishAgentVersion
+      summary: Mark a draft version immutable (published) and re-point the agent to it
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AgentID'
+      - name: version
+        in: path
+        required: true
+        description: Version number to publish.
+        schema:
+          type: integer
+          minimum: 1
+        example: 3
+      responses:
+        '200':
+          description: Version published (idempotent re-publish returns the same version).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionNumberResponse'
+        '400':
+          description: Version path segment is not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Version is archived (revive it via rollback instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /agents/{id}/rollback:
+    post:
+      operationId: rollbackAgent
+      summary: Re-point the agent to a target version and restore its snapshot config
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AgentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackAgentRequest'
+      responses:
+        '200':
+          description: Target version is now the agent's current version (live config restored).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentVersionResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: target_version missing or not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /deployments:
+    get:
+      operationId: listDeployments
+      summary: List deployments, optionally filtered by agent
+      x-required-permission: deployments.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        description: Restrict the listing to one agent.
+        schema:
+          type: string
+        example: agent-1
+      responses:
+        '200':
+          description: Deployments of the tenant (newest first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /deployments/create:
+    post:
+      operationId: createDeployment
+      summary: Create a deployment (status requested) of a published agent version
+      x-required-permission: deployments.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDeploymentRequest'
+      responses:
+        '201':
+          description: Deployment created in status `requested`; advance it with promote.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: 'Validation failed (VALIDATION_ERROR for bad environment/fields;
+
+            VERSION_NOT_PUBLISHED when the target version does not exist or is
+
+            not published).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /deployments/{id}:
+    get:
+      operationId: getDeployment
+      summary: Fetch one deployment
+      x-required-permission: deployments.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+      responses:
+        '200':
+          description: The deployment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /deployments/{id}/promote:
+    post:
+      operationId: promoteDeployment
+      summary: Advance the lifecycle one step (requested -> validated -> deploying -> healthy)
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+      responses:
+        '200':
+          description: Deployment advanced one step (a worker replaces explicit promote later).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Terminal status (healthy/failed) cannot advance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /deployments/{id}/rollback:
+    post:
+      operationId: rollbackDeployment
+      summary: Re-point the environment to the previous healthy deployment's version
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+      responses:
+        '200':
+          description: Environment re-pointed; response carries the new healthy deployment and the version
+            it serves.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RollbackDeploymentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: No previous healthy deployment exists for this agent+environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+components:
+  parameters:
+    DeploymentID:
+      name: id
+      in: path
+      required: true
+      description: Deployment identifier (UUID v4 string).
+      schema:
+        type: string
+      example: 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+  schemas:
+    AgentSnapshot:
+      type: object
+      description: Full agent configuration captured at snapshot time (immutable once published).
+      properties:
+        name:
+          type: string
+          examples:
+          - Support Agent
+        description:
+          type: string
+        instructions:
+          type: string
+          examples:
+          - help users v1
+        model:
+          type: string
+          examples:
+          - gpt-4o-mini
+        status:
+          type: string
+      required:
+      - name
+      - description
+      - instructions
+      - model
+      - status
+    AgentVersionsResponse:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConfigVersion'
+      required:
+      - versions
+    VersionNumberResponse:
+      type: object
+      description: 'Create/publish result {"version": 3} per the wave-2 contract.'
+      properties:
+        version:
+          type: integer
+      required:
+      - version
+    CurrentVersionResponse:
+      type: object
+      description: 'Agent rollback result {"current_version": 2} per the contract.'
+      properties:
+        current_version:
+          type: integer
+      required:
+      - current_version
+    RollbackAgentRequest:
+      type: object
+      properties:
+        target_version:
+          type: integer
+          minimum: 1
+          description: Version to re-point the agent to (must exist).
+          examples:
+          - 2
+      required:
+      - target_version
+    DeploymentHealth:
+      type: object
+      description: Health payload; superseded_by/error appear only on demoted/failed rows.
+      properties:
+        error_rate:
+          type: number
+          format: double
+          examples:
+          - 0.0
+        last_check_at:
+          type: string
+          format: date-time
+          nullable: true
+          examples:
+          - '2025-01-02T03:04:05Z'
+        superseded_by:
+          type: string
+          description: ID of the deployment that replaced this (previously healthy) row.
+        error:
+          type: string
+          description: Failure reason when status is failed.
+    Deployment:
+      type: object
+      description: One lifecycle row for (agent, version, environment).
+      properties:
+        id:
+          type: string
+          examples:
+          - 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+        agent_id:
+          type: string
+          examples:
+          - agent-1
+        version:
+          type: integer
+          examples:
+          - 2
+        environment:
+          type: string
+          enum:
+          - development
+          - staging
+          - production
+        status:
+          type: string
+          enum:
+          - requested
+          - validated
+          - deploying
+          - healthy
+          - failed
+        health:
+          $ref: '#/components/schemas/DeploymentHealth'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - agent_id
+      - version
+      - environment
+      - status
+      - health
+      - created_at
+      - updated_at
+    DeploymentsResponse:
+      type: object
+      properties:
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Deployment'
+      required:
+      - deployments
+    DeploymentResponse:
+      type: object
+      properties:
+        deployment:
+          $ref: '#/components/schemas/Deployment'
+      required:
+      - deployment
+    CreateDeploymentRequest:
+      type: object
+      properties:
+        agent_id:
+          type: string
+          examples:
+          - agent-1
+        version:
+          type: integer
+          minimum: 1
+          description: Must reference an existing PUBLISHED agent version.
+          examples:
+          - 2
+        environment:
+          type: string
+          enum:
+          - development
+          - staging
+          - production
+      required:
+      - agent_id
+      - version
+      - environment
+    RollbackDeploymentResponse:
+      type: object
+      properties:
+        deployment:
+          $ref: '#/components/schemas/Deployment'
+        rolled_back_to_version:
+          type: integer
+          description: The version the environment serves after the rollback.
+          examples:
+          - 2
+      required:
+      - deployment
+      - rolled_back_to_version
+    ErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of AGENT_NOT_FOUND, VERSION_NOT_FOUND, VERSION_ARCHIVED, DEPLOYMENT_NOT_FOUND,
+                INVALID_STATE, NO_PREVIOUS_HEALTHY, VERSION_NOT_PUBLISHED, VALIDATION_ERROR, INVALID_REQUEST,
+                INTERNAL_ERROR.
+              examples:
+              - VERSION_NOT_PUBLISHED
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    AgentConfigVersion:
+      type: object
+      description: One immutable config version (wave-2 contract shape).
+      properties:
+        version:
+          type: integer
+          description: Version number (agent creation seeds legacy v1).
+          examples:
+          - 2
+        snapshot:
+          description: The frozen agent configuration document (embedded JSON object).
+          $ref: '#/components/schemas/AgentSnapshot'
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: RFC3339 UTC publication timestamp (null while draft).
+          examples:
+          - '2025-01-02T03:04:05Z'
+        published_by:
+          type: string
+          description: User ID that published the version.
+        status:
+          type: string
+          enum:
+          - draft
+          - published
+          - archived
+      required:
+      - version
+      - snapshot
+      - published_at
+      - published_by
+      - status

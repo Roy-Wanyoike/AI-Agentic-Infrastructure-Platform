@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agentos/internal/audit"
 	authpkg "agentos/internal/auth"
 	"agentos/internal/queue"
 	"agentos/internal/runs"
@@ -39,7 +40,7 @@ func TestCreateRunAndPostEventRoundtrip(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
-	authpkg.RequireAuth(authService)(createRunHandler(q)).ServeHTTP(rr, req)
+	authpkg.RequireAuth(authService)(createRunHandler(q, audit.NewService())).ServeHTTP(rr, req)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("expected created, got %d body=%s", rr.Code, rr.Body.String())
 	}

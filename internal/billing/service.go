@@ -8,11 +8,11 @@ import (
 )
 
 type Plan struct {
-	Name      string
-	Quota     int
-	Rate      int
-	Consumed  int
-	Enabled   bool
+	Name     string
+	Quota    int
+	Rate     int
+	Consumed int
+	Enabled  bool
 }
 
 type Service struct {

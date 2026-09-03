@@ -1,0 +1,777 @@
+# AgentOS API — OpenAPI 3.1 fragment: Workflows + Approvals + Run control
+# (wave-2 track 2-a, migration 006_workflows_approvals).
+#
+# This fragment is a standalone-valid OpenAPI document containing ONLY the
+# paths and schemas owned by track 2-a. The orchestrator merges `paths` and
+# `components/schemas` into api/openapi.yaml; the shared components prefixed
+# with `Wf` (responses/securitySchemes/error envelope) are fragment-local and
+# should be deduplicated against the main spec's equivalents during the merge.
+#
+# All routes are served under /api/v1 (and legacy /v1). Every operation
+# declares its required RBAC permission via x-required-permission:
+#   workflows.read    OWNER/ADMIN/MEMBER/VIEWER
+#   workflows.write   OWNER/ADMIN/MEMBER
+#   workflows.execute OWNER/ADMIN/MEMBER
+#   approvals.read    OWNER/ADMIN/MEMBER/VIEWER
+#   approvals.decide  OWNER/ADMIN
+#   runs.control      OWNER/ADMIN/MEMBER
+openapi: 3.1.0
+info:
+  title: AgentOS API — Workflows fragment
+  version: 0.1.0
+  description: |
+    Track 2-a endpoints: versioned workflow DSL definitions (draft → published
+    immutable versions), DAG execution into agent runs, workflow-run node
+    traces, human-in-the-loop approvals, and run control (cancel/pause/resume).
+servers:
+  - url: /api/v1
+    description: Canonical versioned base path.
+tags:
+  - name: workflows
+    description: Workflow definitions (DSL) and versions.
+  - name: workflow-runs
+    description: Workflow executions and their node runs.
+  - name: approvals
+    description: Human-in-the-loop approval gates.
+  - name: run-control
+    description: Cancel / pause / resume control plane for agent runs.
+security:
+  - bearerToken: []
+  - apiKey: []
+paths:
+  /workflows:
+    get:
+      operationId: listWorkflows
+      tags: [workflows]
+      summary: List the tenant's workflows
+      x-required-permission: workflows.read
+      responses:
+        '200':
+          description: Workflows (summary shape, newest first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowListResponse'
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /workflows/create:
+    post:
+      operationId: createWorkflow
+      tags: [workflows]
+      summary: Create a draft workflow from a DSL
+      description: |
+        Runs DSL validation first: invalid definitions are rejected with 422
+        and the structured error list (code, message, node_id). The workflow
+        starts as `draft` with `current_version` 0. The tenant is taken from
+        the authenticated principal; client-supplied organization ids are
+        ignored.
+      x-required-permission: workflows.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkflowRequest'
+            example:
+              name: Deploy Flow
+              description: Plan then deploy with a sign-off gate
+              dsl:
+                nodes:
+                  - id: n1
+                    type: agent
+                    name: Planner
+                    config: { agent_id: agent-1, input: '{{input}}' }
+                  - id: n2
+                    type: approval
+                    name: Gate
+                    config: { action: deploy, risk: high }
+                edges:
+                  - { from: n1, to: n2, condition: on_success }
+      responses:
+        '201':
+          description: Workflow created (draft).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDetailResponse'
+        '400': { $ref: '#/components/responses/WfBadRequest' }
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '403': { $ref: '#/components/responses/WfForbidden' }
+        '422':
+          description: |
+            DSL validation failed. Body: `{"errors":[{"code","message","node_id"}]}`.
+            Error codes: empty_graph, missing_node_id, duplicate_node_id,
+            unknown_node_type, missing_config, missing_node_ref,
+            invalid_edge_condition, cycle_detected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowValidationErrors'
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /workflows/{id}:
+    get:
+      operationId: getWorkflow
+      tags: [workflows]
+      summary: Get one workflow with its published versions
+      x-required-permission: workflows.read
+      parameters:
+        - $ref: '#/components/parameters/WfWorkflowID'
+      responses:
+        '200':
+          description: Workflow detail including immutable versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDetailWithVersionsResponse'
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '403': { $ref: '#/components/responses/WfForbidden' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /workflows/{id}/validate:
+    post:
+      operationId: validateWorkflow
+      tags: [workflows]
+      summary: Validate the workflow's current DSL
+      x-required-permission: workflows.read
+      parameters:
+        - $ref: '#/components/parameters/WfWorkflowID'
+      responses:
+        '200':
+          description: The DSL is valid.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean, const: true }
+                required: [valid]
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '422':
+          description: Validation failures (same body as create).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowValidationErrors'
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /workflows/{id}/publish:
+    post:
+      operationId: publishWorkflow
+      tags: [workflows]
+      summary: Publish the current DSL as the next immutable version
+      description: Snapshots the workflow's DSL into a new version (1, 2, …)
+        and marks the workflow published. Invalid DSLs are rejected with 422.
+      x-required-permission: workflows.write
+      parameters:
+        - $ref: '#/components/parameters/WfWorkflowID'
+      responses:
+        '200':
+          description: Version published.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflow: { $ref: '#/components/schemas/WorkflowSummary' }
+                  version: { $ref: '#/components/schemas/WorkflowVersion' }
+                required: [workflow, version]
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '403': { $ref: '#/components/responses/WfForbidden' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '422':
+          description: DSL validation failures (publish requires a valid DSL).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowValidationErrors'
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /workflows/{id}/execute:
+    post:
+      operationId: executeWorkflow
+      tags: [workflows]
+      summary: Execute the workflow (expand its DAG into agent runs)
+      description: |
+        Expands the DAG in topological order: one agent run per agent/tool
+        node (tool nodes without an explicit config.agent_id ride the first
+        agent node), every run is enqueued on the worker queue. An approval
+        node creates a pending approval, pauses the run preceding it and flips
+        the workflow run to `waiting_approval`; approving the approval resumes
+        the paused run. Structural nodes (condition/parallel/delay/webhook/end)
+        record completed node runs without agent runs.
+      x-required-permission: workflows.execute
+      parameters:
+        - $ref: '#/components/parameters/WfWorkflowID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteWorkflowRequest'
+            example:
+              input: Deploy the payments service
+      responses:
+        '200':
+          description: DAG expanded; node runs created and tasks enqueued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionResult'
+              example:
+                workflow_run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                run_ids:
+                  - 4d0f5c9a-1f4e-4a2b-9a5f-6b3c8d7e2f10
+                  - 5e1a6d0b-2a5f-4b3c-0b6a-7c4d9e8f3a21
+                status: pending
+        '400': { $ref: '#/components/responses/WfBadRequest' }
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '403': { $ref: '#/components/responses/WfForbidden' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '422':
+          description: DSL validation failures.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowValidationErrors'
+        '503':
+          description: The execution engine (runs/queue services) is not wired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+  /workflow-runs/{id}:
+    get:
+      operationId: getWorkflowRun
+      tags: [workflow-runs]
+      summary: Get one workflow run with its node runs
+      x-required-permission: workflows.read
+      parameters:
+        - $ref: '#/components/parameters/WfWorkflowRunID'
+      responses:
+        '200':
+          description: Workflow run with the per-node run mapping.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowRunResponse'
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /approvals:
+    get:
+      operationId: listApprovals
+      tags: [approvals]
+      summary: List the tenant's approvals
+      x-required-permission: approvals.read
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by status (pending|approved|rejected|cancelled).
+          schema:
+            $ref: '#/components/schemas/ApprovalStatus'
+      responses:
+        '200':
+          description: Approvals (unpaginated today).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalListResponse'
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /approvals/{id}:
+    get:
+      operationId: getApproval
+      tags: [approvals]
+      summary: Get one approval
+      x-required-permission: approvals.read
+      parameters:
+        - $ref: '#/components/parameters/WfApprovalID'
+      responses:
+        '200':
+          description: The approval.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval: { $ref: '#/components/schemas/Approval' }
+                required: [approval]
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /approvals/{id}/decide:
+    post:
+      operationId: decideApproval
+      tags: [approvals]
+      summary: Approve or reject an approval
+      description: |
+        Sets the approver from the authenticated principal and decided_at to
+        now. When the decision is `approved` and a run is linked, the paused
+        run is resumed (status back to `pending`). Deciding twice returns 409.
+      x-required-permission: approvals.decide
+      parameters:
+        - $ref: '#/components/parameters/WfApprovalID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecideApprovalRequest'
+            example:
+              decision: approved
+              reason: Verified the deployment plan
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval: { $ref: '#/components/schemas/Approval' }
+                required: [approval]
+        '400': { $ref: '#/components/responses/WfBadRequest' }
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '403': { $ref: '#/components/responses/WfForbidden' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '409':
+          description: The approval has already been decided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '422':
+          description: decision must be `approved` or `rejected`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /runs/{id}/cancel:
+    post:
+      operationId: cancelRun
+      tags: [run-control]
+      summary: Cancel a run (idempotent)
+      description: |
+        Transitions the run to `cancelled`. Cancelling an already-cancelled
+        run is a no-op; cancelling a completed/failed/timed-out run returns
+        409. New status vocabulary: pending|running|paused|waiting_approval|
+        completed|failed|cancelled|timeout.
+      x-required-permission: runs.control
+      parameters:
+        - $ref: '#/components/parameters/WfRunID'
+      responses:
+        '200':
+          description: The updated run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunControlResponse'
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '403': { $ref: '#/components/responses/WfForbidden' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '409':
+          description: Invalid transition from a terminal status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /runs/{id}/pause:
+    post:
+      operationId: pauseRun
+      tags: [run-control]
+      summary: Pause a run (idempotent)
+      description: Transitions a queued/pending/running/waiting_approval run to
+        `paused`. Workers observe the paused status and stop processing.
+      x-required-permission: runs.control
+      parameters:
+        - $ref: '#/components/parameters/WfRunID'
+      responses:
+        '200':
+          description: The updated run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunControlResponse'
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '409':
+          description: Invalid transition from a terminal status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '500': { $ref: '#/components/responses/WfServerError' }
+  /runs/{id}/resume:
+    post:
+      operationId: resumeRun
+      tags: [run-control]
+      summary: Resume a paused run (idempotent)
+      description: Transitions a paused run back to `pending` so it can be
+        re-enqueued. Runs waiting on an approval must be resumed through the
+        approval decision instead.
+      x-required-permission: runs.control
+      parameters:
+        - $ref: '#/components/parameters/WfRunID'
+      responses:
+        '200':
+          description: The updated run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunControlResponse'
+        '401': { $ref: '#/components/responses/WfUnauthorized' }
+        '404': { $ref: '#/components/responses/WfNotFound' }
+        '409':
+          description: |
+            Invalid transition (only `paused` runs can be resumed;
+            already-`pending` runs are an idempotent success).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '500': { $ref: '#/components/responses/WfServerError' }
+components:
+  parameters:
+    WfWorkflowID:
+      name: id
+      in: path
+      required: true
+      description: Workflow identifier (UUID v4 string).
+      schema:
+        type: string
+    WfWorkflowRunID:
+      name: id
+      in: path
+      required: true
+      description: Workflow run identifier (UUID v4 string).
+      schema:
+        type: string
+    WfRunID:
+      name: id
+      in: path
+      required: true
+      description: Agent run identifier (UUID v4 string).
+      schema:
+        type: string
+    WfApprovalID:
+      name: id
+      in: path
+      required: true
+      description: Approval identifier (UUID v4 string).
+      schema:
+        type: string
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  responses:
+    WfUnauthorized:
+      description: Missing/invalid credentials.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+    WfForbidden:
+      description: Authenticated but lacking the required permission.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+    WfNotFound:
+      description: Resource not found (or owned by another tenant — cross-tenant
+        access surfaces as 404, never 403).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+    WfBadRequest:
+      description: Malformed JSON body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+    WfServerError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+  schemas:
+    WfErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (VALIDATION_ERROR, WORKFLOW_NOT_FOUND, WORKFLOW_RUN_NOT_FOUND, APPROVAL_NOT_FOUND, RUN_NOT_FOUND, INVALID_DECISION, ALREADY_DECIDED, INVALID_STATE, ENGINE_NOT_WIRED, INVALID_REQUEST, INTERNAL_ERROR, UNAUTHORIZED).
+            message:
+              type: string
+          required: [code, message]
+      required: [error]
+    WorkflowStatus:
+      type: string
+      enum: [draft, published, archived]
+    DSLNodeType:
+      type: string
+      description: Node type; agent/tool require config, approval gates, the rest are structural.
+      enum: [agent, tool, condition, parallel, approval, delay, webhook, end]
+    DSLEdgeCondition:
+      type: string
+      enum: [on_success, on_failure, always]
+    DSLNode:
+      type: object
+      properties:
+        id: { type: string, description: Unique node id within the workflow. }
+        type: { $ref: '#/components/schemas/DSLNodeType' }
+        name:
+          type: string
+          description: Human-readable display name.
+        config:
+          type: object
+          description: |
+            Per-type config. Required keys: agent → agent_id; tool → tool_id;
+            condition → expression; delay → seconds (> 0); webhook → url.
+            Optional: input ({{input}} placeholder is replaced with the
+            workflow input), approval → action/reason/risk.
+          additionalProperties: true
+      required: [id, type]
+    DSLEdge:
+      type: object
+      properties:
+        from: { type: string }
+        to: { type: string }
+        condition: { $ref: '#/components/schemas/DSLEdgeCondition' }
+      required: [from, to]
+    WorkflowDSL:
+      type: object
+      description: The workflow DAG stored as JSONB. Must be acyclic.
+      properties:
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/DSLNode' }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/DSLEdge' }
+      required: [nodes, edges]
+    WorkflowSummary:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        status: { $ref: '#/components/schemas/WorkflowStatus' }
+        current_version:
+          type: integer
+          description: 0 while the workflow has never been published.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, status, current_version, created_at, updated_at]
+    WorkflowVersion:
+      type: object
+      description: One immutable published snapshot of the DSL.
+      properties:
+        version: { type: integer }
+        status:
+          type: string
+          enum: [published]
+        created_at: { type: string, format: date-time }
+        dsl_snapshot: { $ref: '#/components/schemas/WorkflowDSL' }
+      required: [version, status, created_at, dsl_snapshot]
+    WorkflowDetail:
+      type: object
+      description: Workflow with its current DSL (create response shape).
+      allOf:
+        - $ref: '#/components/schemas/WorkflowSummary'
+        - type: object
+          properties:
+            dsl: { $ref: '#/components/schemas/WorkflowDSL' }
+          required: [dsl]
+    WorkflowListResponse:
+      type: object
+      properties:
+        workflows:
+          type: array
+          items: { $ref: '#/components/schemas/WorkflowSummary' }
+      required: [workflows]
+    WorkflowDetailResponse:
+      type: object
+      properties:
+        workflow: { $ref: '#/components/schemas/WorkflowDetail' }
+      required: [workflow]
+    WorkflowDetailWithVersionsResponse:
+      type: object
+      properties:
+        workflow:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/WorkflowDetail'
+            - type: object
+              properties:
+                versions:
+                  type: array
+                  items: { $ref: '#/components/schemas/WorkflowVersion' }
+      required: [workflow]
+    CreateWorkflowRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string }
+        dsl: { $ref: '#/components/schemas/WorkflowDSL' }
+      required: [name, dsl]
+    ExecuteWorkflowRequest:
+      type: object
+      properties:
+        input:
+          type: string
+          description: Workflow input; replaces {{input}} placeholders in node configs.
+      required: [input]
+    ValidationErrorItem:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        node_id: { type: string, description: Node the error refers to (when applicable). }
+      required: [code, message]
+    WorkflowValidationErrors:
+      type: object
+      properties:
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/ValidationErrorItem' }
+      required: [errors]
+    ExecutionResult:
+      type: object
+      properties:
+        workflow_run_id: { type: string }
+        run_ids:
+          type: array
+          description: One id per agent/tool node run, in topological order.
+          items: { type: string }
+        status:
+          type: string
+          description: pending, or waiting_approval when the DAG contains an approval gate.
+          enum: [pending, waiting_approval]
+      required: [workflow_run_id, run_ids, status]
+    WorkflowRunStatus:
+      type: string
+      enum: [pending, running, waiting_approval, completed, failed, cancelled]
+    NodeRunStatus:
+      type: string
+      enum: [pending, running, waiting_approval, completed, failed, cancelled]
+    NodeRun:
+      type: object
+      description: One node → agent-run mapping created by the DAG expansion.
+      properties:
+        id: { type: string }
+        workflow_run_id: { type: string }
+        node_id: { type: string }
+        run_id:
+          type: string
+          description: The linked agent run (empty for structural nodes / bare tool tasks).
+        status: { $ref: '#/components/schemas/NodeRunStatus' }
+        error: { type: string }
+        started_at:
+          type: [string, 'null']
+          format: date-time
+        finished_at:
+          type: [string, 'null']
+          format: date-time
+        created_at: { type: string, format: date-time }
+      required: [id, workflow_run_id, node_id, status, created_at]
+    WorkflowRun:
+      type: object
+      properties:
+        id: { type: string }
+        workflow_id: { type: string }
+        status: { $ref: '#/components/schemas/WorkflowRunStatus' }
+        node_runs:
+          type: array
+          items: { $ref: '#/components/schemas/NodeRun' }
+      required: [id, workflow_id, status, node_runs]
+    WorkflowRunResponse:
+      type: object
+      properties:
+        id: { type: string }
+        workflow_id: { type: string }
+        status: { $ref: '#/components/schemas/WorkflowRunStatus' }
+        node_runs:
+          type: array
+          items: { $ref: '#/components/schemas/NodeRun' }
+      required: [id, workflow_id, status, node_runs]
+    ApprovalStatus:
+      type: string
+      enum: [pending, approved, rejected, cancelled]
+    ApprovalRisk:
+      type: string
+      enum: [low, medium, high]
+    Approval:
+      type: object
+      properties:
+        id: { type: string }
+        organization_id: { type: string }
+        run_id:
+          type: string
+          description: Linked agent run; approving resumes it when paused.
+        workflow_run_id: { type: string }
+        resource: { type: string }
+        action: { type: string }
+        reason: { type: string }
+        risk: { $ref: '#/components/schemas/ApprovalRisk' }
+        status: { $ref: '#/components/schemas/ApprovalStatus' }
+        requester: { type: string }
+        approver: { type: string }
+        decision_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        decided_at:
+          type: [string, 'null']
+          format: date-time
+      required: [id, status, created_at]
+    ApprovalListResponse:
+      type: object
+      properties:
+        approvals:
+          type: array
+          items: { $ref: '#/components/schemas/Approval' }
+      required: [approvals]
+    DecideApprovalRequest:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum: [approved, rejected]
+        reason: { type: string }
+      required: [decision]
+    RunControlResponse:
+      type: object
+      description: |
+        The updated runs.Run (legacy PascalCase serialization, no json tags):
+        ID, OrganizationID, AgentID, Input, Output, Status, CreatedAt,
+        UpdatedAt. Status uses the new lowercase vocabulary.
+      properties:
+        ID: { type: string }
+        OrganizationID: { type: string }
+        AgentID: { type: string }
+        Input: { type: string }
+        Output: { type: string }
+        Status:
+          type: string
+          enum: [pending, running, paused, waiting_approval, completed, failed, cancelled, timeout]
+        CreatedAt: { type: string, format: date-time }
+        UpdatedAt: { type: string, format: date-time }
+      required: [ID, Status]

@@ -266,9 +266,9 @@ func (q *Queue) Requeue(task *Task) {
 }
 
 type ScaleReport struct {
-	TotalProcessed       int
-	ThroughputPerSecond  float64
-	RecoveryRate         float64
+	TotalProcessed      int
+	ThroughputPerSecond float64
+	RecoveryRate        float64
 }
 
 func ScaleCheck(q *Queue, workers int) (*ScaleReport, error) {

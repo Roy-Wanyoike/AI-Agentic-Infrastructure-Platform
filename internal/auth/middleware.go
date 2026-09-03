@@ -65,7 +65,7 @@ func RequirePermission(service *Service, permission Permission) func(http.Handle
 				http.Error(w, err.Error(), http.StatusUnauthorized)
 				return
 			}
-			if user, ok := service.findUserByEmail(claims.Email); ok {
+			if user, ok := service.findUserByEmailCtx(r.Context(), claims.Email); ok {
 				if !service.HasPermissionForOrg(user, claims.OrganizationID, permission) {
 					http.Error(w, "forbidden", http.StatusForbidden)
 					return

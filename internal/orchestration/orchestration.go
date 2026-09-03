@@ -7,10 +7,10 @@ import (
 )
 
 type Specialist struct {
-	ID          string
-	Name        string
-	Phase       string
-	Focus       string
+	ID           string
+	Name         string
+	Phase        string
+	Focus        string
 	Verification string
 }
 

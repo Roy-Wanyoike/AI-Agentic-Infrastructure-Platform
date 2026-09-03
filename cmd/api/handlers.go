@@ -17,6 +17,20 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+func serviceInfoHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"service":"agentos-api","status":"running"}`))
+}
+
+// trimRoutePrefix normalizes versioned request paths so handlers work both
+// through the router (paths arrive as /<resource>/... after StripPrefix) and
+// in direct handler tests that still use legacy /v1/... URLs.
+func trimRoutePrefix(path, routePrefix string) string {
+	p := strings.TrimPrefix(path, "/v1")
+	p = strings.TrimPrefix(p, routePrefix)
+	return strings.Trim(p, "/")
+}
+
 func registerHandler(service *auth.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -32,16 +46,22 @@ func registerHandler(service *auth.Service) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		org, user, err := service.Register(req.Organization, req.Email, req.Password)
+		org, user, err := service.RegisterCtx(r.Context(), req.Organization, req.Email, req.Password)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
+		// Never leak the password hash to clients.
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"organization": org,
-			"user":         user,
+			"organization": map[string]any{"ID": org.ID, "Name": org.Name},
+			"user": map[string]any{
+				"ID":           user.ID,
+				"Organization": user.Organization,
+				"Email":        user.Email,
+				"Role":         user.Role,
+			},
 		})
 	}
 }
@@ -60,7 +80,7 @@ func loginHandler(service *auth.Service) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		token, err := service.Login(req.Email, req.Password)
+		token, err := service.LoginCtx(r.Context(), req.Email, req.Password)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
@@ -100,7 +120,7 @@ func runEventsHandler(service *streaming.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// allow POST to accept external events (worker callbacks)
 		if r.Method == http.MethodPost {
-			path := strings.TrimPrefix(r.URL.Path, "/v1/runs/")
+			path := trimRoutePrefix(r.URL.Path, "/runs/")
 			path = strings.TrimSuffix(path, "/events")
 			if path == "" || strings.Contains(path, "/") {
 				w.WriteHeader(http.StatusNotFound)
@@ -127,7 +147,7 @@ func runEventsHandler(service *streaming.Service) http.HandlerFunc {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		path := strings.TrimPrefix(r.URL.Path, "/v1/runs/")
+		path := trimRoutePrefix(r.URL.Path, "/runs/")
 		path = strings.TrimSuffix(path, "/events")
 		if path == "" || strings.Contains(path, "/") {
 			w.WriteHeader(http.StatusNotFound)

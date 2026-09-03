@@ -1,14 +1,16 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -40,12 +42,12 @@ type Claims struct {
 type Permission string
 
 const (
-	PermissionAgentsRead   Permission = "agents.read"
-	PermissionAgentsWrite  Permission = "agents.write"
-	PermissionRunsRead     Permission = "runs.read"
-	PermissionRunsExecute  Permission = "runs.execute"
-	PermissionUsersManage  Permission = "users.manage"
-	PermissionOrgManage    Permission = "organization.manage"
+	PermissionAgentsRead  Permission = "agents.read"
+	PermissionAgentsWrite Permission = "agents.write"
+	PermissionRunsRead    Permission = "runs.read"
+	PermissionRunsExecute Permission = "runs.execute"
+	PermissionUsersManage Permission = "users.manage"
+	PermissionOrgManage   Permission = "organization.manage"
 )
 
 var rolePermissions = map[string][]Permission{
@@ -75,10 +77,23 @@ var rolePermissions = map[string][]Permission{
 	},
 }
 
+// Store persists users and their organizations. Email is globally unique
+// (users.email UNIQUE in migration 001) so the credential itself resolves the
+// tenant; every authorization decision still re-checks organization_id.
+type Store interface {
+	// CreateOrganization inserts the tenant root row for a new registration.
+	CreateOrganization(ctx context.Context, org *Organization) error
+	// CreateUser persists a user with its organization_id tenant scope.
+	CreateUser(ctx context.Context, user *User) error
+	// GetUserByEmail looks up the login identity by email (unique credential).
+	GetUserByEmail(ctx context.Context, email string) (*User, error)
+}
+
 type Service struct {
 	jwtSecret string
 	orgs      map[string]*Organization
 	users     map[string]*User
+	store     Store
 }
 
 func NewService(jwtSecret string) *Service {
@@ -87,6 +102,22 @@ func NewService(jwtSecret string) *Service {
 		orgs:      make(map[string]*Organization),
 		users:     make(map[string]*User),
 	}
+}
+
+// NewServiceWithStore returns a service whose user/org registrations are
+// persisted through the given store; the in-memory maps remain a cache for
+// RBAC middleware lookups.
+func NewServiceWithStore(jwtSecret string, store Store) *Service {
+	s := NewService(jwtSecret)
+	s.store = store
+	return s
+}
+
+func (s *Service) SetStore(store Store) {
+	if s == nil {
+		return
+	}
+	s.store = store
 }
 
 func HashPassword(password string) (string, error) {
@@ -110,7 +141,14 @@ func VerifyPassword(hash, password string) bool {
 	return true
 }
 
+// Register is the legacy context-free entry point; see RegisterCtx.
 func (s *Service) Register(orgName, email, password string) (*Organization, *User, error) {
+	return s.RegisterCtx(context.Background(), orgName, email, password)
+}
+
+// RegisterCtx persists a new organization + owner user. The bcrypt hashing and
+// the token scheme are unchanged; only the storage backend is pluggable.
+func (s *Service) RegisterCtx(ctx context.Context, orgName, email, password string) (*Organization, *User, error) {
 	if strings.TrimSpace(orgName) == "" {
 		return nil, nil, errors.New("organization name is required")
 	}
@@ -120,17 +158,24 @@ func (s *Service) Register(orgName, email, password string) (*Organization, *Use
 	if strings.TrimSpace(password) == "" {
 		return nil, nil, errors.New("password is required")
 	}
-	if _, exists := s.findUserByEmail(email); exists {
+
+	if s.store != nil {
+		if _, err := s.store.GetUserByEmail(ctx, strings.TrimSpace(email)); err == nil {
+			return nil, nil, errors.New("email already registered")
+		} else if !errors.Is(err, ErrUserNotFound) {
+			return nil, nil, err
+		}
+	} else if _, exists := s.findUserByEmail(email); exists {
 		return nil, nil, errors.New("email already registered")
 	}
 
-	org := &Organization{ID: fmt.Sprintf("org-%d", len(s.orgs)+1), Name: orgName}
+	org := &Organization{ID: uuid.NewString(), Name: orgName}
 	hash, err := HashPassword(password)
 	if err != nil {
 		return nil, nil, err
 	}
 	user := &User{
-		ID:           fmt.Sprintf("user-%d", len(s.users)+1),
+		ID:           uuid.NewString(),
 		Organization: org.ID,
 		Email:        email,
 		PasswordHash: hash,
@@ -138,20 +183,62 @@ func (s *Service) Register(orgName, email, password string) (*Organization, *Use
 		CreatedAt:    time.Now().UTC(),
 	}
 
+	if s.store != nil {
+		if err := s.store.CreateOrganization(ctx, org); err != nil {
+			return nil, nil, err
+		}
+		if err := s.store.CreateUser(ctx, user); err != nil {
+			return nil, nil, err
+		}
+	}
 	s.orgs[org.ID] = org
 	s.users[user.ID] = user
 	return org, user, nil
 }
 
+// Login is the legacy context-free entry point; see LoginCtx.
 func (s *Service) Login(email, password string) (string, error) {
-	user, ok := s.findUserByEmail(email)
-	if !ok {
+	return s.LoginCtx(context.Background(), email, password)
+}
+
+// LoginCtx verifies credentials against the store (when present) and issues
+// the same HMAC token as before.
+func (s *Service) LoginCtx(ctx context.Context, email, password string) (string, error) {
+	user, err := s.lookupUser(ctx, email)
+	if err != nil {
 		return "", errors.New("invalid credentials")
 	}
 	if !VerifyPassword(user.PasswordHash, password) {
 		return "", errors.New("invalid credentials")
 	}
 	return s.GenerateToken(user)
+}
+
+// lookupUser resolves a login identity: store first (Postgres), memory cache
+// as fallback for users registered in this process.
+func (s *Service) lookupUser(ctx context.Context, email string) (*User, error) {
+	if s.store != nil && strings.TrimSpace(email) != "" {
+		user, err := s.store.GetUserByEmail(ctx, strings.TrimSpace(email))
+		if err == nil {
+			return user, nil
+		}
+		if !errors.Is(err, ErrUserNotFound) {
+			return nil, err
+		}
+	}
+	if user, ok := s.findUserByEmail(email); ok {
+		return user, nil
+	}
+	return nil, ErrUserNotFound
+}
+
+// findUserByEmailCtx is used by middleware where a request context exists.
+func (s *Service) findUserByEmailCtx(ctx context.Context, email string) (*User, bool) {
+	user, err := s.lookupUser(ctx, email)
+	if err != nil || user == nil {
+		return nil, false
+	}
+	return user, true
 }
 
 func signJWT(data []byte, secret string) string {

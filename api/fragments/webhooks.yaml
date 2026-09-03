@@ -1,0 +1,287 @@
+# AgentOS API fragment — Track 2-e: Events + Outbound Webhooks.
+#
+# Merge fragment: paths + components to be merged into api/openapi.yaml by the
+# orchestrator (the fragment references the main spec's reusable components:
+# securitySchemes bearerToken/apiKey and responses Unauthorized/Forbidden/NotFound).
+#
+# Implemented exactly as such in cmd/api/webhooks.go (see docs/wiring/events.md):
+#   GET    /webhooks                  -> {"webhooks": [Webhook]}          (webhooks.read)
+#   POST   /webhooks/create           -> {"webhook": Webhook, "secret"}   (webhooks.write; secret returned ONCE)
+#   DELETE /webhooks/{id}             -> {"deleted": true}                (webhooks.write)
+#   GET    /webhooks/{id}/deliveries  -> {"deliveries": [WebhookDelivery]} (webhooks.read; ?limit=50, default 50)
+paths:
+  /webhooks:
+    get:
+      operationId: listWebhooks
+      tags: [webhooks]
+      summary: List the tenant's outbound webhook endpoints
+      description: |
+        Returns all webhook registrations of the authenticated organization,
+        newest first. The signing secret is never included in list responses —
+        only `secret_set` (always `true` for records that carry a secret hash).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: webhooks.read
+      responses:
+        '200':
+          description: Array of webhooks (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Unexpected store failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookError'
+  /webhooks/create:
+    post:
+      operationId: createWebhook
+      tags: [webhooks]
+      summary: Register an outbound webhook endpoint
+      description: |
+        Creates a webhook subscribed to the given event types (empty `events`
+        array = subscribe to ALL event types). An HMAC signing secret is
+        generated and returned in this response body as `secret` — EXACTLY
+        ONCE; only its SHA-256 hash is persisted. Invalid input (non-http(s)
+        URL, unknown event type) returns 422.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: webhooks.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookRequest'
+      responses:
+        '201':
+          description: Webhook created; the one-time signing secret is included.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateWebhookResponse'
+        '400':
+          description: Malformed JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Validation failure (invalid URL or unknown event type).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookError'
+  /webhooks/{id}:
+    delete:
+      operationId: deleteWebhook
+      tags: [webhooks]
+      summary: Delete a webhook endpoint
+      description: |
+        Removes the webhook (and its delivery records, via FK cascade).
+        Deleting an unknown or foreign-tenant id returns 404 (existence is
+        not leaked across tenants).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: webhooks.write
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeleteResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /webhooks/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      tags: [webhooks]
+      summary: List recent delivery attempts of one webhook
+      description: |
+        Returns the webhook's delivery records, newest first. Each record
+        mirrors the LATEST attempt (attempts / last_status_code / latency_ms /
+        error are updated in place by the delivery worker after every retry).
+        `limit` defaults to 50 and is capped at 500; non-integer or
+        non-positive values return 400.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: webhooks.read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+      responses:
+        '200':
+          description: Array of delivery records (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeliveryList'
+        '400':
+          description: Invalid limit parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  schemas:
+    Webhook:
+      type: object
+      required: [id, url, events, status, secret_set, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+          description: Absolute http(s) delivery URL.
+        events:
+          type: array
+          items:
+            type: string
+          description: |
+            Subscribed event types (e.g. "run.failed"). An empty array means
+            ALL event types.
+        status:
+          type: string
+          enum: [active, disabled]
+        secret_set:
+          type: boolean
+          description: True when the record carries a signing-secret hash.
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC.
+    WebhookList:
+      type: object
+      required: [webhooks]
+      properties:
+        webhooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Webhook'
+    CreateWebhookRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Absolute http(s) URL that will receive deliveries.
+        events:
+          type: array
+          items:
+            type: string
+          description: Event types to subscribe to; empty/omitted = all.
+    CreateWebhookResponse:
+      type: object
+      required: [webhook, secret]
+      properties:
+        webhook:
+          $ref: '#/components/schemas/Webhook'
+        secret:
+          type: string
+          description: |
+            The HMAC signing secret — returned EXACTLY ONCE in this response.
+            Store it safely; only its SHA-256 hash is persisted server-side.
+    WebhookDelivery:
+      type: object
+      required: [id, event_type, status, attempts, last_status_code, latency_ms, error, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          description: Event type that triggered the delivery (e.g. "run.failed").
+        status:
+          type: string
+          enum: [delivered, failed, retrying]
+          description: Outcome of the LATEST attempt.
+        attempts:
+          type: integer
+          description: Attempt count so far (max 3 under the default policy).
+        last_status_code:
+          type: integer
+          description: HTTP status of the latest attempt (0 = no response).
+        latency_ms:
+          type: integer
+          format: int64
+          description: Duration of the latest attempt in milliseconds.
+        error:
+          type: string
+          description: Latest attempt error (transport error or empty on success).
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC; set on the first attempt.
+    WebhookDeliveryList:
+      type: object
+      required: [deliveries]
+      properties:
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookDelivery'
+    WebhookDeleteResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: boolean
+          enum: [true]
+    WebhookError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [INVALID_REQUEST, VALIDATION_ERROR, WEBHOOK_NOT_FOUND, METHOD_NOT_ALLOWED, INTERNAL]
+            message:
+              type: string

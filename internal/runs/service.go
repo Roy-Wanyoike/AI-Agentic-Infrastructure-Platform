@@ -1,7 +1,9 @@
 package runs
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,14 +32,75 @@ type Run struct {
 	UpdatedAt      time.Time
 }
 
+// Step captures one execution trace entry for a run (run_steps table).
+type Step struct {
+	ID          string
+	RunID       string
+	StepType    string
+	Status      string
+	InputMeta   map[string]any
+	OutputMeta  map[string]any
+	Error       string
+	TokenUsage  map[string]any
+	Cost        float64
+	StartedAt   time.Time
+	CompletedAt time.Time
+	CreatedAt   time.Time
+}
+
+var ErrRunNotFound = errors.New("run not found")
+
+// Store abstracts durable run storage. Every tenant-facing query is guarded by
+// organization_id; GetRunByID/UpdateStatusCtx with an empty orgID are trusted
+// internal paths for workers which resolve and re-apply the tenant scope from
+// the run row itself.
+type Store interface {
+	// CreateRun inserts the run row with its organization_id scope.
+	CreateRun(ctx context.Context, run *Run) error
+	// GetRun fetches a run strictly within one tenant (organization_id guard).
+	GetRun(ctx context.Context, orgID, id string) (*Run, error)
+	// GetRunByID fetches by primary key (trusted internal worker path).
+	GetRunByID(ctx context.Context, id string) (*Run, error)
+	// ListRuns returns the runs of exactly one tenant (organization_id guard).
+	ListRuns(ctx context.Context, orgID string) ([]*Run, error)
+	// UpdateRunStatus transitions a run status within one tenant
+	// (organization_id guard).
+	UpdateRunStatus(ctx context.Context, orgID, id string, status RunStatus, output string) error
+	// InsertStep appends one run_steps row within one tenant
+	// (organization_id guard enforced via the runs join/exists check).
+	InsertStep(ctx context.Context, orgID string, step *Step) error
+	// ListSteps returns the steps of one run within one tenant
+	// (organization_id guard via the runs join).
+	ListSteps(ctx context.Context, orgID, runID string) ([]*Step, error)
+}
+
 type Service struct {
 	mu       sync.Mutex
 	runs     map[string]*Run
+	steps    map[string][]*Step
 	streamer *streaming.Service
+	store    Store
 }
 
 func NewService() *Service {
-	return &Service{runs: make(map[string]*Run)}
+	return &Service{runs: make(map[string]*Run), steps: make(map[string][]*Step)}
+}
+
+// NewServiceWithStore returns a service whose source of truth is a durable
+// store; the in-memory maps act as a write-through cache for legacy callers.
+func NewServiceWithStore(store Store) *Service {
+	s := NewService()
+	s.store = store
+	return s
+}
+
+func (s *Service) SetStore(store Store) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.store = store
 }
 
 func (s *Service) SetStreamer(st *streaming.Service) {
@@ -49,25 +112,83 @@ func (s *Service) SetStreamer(st *streaming.Service) {
 	s.streamer = st
 }
 
+// Create is the legacy context-free entry point; see CreateRunCtx.
 func (s *Service) Create(orgID, agentID, input string) (*Run, error) {
+	return s.CreateRunCtx(context.Background(), orgID, agentID, input)
+}
+
+// CreateRunCtx persists a new QUEUED run for one tenant (organization_id scope).
+func (s *Service) CreateRunCtx(ctx context.Context, orgID, agentID, input string) (*Run, error) {
 	if orgID == "" || agentID == "" {
 		return nil, errors.New("organization and agent id required")
 	}
+	now := time.Now().UTC()
+	run := &Run{
+		ID:             uuid.NewString(),
+		OrganizationID: orgID,
+		AgentID:        agentID,
+		Input:          input,
+		Status:         StatusQueued,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if s.store != nil {
+		if err := s.store.CreateRun(ctx, run); err != nil {
+			return nil, err
+		}
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	id := uuid.NewString()
-	run := &Run{ID: id, OrganizationID: orgID, AgentID: agentID, Input: input, Status: StatusQueued, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-	s.runs[id] = run
+	s.runs[run.ID] = run
+	s.mu.Unlock()
 	return run, nil
 }
 
+// Get is the legacy context-free primary-key lookup used by trusted internal
+// workers; tenant-scoped API callers must use GetRunCtx.
 func (s *Service) Get(id string) (*Run, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.runs[id]
-	return r, ok
+	run, err := s.GetRunByIDCtx(context.Background(), id)
+	if err != nil {
+		return nil, false
+	}
+	return run, true
 }
 
+// GetRunByIDCtx resolves a run by primary key (trusted internal path).
+func (s *Service) GetRunByIDCtx(ctx context.Context, id string) (*Run, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, ErrRunNotFound
+	}
+	if s.store != nil {
+		return s.store.GetRunByID(ctx, id)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	if !ok {
+		return nil, ErrRunNotFound
+	}
+	return run, nil
+}
+
+// GetRunCtx resolves a run strictly within one tenant (organization_id guard) -
+// the API-facing path.
+func (s *Service) GetRunCtx(ctx context.Context, orgID, id string) (*Run, error) {
+	if strings.TrimSpace(orgID) == "" || strings.TrimSpace(id) == "" {
+		return nil, ErrRunNotFound
+	}
+	if s.store != nil {
+		return s.store.GetRun(ctx, orgID, id)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.runs[id]
+	if !ok || run.OrganizationID != orgID {
+		return nil, ErrRunNotFound
+	}
+	return run, nil
+}
+
+// List is the legacy in-memory listing; see ListRunsCtx.
 func (s *Service) List() []Run {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -78,25 +199,156 @@ func (s *Service) List() []Run {
 	return out
 }
 
-func (s *Service) UpdateStatus(id string, status RunStatus, output string) error {
+// ListRunsCtx returns all runs of exactly one tenant (organization_id guard).
+func (s *Service) ListRunsCtx(ctx context.Context, orgID string) ([]*Run, error) {
+	if strings.TrimSpace(orgID) == "" {
+		return nil, errors.New("organization id is required")
+	}
+	if s.store != nil {
+		return s.store.ListRuns(ctx, orgID)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r, ok := s.runs[id]
+	out := make([]*Run, 0)
+	for _, r := range s.runs {
+		if r.OrganizationID == orgID {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// UpdateStatus is the legacy context-free entry point used by workers; the
+// tenant is resolved from the run row and the update stays organization-scoped.
+func (s *Service) UpdateStatus(id string, status RunStatus, output string) error {
+	return s.UpdateStatusCtx(context.Background(), "", id, status, output)
+}
+
+// UpdateStatusCtx transitions a run status. When orgID is empty (trusted
+// internal worker path) it is resolved from the run row first so the update is
+// always executed with the organization_id guard. Streams a status event.
+func (s *Service) UpdateStatusCtx(ctx context.Context, orgID, id string, status RunStatus, output string) error {
+	if strings.TrimSpace(id) == "" {
+		return ErrRunNotFound
+	}
+	if s.store != nil {
+		if strings.TrimSpace(orgID) == "" {
+			run, err := s.store.GetRunByID(ctx, id)
+			if err != nil {
+				return err
+			}
+			orgID = run.OrganizationID
+		}
+		if err := s.store.UpdateRunStatus(ctx, orgID, id, status, output); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	run, ok := s.runs[id]
 	if !ok {
-		return errors.New("run not found")
+		s.mu.Unlock()
+		if s.store == nil {
+			return ErrRunNotFound
+		}
+		s.publishStatus(id, status, output)
+		return nil
 	}
-	r.Status = status
+	run.Status = status
 	if output != "" {
-		r.Output = output
+		run.Output = output
 	}
-	r.UpdatedAt = time.Now().UTC()
-	// publish simple status event to streamer if available
-	if s.streamer != nil {
+	run.UpdatedAt = time.Now().UTC()
+	runID := run.ID
+	s.mu.Unlock()
+	s.publishStatus(runID, status, output)
+	return nil
+}
+
+func (s *Service) publishStatus(runID string, status RunStatus, output string) {
+	s.mu.Lock()
+	streamer := s.streamer
+	s.mu.Unlock()
+	if streamer != nil {
 		payload := map[string]any{"status": string(status)}
 		if output != "" {
 			payload["output"] = output
 		}
-		s.streamer.Publish(r.ID, "status", "status.changed", payload)
+		streamer.Publish(runID, "status", "status.changed", payload)
+	}
+}
+
+// RecordStep appends one execution trace entry (run_steps table) for a run of
+// one tenant. When no store is configured the step is kept in memory so the
+// API still serves traces in zero-infrastructure mode.
+func (s *Service) RecordStep(ctx context.Context, orgID, runID string, step *Step) error {
+	if step == nil {
+		return errors.New("step is required")
+	}
+	if strings.TrimSpace(runID) == "" {
+		return ErrRunNotFound
+	}
+	if strings.TrimSpace(step.StepType) == "" {
+		return errors.New("step type is required")
+	}
+	if strings.TrimSpace(step.Status) == "" {
+		step.Status = "PENDING"
+	}
+	step.RunID = runID
+	if step.ID == "" {
+		step.ID = uuid.NewString()
+	}
+	if step.CreatedAt.IsZero() {
+		step.CreatedAt = time.Now().UTC()
+	}
+
+	if s.store != nil {
+		if strings.TrimSpace(orgID) == "" {
+			run, err := s.store.GetRunByID(ctx, runID)
+			if err != nil {
+				return err
+			}
+			orgID = run.OrganizationID
+		}
+		if err := s.store.InsertStep(ctx, orgID, step); err != nil {
+			return err
+		}
+	}
+
+	s.mu.Lock()
+	if run, ok := s.runs[runID]; ok && orgID != "" && run.OrganizationID != orgID {
+		s.mu.Unlock()
+		return ErrRunNotFound
+	}
+	s.steps[runID] = append(s.steps[runID], step)
+	streamer := s.streamer
+	s.mu.Unlock()
+
+	if streamer != nil {
+		streamer.Publish(runID, "step", "step.recorded", map[string]any{
+			"step_id":   step.ID,
+			"step_type": step.StepType,
+			"status":    step.Status,
+			"cost":      step.Cost,
+		})
 	}
 	return nil
+}
+
+// Steps returns the recorded trace of one run within one tenant
+// (organization_id guard).
+func (s *Service) Steps(ctx context.Context, orgID, runID string) ([]*Step, error) {
+	if strings.TrimSpace(orgID) == "" || strings.TrimSpace(runID) == "" {
+		return nil, ErrRunNotFound
+	}
+	if s.store != nil {
+		return s.store.ListSteps(ctx, orgID, runID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if run, ok := s.runs[runID]; ok && run.OrganizationID != orgID {
+		return nil, ErrRunNotFound
+	}
+	out := make([]*Step, len(s.steps[runID]))
+	copy(out, s.steps[runID])
+	return out, nil
 }

@@ -1,0 +1,406 @@
+# AgentOS API — OpenAPI 3.1 fragment for Track 2-c (Governance:
+# Policies + Rate limiting + Idempotency).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (see base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation
+#   * structured error model {"error":{"code","message","request_id"}}
+paths:
+  /policies:
+    get:
+      operationId: listPolicies
+      summary: List policies of the authenticated organization
+      description: |
+        Returns the governance policies of the caller's organization ordered
+        by priority (desc) then creation time (asc) — the same order the
+        evaluation engine applies. Unpaginated (see base spec limitation).
+      tags: [Governance]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: policies.read
+      responses:
+        '200':
+          description: Policy list (possibly empty)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Internal'
+
+  /policies/create:
+    post:
+      operationId: createPolicy
+      summary: Create a policy
+      description: |
+        Validates the policy record (name required; effect allow|deny;
+        resource_type tool|agent|workflow|deployment|*; no empty entries in
+        actions / tool_allowlist / environments; max_cost_cents >= 0) and
+        persists it for the caller's organization. id and timestamps are
+        assigned server-side. Returns 422 with an invalid_policy error when
+        validation fails.
+      tags: [Governance]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: policies.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Policy'
+      responses:
+        '201':
+          description: Created policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          description: Malformed JSON body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Policy validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /policies/{id}:
+    get:
+      operationId: getPolicy
+      summary: Get one policy
+      tags: [Governance]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: policies.read
+      parameters:
+        - $ref: '#/components/parameters/PolicyID'
+      responses:
+        '200':
+          description: The policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updatePolicy
+      summary: Full update of one policy
+      description: |
+        Replaces the mutable fields (name, effect, resource_type, actions,
+        conditions, priority, enabled). id, organization_id and created_at
+        are preserved; updated_at is bumped. Validates like create.
+      tags: [Governance]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: policies.write
+      parameters:
+        - $ref: '#/components/parameters/PolicyID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Policy'
+      responses:
+        '200':
+          description: Updated policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          description: Malformed JSON body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Policy validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: deletePolicy
+      summary: Delete one policy
+      tags: [Governance]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: policies.write
+      parameters:
+        - $ref: '#/components/parameters/PolicyID'
+      responses:
+        '200':
+          description: Deletion confirmation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: boolean
+                    enum: [true]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /policies/evaluate:
+    post:
+      operationId: evaluatePolicies
+      summary: Evaluate the caller's policies against one action
+      description: |
+        Runs the governance engine over the enabled policies of the caller's
+        organization: highest-priority match wins, deny beats allow on a
+        priority tie, and the default decision is allow when nothing matches.
+        Condition semantics (conditions are applicability predicates):
+          * tool_allowlist (non-empty) — the request tool must be listed;
+          * environments (non-empty) — the request environment must be listed;
+          * max_cost_cents (set >= 0) — the request is over budget, i.e.
+            estimated_cost_cents > max_cost_cents (budget-guard);
+          * require_approval — annotated in the decision reason.
+        The tenant scope always comes from the authenticated principal;
+        resource.tenant_id is informational. Evaluate is a read-only operation
+        and requires policies.read.
+      tags: [Governance]
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: policies.read
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyEvaluateRequest'
+      responses:
+        '200':
+          description: Decision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyEvaluateResponse'
+        '400':
+          description: Malformed JSON body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Missing action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  parameters:
+    PolicyID:
+      name: id
+      in: path
+      required: true
+      description: Policy id (UUID string)
+      schema:
+        type: string
+
+  schemas:
+    PolicyConditions:
+      type: object
+      description: |
+        Applicability predicates for a policy. An absent condition does not
+        restrict the policy. See POST /policies/evaluate for the semantics.
+      properties:
+        tool_allowlist:
+          type: array
+          description: Restricts the policy to the listed tool ids/names.
+          items:
+            type: string
+        max_cost_cents:
+          oneOf:
+            - type: integer
+              minimum: 0
+            - type: 'null'
+          description: |
+            When set, the policy applies to requests whose estimated cost
+            exceeds this cap (budget-guard condition).
+        environments:
+          type: array
+          description: Restricts the policy to the listed environments.
+          items:
+            type: string
+            enum: [development, staging, production]
+        require_approval:
+          type: boolean
+          description: |
+            Not a match predicate; when the winning policy carries it the
+            decision reason notes that approval is required.
+    Policy:
+      type: object
+      required: [name, effect, resource_type, actions, conditions, priority, enabled, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          readOnly: true
+        name:
+          type: string
+        effect:
+          type: string
+          enum: [allow, deny]
+        resource_type:
+          type: string
+          enum: [tool, agent, workflow, deployment, '*']
+        actions:
+          type: array
+          description: |
+            Actions this policy governs, e.g. ["runs.execute","tools.call"].
+            An empty list matches every action.
+          items:
+            type: string
+        conditions:
+          $ref: '#/components/schemas/PolicyConditions'
+        priority:
+          type: integer
+          description: Higher wins; ties resolve deny-over-allow.
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC.
+        updated_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC.
+    PolicyResponse:
+      type: object
+      required: [policy]
+      properties:
+        policy:
+          $ref: '#/components/schemas/Policy'
+    PolicyListResponse:
+      type: object
+      required: [policies]
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+    PolicyEvaluateRequest:
+      type: object
+      required: [action, resource, context]
+      properties:
+        subject:
+          type: object
+          description: Informational caller identity.
+          properties:
+            user_id:
+              type: string
+            role:
+              type: string
+            api_key_id:
+              type: string
+        action:
+          type: string
+          description: The governed action, e.g. tools.call or runs.execute.
+        resource:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [tool, agent, workflow, deployment, '*']
+            id:
+              type: string
+            tenant_id:
+              type: string
+              description: Informational; the actual scope comes from auth.
+        context:
+          type: object
+          properties:
+            estimated_cost_cents:
+              type: integer
+              description: Estimated cost used by the max_cost_cents condition.
+            environment:
+              type: string
+              description: Target environment used by the environments condition.
+            tool:
+              type: string
+              description: Overrides resource.id for tool_allowlist matching.
+    PolicyEvaluateResponse:
+      type: object
+      required: [decision, matched_policy_id, reason]
+      properties:
+        decision:
+          type: string
+          enum: [allow, deny]
+        matched_policy_id:
+          type: string
+          description: Empty when no policy matched (default allow).
+        reason:
+          type: string
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated but lacking the required permission
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found within the caller's organization
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Internal:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
