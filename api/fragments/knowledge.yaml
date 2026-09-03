@@ -1,0 +1,410 @@
+# OpenAPI 3.1 fragment — Track 3-d Memory + Knowledge/RAG.
+#
+# Merge target: api/openapi.yaml (paths + components.schemas).
+# Shapes match the handlers in cmd/api/knowledge.go and cmd/api/memory.go
+# exactly. Every operation carries x-required-permission — the permission
+# ACTUALLY enforced by auth.RequirePermission. The wave-3 contract's
+# `knowledge:*`/`memory:*` permissions do not exist in internal/auth yet
+# (and its suggested tools:read/tools:write fallback does not either), so
+# the closest existing grants agents.read/agents.write are enforced;
+# x-contract-permission records the contract-level permission for the
+# orchestrator's future constants. See docs/wiring/knowledge.md.
+openapi: 3.1.0
+info:
+  title: AgentOS — knowledge/RAG + agent memory (track 3-d fragment)
+  version: 3.0.0-fragment
+paths:
+  /knowledge/documents:
+    get:
+      operationId: listKnowledgeDocuments
+      summary: List the caller's knowledge documents (newest first)
+      x-required-permission: agents.read
+      x-contract-permission: knowledge:read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Knowledge]
+      responses:
+        '200':
+          description: Documents of the caller's organization, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbDocumentsResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+    post:
+      operationId: createKnowledgeDocument
+      summary: Ingest a document (chunk ~800 chars / 15% overlap -> embed -> store)
+      description: |
+        Runs the ingestion pipeline: the content is chunked on boundaries
+        (~800 chars, ~15% overlap), each chunk is embedded through the
+        OpenAI-compatible embeddings backend, and document + chunks are
+        stored atomically. An embeddings-backend failure is NON-FATAL: the
+        response is still 201 with an additive `warning` field, and the
+        unembedded chunks stay searchable via lexical scoring.
+      x-required-permission: agents.write
+      x-contract-permission: knowledge:write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Knowledge]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnbCreateDocumentRequest'
+      responses:
+        '201':
+          description: Document ingested (echoes the stored document row).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbCreateDocumentResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: Validation failed (title/content required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+        '500':
+          description: Unexpected server failure (e.g. store unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+  /knowledge/search:
+    post:
+      operationId: searchKnowledge
+      summary: Top-k chunk retrieval over the caller's knowledge base
+      description: |
+        Scores the org-scoped chunk candidates against the query with cosine
+        similarity when embeddings exist on both sides, and lexical token
+        overlap otherwise (offline hash embeddings / unembedded chunks).
+        Returns at most `k` results (default 5, capped at 50) with citations.
+      x-required-permission: agents.read
+      x-contract-permission: knowledge:read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Knowledge]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnbSearchRequest'
+      responses:
+        '200':
+          description: Top-k chunk hits; empty `results` when nothing matches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbSearchResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: Validation failed (query required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+  /memory:
+    get:
+      operationId: listMemorySnippets
+      summary: List the caller's visible (non-expired) memory snippets
+      description: |
+        agent_id filters to exactly that agent's snippets; omitted lists the
+        whole organization (org-level shared memory + all agents). Expired
+        short-term snippets never surface. Results are newest first.
+      x-required-permission: agents.read
+      x-contract-permission: memory:read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Memory]
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        description: Restrict the listing to one agent's snippets.
+        schema: { type: string }
+      responses:
+        '200':
+          description: Visible snippets of the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemSnippetsResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemErrorEnvelope'
+    put:
+      operationId: putMemorySnippets
+      summary: Replace the snippet set of one (organization, agent) scope
+      description: |
+        Atomically replaces the memory of the caller's organization for the
+        given agent_id (empty = org-level shared memory). expires_at is
+        RFC3339 and drives short-term expiry; the optional embedding field
+        accepts client-computed vectors, otherwise content is embedded with
+        the service embedder. Embeddings are never echoed back.
+      x-required-permission: agents.write
+      x-contract-permission: memory:write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemPutMemoryRequest'
+      responses:
+        '200':
+          description: The stored snippet set (post-normalization).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemSnippetsResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: 'Validation failed (blank content, unknown scope, malformed expires_at).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemErrorEnvelope'
+        '500':
+          description: Unexpected server failure (e.g. store unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemErrorEnvelope'
+# NOTE: '#/components/responses/Unauthorized' and 'Forbidden' resolve against
+# the EXISTING definitions in api/openapi.yaml (auth middleware responses);
+# this fragment intentionally does not redefine them.
+components:
+  schemas:
+    KnbErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of DOCUMENT_NOT_FOUND, VALIDATION_ERROR, INVALID_REQUEST, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message: { type: string }
+    KnbDocument:
+      type: object
+      description: One ingested knowledge document (tenant-scoped).
+      required: [id, title, chunk_count, created_at, updated_at]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        source:
+          type: string
+          description: Where the content came from (URL, wiki page, upload name).
+        metadata:
+          type: object
+          description: Caller-supplied free-form metadata carried through ingest.
+          additionalProperties: true
+        chunk_count:
+          type: integer
+          description: Number of chunks produced by the ingest pipeline.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    KnbDocumentsResponse:
+      type: object
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnbDocument'
+    KnbCreateDocumentRequest:
+      type: object
+      required: [title, content]
+      properties:
+        title: { type: string, minLength: 1 }
+        content:
+          type: string
+          minLength: 1
+          description: Full document text; chunked (~800 chars, 15% overlap) server-side.
+        source: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+    KnbCreateDocumentResponse:
+      type: object
+      required: [document]
+      properties:
+        document:
+          $ref: '#/components/schemas/KnbDocument'
+        warning:
+          type: string
+          description: Present when the embeddings backend failed; chunks were stored unembedded (search falls back to lexical scoring).
+    KnbSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string, minLength: 1 }
+        k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+          description: Maximum number of chunk hits to return.
+    KnbSearchResult:
+      type: object
+      description: One retrieval hit — the contract-pinned fields plus additive title/chunk id.
+      required: [document_id, chunk_ordinal, content, score, citation]
+      properties:
+        document_id: { type: string }
+        document_title: { type: string }
+        chunk_id: { type: string }
+        chunk_ordinal:
+          type: integer
+          description: Zero-based position of the chunk inside its document.
+        content: { type: string }
+        score:
+          type: number
+          format: double
+          description: Cosine similarity (or lexical fallback score) in [0,1].
+          examples:
+          - 0.83
+        citation:
+          type: string
+          description: Human-readable citation, e.g. "Billing FAQ (confluence/billing), chunk 3".
+    KnbSearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnbSearchResult'
+    MemErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of VALIDATION_ERROR, INVALID_REQUEST, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message: { type: string }
+    MemSnippetInput:
+      type: object
+      required: [content]
+      properties:
+        scope:
+          type: string
+          enum: [short_term, long_term]
+          default: long_term
+        content:
+          type: string
+          minLength: 1
+        importance:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.5
+        expires_at:
+          type: string
+          format: date-time
+          description: RFC3339; past timestamps make short-term snippets invisible immediately.
+        embedding:
+          type: array
+          items: { type: number, format: double }
+          description: Optional client-computed vector; otherwise embedded server-side.
+    MemSnippet:
+      type: object
+      description: One stored memory snippet (embedding stays server-side).
+      required: [id, agent_id, scope, content, importance, created_at, updated_at]
+      properties:
+        id: { type: string }
+        agent_id:
+          type: string
+          description: Empty for org-level shared memory.
+        scope:
+          type: string
+          enum: [short_term, long_term]
+        content: { type: string }
+        importance: { type: number, format: double }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MemSnippetsResponse:
+      type: object
+      required: [snippets]
+      properties:
+        snippets:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemSnippet'
+    MemPutMemoryRequest:
+      type: object
+      description: Replaces the snippet set of the (organization, agent_id) scope.
+      required: [snippets]
+      properties:
+        agent_id:
+          type: string
+          description: Empty replaces the org-level shared memory.
+        snippets:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemSnippetInput'
