@@ -21,6 +21,7 @@ import (
 	"agentos/internal/queue"
 	"agentos/internal/runs"
 	"agentos/internal/runtime"
+	"agentos/internal/sandbox"
 	"agentos/internal/tools"
 	"agentos/internal/workflows"
 )
@@ -121,6 +122,18 @@ func main() {
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewCalculatorTool())
 	registry.Register(tools.NewHTTPRequestTool())
+
+	// issue #27: opt-in process-isolated tool execution. With
+	// AGENTOS_TOOL_SANDBOX=exec the network-facing http_request tool runs in a
+	// short-lived sandbox-exec child (hard timeout, output cap, env scrubbing,
+	// best-effort rlimits); the default keeps in-process zero-infra behavior.
+	if sb, ok := sandbox.RunnerFromEnv(logr); ok {
+		if err := tools.WithSandboxRunner(registry, sb, tools.HTTPToolName); err != nil {
+			logr.Warn("sandbox enablement failed; tools stay in-process", "error", err)
+		} else {
+			logr.Info("sandboxed tool execution enabled", "tools", tools.HTTPToolName)
+		}
+	}
 
 	// Provider wiring (issue #15): the env-driven construction moved into
 	// models.ProviderFromEnv so the worker and the API's evaluation runner
