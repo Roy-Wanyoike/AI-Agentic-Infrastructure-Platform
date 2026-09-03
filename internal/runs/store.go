@@ -14,18 +14,30 @@ const (
 	// Tenant guard: runs are inserted with their organization_id scope.
 	sqlInsertRun = `INSERT INTO runs (id, organization_id, agent_id, status, input, output, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 	// Tenant guard: single-run reads are scoped to one organization_id.
-	sqlSelectRunScoped = `SELECT id, organization_id, agent_id, COALESCE(input, ''), COALESCE(output, ''), status, created_at, updated_at FROM runs WHERE id = $1 AND organization_id = $2`
+	sqlSelectRunScoped = `SELECT id, organization_id, agent_id, COALESCE(input, ''), COALESCE(output, ''), status, COALESCE(cost_cents, 0), created_at, updated_at FROM runs WHERE id = $1 AND organization_id = $2`
 	// Trusted internal PK lookup (worker path); the returned row carries
 	// organization_id so callers can enforce tenancy.
-	sqlSelectRunByID = `SELECT id, organization_id, agent_id, COALESCE(input, ''), COALESCE(output, ''), status, created_at, updated_at FROM runs WHERE id = $1`
+	sqlSelectRunByID = `SELECT id, organization_id, agent_id, COALESCE(input, ''), COALESCE(output, ''), status, COALESCE(cost_cents, 0), created_at, updated_at FROM runs WHERE id = $1`
 	// Tenant guard: listings filter on organization_id (+created_at index).
-	sqlSelectRunsByOrg = `SELECT id, organization_id, agent_id, COALESCE(input, ''), COALESCE(output, ''), status, created_at, updated_at FROM runs WHERE organization_id = $1 ORDER BY created_at DESC`
+	sqlSelectRunsByOrg = `SELECT id, organization_id, agent_id, COALESCE(input, ''), COALESCE(output, ''), status, COALESCE(cost_cents, 0), created_at, updated_at FROM runs WHERE organization_id = $1 ORDER BY created_at DESC`
 	// Tenant guard: status transitions require a matching organization_id.
 	sqlUpdateRunStatus = `UPDATE runs SET status = $1, output = CASE WHEN $2 = '' THEN output ELSE $2 END, updated_at = $3 WHERE id = $4 AND organization_id = $5`
 	// Tenant guard: the INSERT ... SELECT ... WHERE EXISTS clause only accepts
 	// rows when the run belongs to the caller's organization_id; step_index is
-	// derived from the existing steps of the same run.
-	sqlInsertRunStep = `INSERT INTO run_steps (id, run_id, step_index, step_type, status, input_meta, output_meta, error, token_usage, cost, started_at, completed_at, created_at) SELECT $1, $2, (SELECT COALESCE(MAX(step_index), 0) + 1 FROM run_steps WHERE run_id = $2), $3, $4, $5::jsonb, $6::jsonb, $7, $8::jsonb, $9, $10, $11, $12 WHERE EXISTS (SELECT 1 FROM runs WHERE id = $2 AND organization_id = $13)`
+	// derived from the existing steps of the same run. The single statement is
+	// atomic: the step row insert (cost + contract-canonical cost_cents carry
+	// the same value) and the runs.cost_cents total bump succeed or fail
+	// together, so a step cost can never be recorded without its total.
+	sqlInsertRunStep = `WITH step_insert AS (
+    INSERT INTO run_steps (id, run_id, step_index, step_type, status, input_meta, output_meta, error, token_usage, cost, cost_cents, started_at, completed_at, created_at)
+    SELECT $1, $2, (SELECT COALESCE(MAX(step_index), 0) + 1 FROM run_steps WHERE run_id = $2), $3, $4, $5::jsonb, $6::jsonb, $7, $8::jsonb, $9, $9, $10, $11, $12
+    WHERE EXISTS (SELECT 1 FROM runs WHERE id = $2 AND organization_id = $13)
+    RETURNING run_id
+), run_bump AS (
+    UPDATE runs SET cost_cents = runs.cost_cents + $9
+    WHERE id = (SELECT run_id FROM step_insert) AND organization_id = $13
+)
+SELECT (SELECT COUNT(*) FROM step_insert) + (SELECT COUNT(*) FROM run_bump) AS affected`
 	// Tenant guard: step listings join runs and filter on organization_id.
 	sqlSelectRunSteps = `SELECT rs.id, rs.run_id, rs.step_type, rs.status, COALESCE(rs.input_meta::text, ''), COALESCE(rs.output_meta::text, ''), COALESCE(rs.error, ''), COALESCE(rs.token_usage::text, ''), rs.cost, rs.started_at, rs.completed_at, rs.created_at FROM run_steps rs JOIN runs r ON r.id = rs.run_id WHERE r.organization_id = $1 AND rs.run_id = $2 ORDER BY rs.step_index ASC`
 )
@@ -115,16 +127,19 @@ func (s *pgStore) InsertStep(ctx context.Context, orgID string, step *Step) erro
 	if step.ID == "" {
 		step.ID = uuid.NewString()
 	}
-	res, err := s.db.ExecContext(ctx, sqlInsertRunStep,
+	// Atomic single statement (see sqlInsertRunStep): step row + runs cost
+	// total bump. affected == 0 means the tenant guard (WHERE EXISTS) or
+	// the run lookup rejected the write: run not in this org.
+	var affected int64
+	if err := s.db.QueryRowContext(ctx, sqlInsertRunStep,
 		step.ID, step.RunID, step.StepType, step.Status,
 		jsonParam(step.InputMeta), jsonParam(step.OutputMeta), step.Error,
 		jsonParam(step.TokenUsage), step.Cost,
-		nullableTime(step.StartedAt), nullableTime(step.CompletedAt), step.CreatedAt)
-	if err != nil {
+		nullableTime(step.StartedAt), nullableTime(step.CompletedAt), step.CreatedAt,
+		orgID).Scan(&affected); err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		// tenant guard (WHERE EXISTS) rejected the row: run not in this org
+	if affected == 0 {
 		return ErrRunNotFound
 	}
 	return nil
@@ -162,7 +177,7 @@ func (s *pgStore) ListSteps(ctx context.Context, orgID, runID string) ([]*Step, 
 func scanRun(scanner interface{ Scan(dest ...any) error }) (*Run, error) {
 	var run Run
 	var status string
-	if err := scanner.Scan(&run.ID, &run.OrganizationID, &run.AgentID, &run.Input, &run.Output, &status, &run.CreatedAt, &run.UpdatedAt); err != nil {
+	if err := scanner.Scan(&run.ID, &run.OrganizationID, &run.AgentID, &run.Input, &run.Output, &status, &run.TotalCostCents, &run.CreatedAt, &run.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrRunNotFound
 		}

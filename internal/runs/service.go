@@ -28,6 +28,10 @@ type Run struct {
 	Input          string
 	Output         string
 	Status         RunStatus
+	// TotalCostCents is the summed cost of the run's costed steps
+	// (USD cents; 0 when no pricing data was available). Serialized
+	// additively as snake_case; legacy PascalCase fields are unchanged.
+	TotalCostCents float64 `json:"total_cost_cents"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -68,10 +72,17 @@ type Store interface {
 	UpdateRunStatus(ctx context.Context, orgID, id string, status RunStatus, output string) error
 	// InsertStep appends one run_steps row within one tenant
 	// (organization_id guard enforced via the runs join/exists check).
+	// Implementations must ALSO bump the run's durable total
+	// (runs.cost_cents += step.Cost) atomically in the same statement;
+	// the service never adjusts the total itself in store mode.
 	InsertStep(ctx context.Context, orgID string, step *Step) error
 	// ListSteps returns the steps of one run within one tenant
 	// (organization_id guard via the runs join).
 	ListSteps(ctx context.Context, orgID, runID string) ([]*Step, error)
+	// AggregateCosts sums runs.cost_cents for one tenant over the
+	// half-open [from, to) window grouped by day, agent or model
+	// (GET /v1/usage/costs; see cost.go).
+	AggregateCosts(ctx context.Context, orgID string, from, to time.Time, groupBy CostGroupBy) ([]CostBucket, error)
 }
 
 type Service struct {
@@ -320,6 +331,17 @@ func (s *Service) RecordStep(ctx context.Context, orgID, runID string, step *Ste
 		return ErrRunNotFound
 	}
 	s.steps[runID] = append(s.steps[runID], step)
+	// The durable runs.cost_cents total is owned by the Store: pgStore
+	// bumps it in the same atomic statement as the step insert (see
+	// sqlInsertRunStep) and Store implementations are required to do the
+	// same. Only in zero-infrastructure mode (no store) is the service
+	// the store of record and bumps the total itself — bumping here in
+	// store mode would double-count against the store-side total.
+	if s.store == nil {
+		if run, ok := s.runs[runID]; ok {
+			run.TotalCostCents += step.Cost
+		}
+	}
 	streamer := s.streamer
 	s.mu.Unlock()
 
