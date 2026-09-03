@@ -22,6 +22,7 @@ Current migration structure:
 - 016_billing.sql
 - 017_secrets.sql
 - 018_marketplace.sql
+- 019_sso_scim.sql
 - 020_connectors.sql
 
 Migration conventions:
