@@ -176,16 +176,15 @@ events through this channel.
   bounds the way `histogram_quantile` does.
 - `observability.MetricsMiddleware` records per-route request counts and
   durations; `observability.RateLimiter` and `observability.Quota` provide
-  fixed-window primitives (used by other packages; wiring notes in
-  `docs/wiring/`).
+  fixed-window primitives used by other packages.
 - `/healthz` and `/readyz` are unauthenticated liveness/readiness probes.
 
 ## API surface
 
 All versioned routes are mounted twice: `/api/v1/...` (canonical, used by the
 web dashboard) and `/v1/...` (legacy). The contract lives in
-`api/openapi.yaml`; per-track additions are collected under `api/fragments/`
-and `docs/wiring/`.
+`api/openapi.yaml`; incremental additions are staged under `api/fragments/`
+and merged into the main spec.
 
 ## Web dashboard
 
