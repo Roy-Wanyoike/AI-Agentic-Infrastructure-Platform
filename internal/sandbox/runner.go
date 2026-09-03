@@ -33,12 +33,14 @@ const (
 	DefaultTimeout        = 30 * time.Second
 	DefaultMaxOutputBytes = 1 << 20 // 1 MiB of child stdout, hard parent-side cap
 
-	// Child rlimit hints. RLIMIT_AS is deliberately generous: it counts the
-	// child's whole virtual address space and a Go runtime reserves arena
-	// address space well beyond its heap usage, so a tight limit would kill
-	// healthy children. Tune via WithLimits if needed.
+	// Child rlimit hints. RLIMIT_AS counts the child's whole VIRTUAL address
+	// space and a Go 1.25 runtime reserves arena address space far beyond its
+	// heap usage (empirically ~1.5 GiB before any tool work on linux/amd64 —
+	// below that ceiling the child aborts with "runtime: cannot allocate
+	// memory"), so the default is generous on purpose: virtual reservations
+	// are not resident RAM. Tune via WithLimits if needed.
 	DefaultCPUSeconds    = int64(30)
-	DefaultMemBytes      = int64(1) << 30 // 1 GiB address space
+	DefaultMemBytes      = int64(4) << 30 // 4 GiB address space
 	DefaultFileSizeBytes = int64(16) << 20
 	DefaultNoFile        = uint64(64)
 

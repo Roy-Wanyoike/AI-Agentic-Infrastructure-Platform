@@ -13,11 +13,11 @@ import (
 // ("result|error") to stdout and exits. Both sides import this file so the
 // types cannot drift.
 
-// maxRequestBytes caps how much of a request line the child is willing to
+// MaxRequestBytes caps how much of a request line the child is willing to
 // read. Requests carry tool inputs only, which are small in practice; the cap
 // bounds child memory against a misbehaving parent (defense in depth behind
 // the child's own rlimits).
-const maxRequestBytes = 4 << 20 // 4 MiB
+const MaxRequestBytes = 4 << 20 // 4 MiB
 
 // Request is one tool job sent parent -> child.
 type Request struct {
