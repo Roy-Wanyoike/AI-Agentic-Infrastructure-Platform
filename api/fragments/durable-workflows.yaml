@@ -1,0 +1,180 @@
+# AgentOS API — OpenAPI 3.1 fragment: Durable workflow execution
+# (wave-3 track 3-c, migration 013_durable_workflows).
+#
+# This fragment is a standalone-valid OpenAPI document containing ONLY the
+# paths and schemas owned by track 3-c. The orchestrator merges `paths` and
+# `components` into api/openapi.yaml; every component carries the track-unique
+# `Wf3*` prefix so the merge cannot collide with the wave-2 `Wf*` fragment
+# (api/fragments/workflows.yaml) or the main spec.
+#
+# All routes are served under /api/v1 (and legacy /v1). The operation declares
+# its required RBAC permission via x-required-permission:
+#   workflows.read    OWNER/ADMIN/MEMBER/VIEWER  (the same constant the
+#                     wave-2 workflow routes use: auth.PermissionWorkflowsRead)
+openapi: 3.1.0
+info:
+  title: AgentOS API — Durable workflows fragment
+  version: 0.1.0
+  description: |
+    Track 3-c endpoints: the checkpointed node timeline of a durable workflow
+    run. Node execution is checkpointed synchronously and idempotently (one
+    row per workflow_run_id + node_id + attempt); a recovery pass (worker
+    watchdog) orphans stale node runs (NODE_ORPHANED), times out over-deadline
+    runs (WORKFLOW_RUN_TIMEOUT) and re-enqueues pending work.
+servers:
+  - url: /api/v1
+    description: Canonical versioned base path.
+tags:
+  - name: workflow-runs
+    description: Workflow executions, their checkpointed node timelines.
+security:
+  - Wf3BearerToken: []
+  - Wf3ApiKey: []
+paths:
+  /workflow-runs/{id}/nodes:
+    get:
+      operationId: listWorkflowRunNodes
+      tags: [workflow-runs]
+      summary: Get the checkpointed node timeline of a workflow run
+      description: |
+        Returns every node execution checkpoint of one workflow run, oldest
+        first: one entry per (node, attempt) pair. Entries are the durable
+        checkpoints written synchronously by the executor/worker, so the
+        response reflects the exact state the recovery pass acts on.
+
+        `status` uses the workflow status vocabulary (pending, running,
+        waiting_approval, completed, failed, cancelled, timeout — `timeout` is
+        assigned by the recovery watchdog). `error_code` is a machine code
+        (NODE_ORPHANED, WORKFLOW_RUN_TIMEOUT, ...) or `null` while healthy.
+
+        A run owned by another tenant surfaces as 404, never 403.
+      x-required-permission: workflows.read
+      parameters:
+        - $ref: '#/components/parameters/Wf3WorkflowRunID'
+      responses:
+        '200':
+          description: The checkpointed node timeline (may be empty while the
+            DAG expansion has not recorded any node yet).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Wf3NodeTimelineResponse'
+        '401': { $ref: '#/components/responses/Wf3Unauthorized' }
+        '403': { $ref: '#/components/responses/Wf3Forbidden' }
+        '404': { $ref: '#/components/responses/Wf3NotFound' }
+        '500': { $ref: '#/components/responses/Wf3ServerError' }
+components:
+  securitySchemes:
+    Wf3BearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    Wf3ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    Wf3WorkflowRunID:
+      name: id
+      in: path
+      required: true
+      description: Workflow run identifier (UUID v4 string).
+      schema:
+        type: string
+  responses:
+    Wf3Unauthorized:
+      description: Missing/invalid credentials.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Wf3ErrorEnvelope'
+    Wf3Forbidden:
+      description: Authenticated but lacking the required permission.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Wf3ErrorEnvelope'
+    Wf3NotFound:
+      description: Workflow run not found (or owned by another tenant —
+        cross-tenant access surfaces as 404, never 403).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Wf3ErrorEnvelope'
+    Wf3ServerError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Wf3ErrorEnvelope'
+  schemas:
+    Wf3ErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (WORKFLOW_RUN_NOT_FOUND, WORKFLOWS_UNAVAILABLE, INTERNAL_ERROR, UNAUTHORIZED).
+              examples: [WORKFLOW_RUN_NOT_FOUND]
+            message:
+              type: string
+          required: [code, message]
+      required: [error]
+    Wf3NodeTimelineStatus:
+      type: string
+      description: |
+        Node-run status. pending/running/waiting_approval are non-terminal
+        (waiting_approval is a human gate); completed/failed/cancelled/timeout
+        are terminal. A failed attempt with error_code NODE_ORPHANED is a
+        recovery artifact that is re-executed on a fresh attempt.
+      enum: [pending, running, waiting_approval, completed, failed, cancelled, timeout]
+    Wf3WorkflowRunNode:
+      type: object
+      description: One checkpointed node execution attempt (workflow_run_id +
+        node_id + attempt is the idempotency key; a replayed task never
+        re-executes an already-terminal attempt).
+      properties:
+        id:
+          type: string
+          description: Checkpoint row identifier (workflow_node_runs.id).
+        node_id:
+          type: string
+          description: DAG node id from the workflow DSL.
+        status:
+          $ref: '#/components/schemas/Wf3NodeTimelineStatus'
+        attempt:
+          type: integer
+          description: 1-based execution attempt (0 for legacy pre-migration
+            placeholder rows that were never claimed).
+          minimum: 0
+        started_at:
+          type: [string, 'null']
+          format: date-time
+          description: First claim instant of the attempt (null before the first claim).
+        finished_at:
+          type: [string, 'null']
+          format: date-time
+          description: Terminal transition instant (null while non-terminal).
+        error_code:
+          type: [string, 'null']
+          description: Machine-readable failure code (NODE_ORPHANED,
+            WORKFLOW_RUN_TIMEOUT, ...) or null while healthy.
+      required: [id, node_id, status, attempt, started_at, finished_at, error_code]
+    Wf3NodeTimelineResponse:
+      type: object
+      properties:
+        nodes:
+          type: array
+          description: Checkpointed node attempts, oldest first.
+          items:
+            $ref: '#/components/schemas/Wf3WorkflowRunNode'
+      required: [nodes]
