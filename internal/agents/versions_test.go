@@ -489,6 +489,49 @@ func TestDiffVersionsCtxKnownDiffs(t *testing.T) {
 	}
 }
 
+// TestDiffVersionsCtxExtraKeysEmittedOnce guards against duplicate extra-key
+// rows: keys present on BOTH snapshots (name, status today) must appear exactly
+// once in fields — the union of both sides' extra keys, sorted — never one row
+// per side (regression for a bug found in the live smoke test).
+func TestDiffVersionsCtxExtraKeysEmittedOnce(t *testing.T) {
+	ctx := context.Background()
+	_, versionsSvc, agent := newVersionsFixture(t)
+
+	v2, err := versionsSvc.CreateVersionCtx(ctx, "org-1", agent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("CreateVersionCtx(v2) returned error: %v", err)
+	}
+	v3, err := versionsSvc.CreateVersionCtx(ctx, "org-1", agent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("CreateVersionCtx(v3) returned error: %v", err)
+	}
+
+	diff, err := versionsSvc.DiffVersionsCtx(ctx, "org-1", agent.ID, v2.Version, v3.Version)
+	if err != nil {
+		t.Fatalf("DiffVersionsCtx returned error: %v", err)
+	}
+
+	// 6 contract-comparable fields + exactly one row per extra key (name,
+	// status) = 8; no duplicates allowed.
+	counts := make(map[string]int, len(diff.Fields))
+	for _, field := range diff.Fields {
+		counts[field.Field]++
+	}
+	for name, count := range counts {
+		if count != 1 {
+			t.Fatalf("field %q appeared %d times in the diff, want exactly 1 (fields: %+v)", name, count, diff.Fields)
+		}
+	}
+	if len(diff.Fields) != 8 {
+		t.Fatalf("expected 8 diff fields (6 comparable + name + status), got %d: %+v", len(diff.Fields), diff.Fields)
+	}
+	// Extra keys are appended after the comparable block, sorted.
+	extraNames := []string{diff.Fields[6].Field, diff.Fields[7].Field}
+	if extraNames[0] != "name" || extraNames[1] != "status" {
+		t.Fatalf("extra keys must be sorted (name, status), got %v", extraNames)
+	}
+}
+
 // TestDiffVersionsCtxUnknownVersionAndCrossTenant pins the error contract:
 // unknown from/to -> ErrVersionNotFound; a foreign-tenant caller cannot diff
 // versions of an agent it does not own (ErrAgentNotFound via the tenant guard).

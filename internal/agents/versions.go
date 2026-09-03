@@ -435,15 +435,16 @@ func (s *VersionsService) DiffVersionsCtx(ctx context.Context, orgID, agentID st
 	}
 
 	// Extra snapshot keys (e.g. name/status today, future fields) diff too so
-	// the viewer never hides a change the snapshots recorded.
+	// the viewer never hides a change the snapshots recorded. Keys present on
+	// both sides are emitted exactly once (union), sorted.
 	extras := make([]string, 0, len(fromSnap)+len(toSnap))
-	for key := range fromSnap {
-		if !covered[key] && fromSnap[key] != nil {
-			extras = append(extras, key)
-		}
-	}
-	for key := range toSnap {
-		if !covered[key] && toSnap[key] != nil {
+	seenExtras := make(map[string]bool, len(fromSnap)+len(toSnap))
+	for _, snap := range []map[string]any{fromSnap, toSnap} {
+		for key := range snap {
+			if covered[key] || snap[key] == nil || seenExtras[key] {
+				continue
+			}
+			seenExtras[key] = true
 			extras = append(extras, key)
 		}
 	}
