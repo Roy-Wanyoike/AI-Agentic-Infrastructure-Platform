@@ -4,20 +4,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"agentos/internal/agents"
 	"agentos/internal/config"
+	"agentos/internal/database"
 	"agentos/internal/logger"
 	"agentos/internal/models"
 	"agentos/internal/queue"
 	"agentos/internal/runs"
 	"agentos/internal/runtime"
 	"agentos/internal/tools"
+	"agentos/internal/workflows"
 )
 
 func postEventWithRetries(apiBase, runID string, payload map[string]any) error {
@@ -64,7 +69,7 @@ func agentSvcCreate(svc *agents.Service) (*agents.Agent, error) {
 // stepRecorderAdapter adapts the runtime step stream to the runs service
 // recorder so model/tool steps become queryable run_steps rows. The tenant
 // scope is resolved from the run itself (trusted internal worker path).
-func stepRecorderAdapter(runsService *runs.Service) runtime.StepRecorder {
+func stepRecorderAdapter(runsService *runs.Service, agentsvc *agents.Service) runtime.StepRecorder {
 	return runtime.StepRecorderFunc(func(ctx context.Context, runID string, step runtime.Step) error {
 		if step.Input == "" && step.Output == "" && step.Error == "" {
 			return nil
@@ -89,6 +94,14 @@ func stepRecorderAdapter(runsService *runs.Service) runtime.StepRecorder {
 				"prompt_tokens":     step.TokenUsage.PromptTokens,
 				"completion_tokens": step.TokenUsage.CompletionTokens,
 				"total_tokens":      step.TokenUsage.TotalTokens,
+			}
+			// wave-3 3-b: price model steps through the pricing hook
+			// (unknown model -> 0 cents, never an error).
+			if step.Type == runtime.StepTypeModel {
+				if agent, aerr := agentsvc.GetAgentCtx(context.Background(), run.OrganizationID, run.AgentID); aerr == nil {
+					rs.Cost = models.ComputeCostCents(agent.Model,
+						step.TokenUsage.PromptTokens, step.TokenUsage.CompletionTokens)
+				}
 			}
 		}
 		return runsService.RecordStep(ctx, run.OrganizationID, runID, rs)
@@ -140,13 +153,47 @@ func main() {
 		logr.Warn("no OPENAI_API_KEY set; worker runs in offline deterministic mode")
 	}
 
-	workQueue := queue.NewQueue()
+	// Task queue (wave-3 3-a): same AGENTOS_QUEUE selection as the API so both
+	// processes cooperate on one task flow (redis mode) or stay self-contained
+	// (memory mode, the default).
+	workQueue, wqerr := queue.NewFromConfig(cfg)
+	if wqerr != nil {
+		logr.Error("queue backend init failed", "error", wqerr)
+		os.Exit(1)
+	}
+	defer func() { _ = workQueue.Close() }()
 	runsService := runs.NewService()
 	runner := runtime.NewRunnerWithOptions(agentsvc, registry,
 		runtime.WithProvider(provider),
-		runtime.WithStepRecorder(stepRecorderAdapter(runsService)),
+		runtime.WithStepRecorder(stepRecorderAdapter(runsService, agentsvc)),
 	)
+	// wave-3 3-c: durable workflow recovery. One startup pass, then a sweep
+	// every DefaultRecoveryInterval (1m). The pass times out runs past their
+	// deadline_at (status timeout / WORKFLOW_RUN_TIMEOUT), orphans the
+	// pending/running node checkpoints of stale runs (NODE_ORPHANED) and
+	// re-enqueues their next pending node through workQueue. Safe to run in
+	// several workers: Postgres candidates are selected FOR UPDATE SKIP LOCKED
+	// and every transition is a guarded conditional UPDATE.
+	var recStore workflows.Store
+	if dsn := database.DSNFromEnv(); dsn != "" {
+		if recDB, derr := database.Connect(dsn); derr == nil {
+			defer func() { _ = recDB.Close() }()
+			recStore = workflows.NewPostgresStore(recDB)
+		} else {
+			logr.Warn("workflow recovery: database unavailable, recovery disabled", "error", derr.Error())
+		}
+	}
+	wfSvc := workflows.NewServiceWithOptions(recStore, workflows.WithStaleAfter(workflows.StaleAfterFromEnv()))
+	recoveryCtx, recoveryStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer recoveryStop()
+	go func() {
+		if err := workflows.NewRecoveryWorker(wfSvc, workflows.DefaultRecoveryInterval).Run(recoveryCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logr.Warn("workflow recovery loop stopped", "error", err)
+		}
+	}()
+
 	processTask := func(task *queue.Task) error {
+		ctx := context.Background()
 		if task == nil || task.Payload == nil {
 			return fmt.Errorf("task payload is required")
 		}
@@ -155,6 +202,21 @@ func main() {
 		input, _ := task.Payload["input"].(string)
 		if runID == "" || agentID == "" || input == "" {
 			return fmt.Errorf("task payload missing run_id, agent_id or input")
+		}
+		// wave-3 3-c: durable checkpointing of workflow node execution.
+		workflowRunID, _ := task.Payload["workflow_run_id"].(string)
+		nodeID, _ := task.Payload["node_id"].(string)
+		var checkpoint *workflows.NodeRun
+		if workflowRunID != "" && nodeID != "" {
+			orgID, _ := task.Payload["organization_id"].(string)
+			nr, nerr := wfSvc.BeginNodeRun(ctx, orgID, workflowRunID, nodeID, runID)
+			switch {
+			case errors.Is(nerr, workflows.ErrNodeRunTerminal):
+				return nil // replayed task: this attempt is already finished
+			case nerr != nil:
+				return nerr
+			}
+			checkpoint = nr
 		}
 		// mark run running
 		_ = runsService.UpdateStatus(runID, runs.StatusRunning, "")
@@ -182,6 +244,13 @@ func main() {
 		}
 		task.Payload["result"] = run.Output
 		task.Payload["status"] = string(run.Status)
+		if checkpoint != nil {
+			fin, code := workflows.RunStatusCompleted, ""
+			if string(run.Status) == string(runs.StatusFailed) {
+				fin, code = workflows.RunStatusFailed, "NODE_FAILED"
+			}
+			_ = wfSvc.FinishNodeRun(ctx, checkpoint.OrganizationID, checkpoint.ID, fin, code)
+		}
 		_ = runsService.UpdateStatus(runID, runs.StatusCompleted, run.Output)
 		go func() {
 			apiBase := os.Getenv("AGENTOS_API")
