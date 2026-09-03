@@ -93,6 +93,21 @@ before running `make seed`). Platform docs: [docs/architecture.md](docs/architec
 - Redis: localhost:6379
 - NATS: localhost:4222
 
+## Environment variables (task queue)
+
+The task queue shared by the API and worker processes is selected with
+`AGENTOS_QUEUE` (see [docs/wiring/redis-queue.md](docs/wiring/redis-queue.md)):
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `AGENTOS_QUEUE` | `memory` | `memory` = in-process queue (zero infrastructure); `redis` = share the queue through a Redis list so multiple API/worker processes cooperate on the same task flow |
+| `REDIS_ADDR` | — | Redis endpoint as `host:port` used when `AGENTOS_QUEUE=redis` (also reused for rate limiting); falls back to `REDIS_HOST:REDIS_PORT` from `.env.example` |
+| `REDIS_QUEUE_KEY` | `agentos:queue` | Redis list key holding queued tasks |
+
+The constructor fails fast when `AGENTOS_QUEUE=redis` but Redis is
+unreachable — a silent fallback to memory would split the task flow between
+processes.
+
 ## Health endpoints
 
 - API: http://localhost:8080/healthz
