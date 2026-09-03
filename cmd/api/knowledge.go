@@ -13,7 +13,7 @@ package main
 // ids are never trusted. Error bodies use the shared
 // {"error":{"code","message"}} envelope via the local writeErrorKnb helper.
 //
-// Permission fallback (documented deviation in docs/wiring/knowledge.md):
+// Permission fallback (documented deviation):
 // internal/auth has no knowledge:*/memory:* (nor tools:*) constants, so the
 // closest existing grants are reused — agents.read for reads, agents.write
 // for writes — until the orchestrator adds dedicated permissions.
@@ -194,7 +194,7 @@ func searchKnowledgeHandler(svc *knowledge.Service) http.HandlerFunc {
 // Permission fallback: `knowledge:read`/`knowledge:write` do not exist in
 // internal/auth (and the contract's suggested tools:read/tools:write do not
 // either), so the closest existing grants agents.read/agents.write are reused
-// (see docs/wiring/knowledge.md — orchestrator decision pending).
+// (orchestrator decision: keep until dedicated knowledge permissions exist).
 func registerKnowledgeRoutes(apiMux *http.ServeMux, svc *knowledge.Service, authSvc *auth.Service, apiKeysSvc *apikeys.Service) {
 	wrap := func(perm auth.Permission, h http.HandlerFunc) http.Handler {
 		return auth.RequireAuthOrAPIKey(authSvc, apiKeysSvc)(auth.RequirePermission(authSvc, perm)(h))

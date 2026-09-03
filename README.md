@@ -96,7 +96,7 @@ before running `make seed`). Platform docs: [docs/architecture.md](docs/architec
 ## Environment variables (task queue)
 
 The task queue shared by the API and worker processes is selected with
-`AGENTOS_QUEUE` (see [docs/wiring/redis-queue.md](docs/wiring/redis-queue.md)):
+`AGENTOS_QUEUE`:
 
 | Variable | Default | Effect |
 |----------|---------|--------|

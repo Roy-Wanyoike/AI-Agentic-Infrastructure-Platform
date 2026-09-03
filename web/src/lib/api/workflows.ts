@@ -1,6 +1,6 @@
 // Workflows resource: list / create / get / publish / execute + workflow runs.
 //
-// Contract (docs/wave2-api-contract.md, track 2-a):
+// Endpoint contract (mirrors cmd/api/workflows.go handlers):
 // - GET  /workflows                  → {"workflows": [{id,name,description,status,current_version,created_at,updated_at}]}
 // - POST /workflows/create           → {"workflow": {...}}; 422 {"errors":[{code,message,node_id}]}
 // - GET  /workflows/{id}             → {"workflow": {..., "versions":[{version,status,created_at,dsl_snapshot}]}}

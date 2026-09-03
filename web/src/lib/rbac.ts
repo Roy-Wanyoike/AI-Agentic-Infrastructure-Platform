@@ -1,8 +1,8 @@
 // RBAC helpers for the UI layer.
 //
-// Mirrors the Go backend's rolePermissions (internal/auth/service.go + the
-// wave-2 permission matrix in docs/wave2-api-contract.md). The frontend can
-// only hide actions preemptively — the API still enforces real permissions.
+// Mirrors the Go backend's rolePermissions (internal/auth/service.go). The
+// frontend can only hide actions preemptively — the API still enforces real
+// permissions.
 
 export type Role = 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER'
 
