@@ -8,6 +8,17 @@ Current migration structure:
 - 002_auth_tables.sql
 - 003_agents_tables.sql
 - 004_runs_and_steps.sql
+- 005_persistence_hardening.sql
+- 006_workflows_approvals.sql
+- 007_versions_deployments.sql
+- 008_policies.sql
+- 009_evaluations.sql
+- 010_events_webhooks.sql
+- 011_scheduler.sql
+- 012_cost_tracking.sql
+- 013_durable_workflows.sql
+- 014_memory_knowledge.sql
+- 015_canary_deployments.sql
 
 Migration conventions:
 
@@ -15,5 +26,10 @@ Migration conventions:
 - keep migrations backward-safe and additive where possible
 - prefer small, ordered schema changes per version
 - use the migration runner in the repository root to apply them in order
+
+Migrations are discovered automatically by filename (`NNN_name.sql`, see
+`internal/database.LoadMigrations`); the data-driven `TestApplyMigrations` in
+`internal/database/database_test.go` applies every file it finds, so adding a
+file requires no registration anywhere else.
 
 A migration tool such as goose or migrate can be adopted later, but the SQL files in this directory remain the source of truth for local and CI schema evolution.

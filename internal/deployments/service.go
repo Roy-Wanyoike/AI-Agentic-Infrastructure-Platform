@@ -73,6 +73,15 @@ type Deployment struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	SupersededAt   *time.Time // set when a healthy row was replaced (demoted)
+	// Canary config (issue #13). Both fields live on ONE deployment row:
+	// while the row is the environment's healthy deployment, CanaryWeight
+	// percent of that agent's traffic deterministically resolves to
+	// CanaryVersion (see ResolveVersionCtx in canary.go); the rest stays on
+	// Version. CanaryVersion == 0 means "no canary" (all traffic stable).
+	// The split only ever consults the HEALTHY row of agent+environment;
+	// canary fields on non-healthy rows are staged config.
+	CanaryVersion int
+	CanaryWeight  int
 }
 
 // VersionChecker validates that an agent version is deployable (exists and is
@@ -109,6 +118,10 @@ type Service struct {
 	mu       sync.Mutex
 	store    Store
 	resolver VersionChecker
+	// finder validates canary version targets (existence within
+	// tenant+agent, any publication status); derived from resolver when it
+	// also implements VersionExistenceChecker, nil otherwise.
+	finder VersionExistenceChecker
 	// items caches deployments in in-memory mode, keyed by agentID.
 	items map[string][]*Deployment
 }
@@ -117,10 +130,17 @@ type Service struct {
 // that deployment targets reference published agent versions (nil skips the
 // check - dev/test mode only).
 func NewService(resolver VersionChecker) *Service {
-	return &Service{
+	s := &Service{
 		resolver: resolver,
 		items:    make(map[string][]*Deployment),
 	}
+	// Canary targets only need to EXIST (any status), so when the injected
+	// resolver also exposes tenant+agent-scoped version lookups we use it
+	// for the canary existence check.
+	if finder, ok := resolver.(VersionExistenceChecker); ok {
+		s.finder = finder
+	}
+	return s
 }
 
 // NewServiceWithStore returns a service whose source of truth is a durable
@@ -135,6 +155,12 @@ func NewServiceWithStore(store Store, resolver VersionChecker) *Service {
 // (exists + published via the VersionChecker) and creates a deployment in
 // status requested.
 func (s *Service) CreateDeploymentCtx(ctx context.Context, orgID, agentID string, version int, environment, createdBy string) (*Deployment, error) {
+	return s.createDeployment(ctx, orgID, agentID, version, 0, 0, environment, createdBy)
+}
+
+// createDeployment is the shared validation+insert path for plain and canary
+// deployments (canaryVersion 0 = no canary).
+func (s *Service) createDeployment(ctx context.Context, orgID, agentID string, version, canaryVersion, canaryWeight int, environment, createdBy string) (*Deployment, error) {
 	if s == nil {
 		return nil, errors.New("deployments service is nil")
 	}
@@ -152,6 +178,22 @@ func (s *Service) CreateDeploymentCtx(ctx context.Context, orgID, agentID string
 			return nil, fmt.Errorf("%w: %v", ErrVersionNotDeployable, err)
 		}
 	}
+	if canaryVersion > 0 {
+		// Canary validation runs AFTER the stable version resolved so a
+		// broken stable target is reported first.
+		if canaryVersion == version {
+			return nil, ErrInvalidCanaryVersion
+		}
+		// Same-agent scoping is inherent: the existence check resolves
+		// within (orgID, agentID), so a cross-agent or unknown canary
+		// version is rejected here.
+		if err := s.canaryVersionExists(ctx, orgID, agentID, canaryVersion); err != nil {
+			return nil, err
+		}
+		if canaryWeight < 0 || canaryWeight > 100 {
+			return nil, ErrInvalidCanaryWeight
+		}
+	}
 	now := time.Now().UTC()
 	deployment := &Deployment{
 		ID:             uuid.NewString(),
@@ -164,6 +206,8 @@ func (s *Service) CreateDeploymentCtx(ctx context.Context, orgID, agentID string
 		CreatedBy:      createdBy,
 		CreatedAt:      now,
 		UpdatedAt:      now,
+		CanaryVersion:  canaryVersion,
+		CanaryWeight:   canaryWeight,
 	}
 	if s.store != nil {
 		if err := s.store.CreateDeployment(ctx, orgID, deployment); err != nil {
@@ -353,6 +397,10 @@ func (s *Service) demoteHealthy(ctx context.Context, orgID string, incoming *Dep
 	current.Status = StatusFailed
 	current.SupersededAt = &now
 	current.UpdatedAt = now
+	// A demoted row no longer serves traffic, so its canary config is
+	// cleared: the split is only ever resolved from the HEALTHY row.
+	current.CanaryVersion = 0
+	current.CanaryWeight = 0
 	if current.Health == nil {
 		current.Health = &Health{}
 	}

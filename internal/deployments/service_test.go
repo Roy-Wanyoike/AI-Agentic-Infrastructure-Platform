@@ -6,11 +6,17 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"agentos/internal/agents"
 )
 
-// fakeResolver allow-lists (agentID, version) pairs considered published.
+// fakeResolver allow-lists (agentID, version) pairs considered published
+// (stable deploy targets) and implements VersionExistenceChecker so canary
+// targets are validated for existence within (org, agent) - any status -
+// exactly like the real agents.VersionsService.
 type fakeResolver struct {
-	allowed map[string]bool
+	allowed  map[string]bool // published (usable as the STABLE version)
+	existing map[string]bool // exists in any status (usable as a CANARY)
 }
 
 func (f *fakeResolver) ResolvePublishedVersion(_ context.Context, _, agentID string, version int) error {
@@ -21,6 +27,20 @@ func (f *fakeResolver) ResolvePublishedVersion(_ context.Context, _, agentID str
 		return nil
 	}
 	return errors.New("version not published")
+}
+
+func (f *fakeResolver) GetVersionCtx(_ context.Context, _, agentID string, version int) (*agents.ConfigVersion, error) {
+	key := agentID + "/" + strconv.Itoa(version)
+	exists := f.existing != nil && f.existing[key]
+	if !exists && f.existing == nil {
+		// No explicit existence list: fall back to the published list
+		// (or allow everything when that is unset too).
+		exists = f.allowed == nil || f.allowed[key]
+	}
+	if !exists {
+		return nil, agents.ErrVersionNotFound
+	}
+	return &agents.ConfigVersion{AgentID: agentID, Version: version, Status: agents.VersionStatusDraft}, nil
 }
 
 func newDeploymentsFixture(resolver VersionChecker) *Service {
