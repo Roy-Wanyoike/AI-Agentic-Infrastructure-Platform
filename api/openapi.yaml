@@ -2484,6 +2484,373 @@ paths:
                 $ref: '#/components/schemas/WorkflowValidationErrors'
         '500':
           $ref: '#/components/responses/WfServerError'
+  /usage/costs:
+    get:
+      operationId: getUsageCosts
+      summary: Tenant usage-cost report aggregated from run costs
+      description: |
+        Aggregates `runs.cost_cents` for the caller's organization over the
+        half-open [from, to) window. `from`/`to` accept RFC3339 timestamps or
+        bare `YYYY-MM-DD` UTC dates; when omitted the window defaults to the
+        30 days ending now (capped at 366 days). `group_by` selects the
+        aggregation dimension: `day` (UTC day buckets), `agent` (runs grouped
+        by the run's agent_id) or `model` (grouped by the serving model,
+        resolved from the agents catalog at query time).
+        Costs are USD cents; runs without pricing data count as 0 and are
+        still included in the `runs` counters.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: usage.read
+      tags: [Usage]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Window start (inclusive). RFC3339 or YYYY-MM-DD (UTC). Defaults to `to` minus 30 days.
+          schema:
+            type: string
+            example: "2026-09-01T00:00:00Z"
+        - name: to
+          in: query
+          required: false
+          description: Window end (exclusive). RFC3339 or YYYY-MM-DD (UTC). Defaults to now.
+          schema:
+            type: string
+            example: "2026-10-01T00:00:00Z"
+        - name: group_by
+          in: query
+          required: false
+          description: Aggregation dimension (default `day`).
+          schema:
+            type: string
+            enum: [day, agent, model]
+            default: day
+      responses:
+        '200':
+          description: Aggregated cost report for the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsgUsageCostsResponse'
+        '400':
+          description: |
+            Invalid query: unknown `group_by` (machine code
+            `INVALID_GROUP_BY`) or an unparsable/inverted/too-wide window
+            (machine code `INVALID_TIME_RANGE`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsgErrorEnvelope'
+        '401': { $ref: '#/components/responses/UsgUnauthorized' }
+        '403': { $ref: '#/components/responses/UsgForbidden' }
+        '405':
+          description: Method not allowed (only GET is served).
+          content:
+            text/plain:
+              schema: { type: string }
+        '503':
+          description: Runs service not wired into the API server (machine code `USAGE_UNAVAILABLE`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsgErrorEnvelope'
+
+  /workflow-runs/{id}/nodes:
+    get:
+      operationId: listWorkflowRunNodes
+      tags: [workflow-runs]
+      summary: Get the checkpointed node timeline of a workflow run
+      description: |
+        Returns every node execution checkpoint of one workflow run, oldest
+        first: one entry per (node, attempt) pair. Entries are the durable
+        checkpoints written synchronously by the executor/worker, so the
+        response reflects the exact state the recovery pass acts on.
+
+        `status` uses the workflow status vocabulary (pending, running,
+        waiting_approval, completed, failed, cancelled, timeout — `timeout` is
+        assigned by the recovery watchdog). `error_code` is a machine code
+        (NODE_ORPHANED, WORKFLOW_RUN_TIMEOUT, ...) or `null` while healthy.
+
+        A run owned by another tenant surfaces as 404, never 403.
+      x-required-permission: workflows.read
+      parameters:
+        - $ref: '#/components/parameters/Wf3WorkflowRunID'
+      responses:
+        '200':
+          description: The checkpointed node timeline (may be empty while the
+            DAG expansion has not recorded any node yet).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Wf3NodeTimelineResponse'
+        '401': { $ref: '#/components/responses/Wf3Unauthorized' }
+        '403': { $ref: '#/components/responses/Wf3Forbidden' }
+        '404': { $ref: '#/components/responses/Wf3NotFound' }
+        '500': { $ref: '#/components/responses/Wf3ServerError' }
+
+  /knowledge/documents:
+    get:
+      operationId: listKnowledgeDocuments
+      summary: List the caller's knowledge documents (newest first)
+      x-required-permission: agents.read
+      x-contract-permission: knowledge:read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Knowledge]
+      responses:
+        '200':
+          description: Documents of the caller's organization, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbDocumentsResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+    post:
+      operationId: createKnowledgeDocument
+      summary: Ingest a document (chunk ~800 chars / 15% overlap -> embed -> store)
+      description: |
+        Runs the ingestion pipeline: the content is chunked on boundaries
+        (~800 chars, ~15% overlap), each chunk is embedded through the
+        OpenAI-compatible embeddings backend, and document + chunks are
+        stored atomically. An embeddings-backend failure is NON-FATAL: the
+        response is still 201 with an additive `warning` field, and the
+        unembedded chunks stay searchable via lexical scoring.
+      x-required-permission: agents.write
+      x-contract-permission: knowledge:write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Knowledge]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnbCreateDocumentRequest'
+      responses:
+        '201':
+          description: Document ingested (echoes the stored document row).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbCreateDocumentResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: Validation failed (title/content required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+        '500':
+          description: Unexpected server failure (e.g. store unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+  /knowledge/search:
+    post:
+      operationId: searchKnowledge
+      summary: Top-k chunk retrieval over the caller's knowledge base
+      description: |
+        Scores the org-scoped chunk candidates against the query with cosine
+        similarity when embeddings exist on both sides, and lexical token
+        overlap otherwise (offline hash embeddings / unembedded chunks).
+        Returns at most `k` results (default 5, capped at 50) with citations.
+      x-required-permission: agents.read
+      x-contract-permission: knowledge:read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Knowledge]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnbSearchRequest'
+      responses:
+        '200':
+          description: Top-k chunk hits; empty `results` when nothing matches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbSearchResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: Validation failed (query required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnbErrorEnvelope'
+  /memory:
+    get:
+      operationId: listMemorySnippets
+      summary: List the caller's visible (non-expired) memory snippets
+      description: |
+        agent_id filters to exactly that agent's snippets; omitted lists the
+        whole organization (org-level shared memory + all agents). Expired
+        short-term snippets never surface. Results are newest first.
+      x-required-permission: agents.read
+      x-contract-permission: memory:read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Memory]
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        description: Restrict the listing to one agent's snippets.
+        schema: { type: string }
+      responses:
+        '200':
+          description: Visible snippets of the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemSnippetsResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemErrorEnvelope'
+    put:
+      operationId: putMemorySnippets
+      summary: Replace the snippet set of one (organization, agent) scope
+      description: |
+        Atomically replaces the memory of the caller's organization for the
+        given agent_id (empty = org-level shared memory). expires_at is
+        RFC3339 and drives short-term expiry; the optional embedding field
+        accepts client-computed vectors, otherwise content is embedded with
+        the service embedder. Embeddings are never echoed back.
+      x-required-permission: agents.write
+      x-contract-permission: memory:write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemPutMemoryRequest'
+      responses:
+        '200':
+          description: The stored snippet set (post-normalization).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemSnippetsResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: 'Validation failed (blank content, unknown scope, malformed expires_at).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemErrorEnvelope'
+        '500':
+          description: Unexpected server failure (e.g. store unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemErrorEnvelope'
+# NOTE: '#/components/responses/Unauthorized' and 'Forbidden' resolve against
+# the EXISTING definitions in api/openapi.yaml (auth middleware responses);
+# this fragment intentionally does not redefine them.
+
+  /agents/{id}/versions/diff:
+    get:
+      operationId: diffAgentVersions
+      summary: Structured field-level diff between two config versions of one agent
+      description: |
+        Compares the immutable snapshot documents of version `from` and version
+        `to` of the same agent. The response always contains one entry per
+        comparable field (model, system_prompt, temperature, params, tools,
+        description — null when a snapshot does not capture the field) plus any
+        additional snapshot keys, sorted, so future snapshot fields diff too.
+        `changed` is true when the from/to values differ. Both versions are
+        resolved strictly within the caller's organization; unknown versions,
+        cross-agent version numbers and foreign-tenant agents surface as 404.
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/VdfAgentID'
+      - $ref: '#/components/parameters/VdfFromVersion'
+      - $ref: '#/components/parameters/VdfToVersion'
+      responses:
+        '200':
+          description: The field-level diff document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VdfVersionDiffResponse'
+        '400':
+          description: from/to missing, non-integer, or not positive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VdfErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/VdfUnauthorized'
+        '403':
+          $ref: '#/components/responses/VdfForbidden'
+        '404':
+          description: |
+            Agent or version not found within the caller's organization
+            (error.code AGENT_NOT_FOUND or VERSION_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VdfErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VdfErrorEnvelope'
+
 components:
   parameters:
     AgentID:
@@ -2502,6 +2869,89 @@ components:
       schema:
         type: string
       example: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+    Wf3WorkflowRunID:
+      name: id
+      in: path
+      required: true
+      description: Workflow run identifier (UUID v4 string).
+      schema:
+        type: string
+    VdfAgentID:
+      name: id
+      in: path
+      required: true
+      description: Agent identifier (UUID v4 string).
+      schema:
+        type: string
+      example: 3f9d6c5e-8b21-4f0a-9c3d-7a1e5b2c4d6f
+    VdfFromVersion:
+      name: from
+      in: query
+      required: true
+      description: Base version number of the diff (positive integer; may equal `to`).
+      schema:
+        type: integer
+        minimum: 1
+      example: 2
+    VdfToVersion:
+      name: to
+      in: query
+      required: true
+      description: Target version number of the diff (positive integer; may equal `from`).
+      schema:
+        type: integer
+        minimum: 1
+      example: 3
+
+    WfApprovalID:
+      name: id
+      in: path
+      required: true
+      description: Approval identifier (UUID v4 string).
+      schema:
+        type: string
+
+    DeploymentID:
+      name: id
+      in: path
+      required: true
+      description: Deployment identifier (UUID v4 string).
+      schema:
+        type: string
+      example: 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+
+    PolicyID:
+      name: id
+      in: path
+      required: true
+      description: Policy id (UUID string)
+      schema:
+        type: string
+
+    WfRunID:
+      name: id
+      in: path
+      required: true
+      description: Agent run identifier (UUID v4 string).
+      schema:
+        type: string
+
+    WfWorkflowRunID:
+      name: id
+      in: path
+      required: true
+      description: Workflow run identifier (UUID v4 string).
+      schema:
+        type: string
+
+    WfWorkflowID:
+      name: id
+      in: path
+      required: true
+      description: Workflow identifier (UUID v4 string).
+      schema:
+        type: string
+
   securitySchemes:
     bearerToken:
       type: http
@@ -2518,6 +2968,25 @@ components:
         Pre-provisioned API key (`ak_...`). Authenticates as the key's
         organization with the OWNER role. Browser EventSource clients may
         alternatively pass `?api_key=<key>` (legacy query-param auth).
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+    Wf3BearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    Wf3ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
   responses:
     Unauthorized:
       description: Missing/invalid credentials (plain text body today; JSON model is the target).
@@ -2546,6 +3015,118 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    UsgUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UsgErrorEnvelope'
+    UsgForbidden:
+      description: Authenticated but lacking the `usage.read` permission.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UsgErrorEnvelope'
+    Wf3Unauthorized:
+      description: Missing/invalid credentials.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Wf3ErrorEnvelope'
+    Wf3Forbidden:
+      description: Authenticated but lacking the required permission.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Wf3ErrorEnvelope'
+    Wf3NotFound:
+      description: Workflow run not found (or owned by another tenant —
+        cross-tenant access surfaces as 404, never 403).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Wf3ErrorEnvelope'
+    Wf3ServerError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Wf3ErrorEnvelope'
+    VdfUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VdfErrorEnvelope'
+    VdfForbidden:
+      description: Authenticated but lacking the agents.read permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VdfErrorEnvelope'
+
+    WfUnauthorized:
+      description: Missing/invalid credentials.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+
+    WfForbidden:
+      description: Authenticated but lacking the required permission.
+      content:
+        text/plain:
+          schema: { type: string }
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+
+    WfNotFound:
+      description: Resource not found (or owned by another tenant — cross-tenant
+        access surfaces as 404, never 403).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+
+    WfBadRequest:
+      description: Malformed JSON body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+
+    WfServerError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+
+    Internal:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Error:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+
   schemas:
     LegacyTextError:
       type: string
@@ -4444,3 +5025,378 @@ components:
       - published_at
       - published_by
       - status
+    UsgErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: INVALID_GROUP_BY
+            message:
+              type: string
+    UsgCostBucket:
+      type: object
+      description: |
+        One aggregated row of the report. Exactly one of `bucket` /
+        `agent_id` / `model` is populated depending on `group_by`; the other
+        identity fields are omitted.
+      required: [cost_cents, runs]
+      properties:
+        bucket:
+          type: string
+          description: UTC day (YYYY-MM-DD); present only for group_by=day.
+          example: "2026-09-03"
+        agent_id:
+          type: string
+          description: Present only for group_by=agent.
+        model:
+          type: string
+          description: Present only for group_by=model (empty label for runs whose agent was deleted).
+        cost_cents:
+          type: number
+          format: double
+          description: Summed cost of the bucket in USD cents (0 = unpriced).
+          example: 1.75
+        runs:
+          type: integer
+          description: Number of runs in the bucket.
+          example: 4
+    UsgUsageCostsResponse:
+      type: object
+      required: [total_cost_cents, series]
+      properties:
+        total_cost_cents:
+          type: number
+          format: double
+          description: Sum of every bucket's cost_cents (USD cents).
+          example: 1.75
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsgCostBucket'
+    Wf3ErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (WORKFLOW_RUN_NOT_FOUND, WORKFLOWS_UNAVAILABLE, INTERNAL_ERROR, UNAUTHORIZED).
+              examples: [WORKFLOW_RUN_NOT_FOUND]
+            message:
+              type: string
+          required: [code, message]
+      required: [error]
+    Wf3NodeTimelineStatus:
+      type: string
+      description: |
+        Node-run status. pending/running/waiting_approval are non-terminal
+        (waiting_approval is a human gate); completed/failed/cancelled/timeout
+        are terminal. A failed attempt with error_code NODE_ORPHANED is a
+        recovery artifact that is re-executed on a fresh attempt.
+      enum: [pending, running, waiting_approval, completed, failed, cancelled, timeout]
+    Wf3WorkflowRunNode:
+      type: object
+      description: One checkpointed node execution attempt (workflow_run_id +
+        node_id + attempt is the idempotency key; a replayed task never
+        re-executes an already-terminal attempt).
+      properties:
+        id:
+          type: string
+          description: Checkpoint row identifier (workflow_node_runs.id).
+        node_id:
+          type: string
+          description: DAG node id from the workflow DSL.
+        status:
+          $ref: '#/components/schemas/Wf3NodeTimelineStatus'
+        attempt:
+          type: integer
+          description: 1-based execution attempt (0 for legacy pre-migration
+            placeholder rows that were never claimed).
+          minimum: 0
+        started_at:
+          type: [string, 'null']
+          format: date-time
+          description: First claim instant of the attempt (null before the first claim).
+        finished_at:
+          type: [string, 'null']
+          format: date-time
+          description: Terminal transition instant (null while non-terminal).
+        error_code:
+          type: [string, 'null']
+          description: Machine-readable failure code (NODE_ORPHANED,
+            WORKFLOW_RUN_TIMEOUT, ...) or null while healthy.
+      required: [id, node_id, status, attempt, started_at, finished_at, error_code]
+    Wf3NodeTimelineResponse:
+      type: object
+      properties:
+        nodes:
+          type: array
+          description: Checkpointed node attempts, oldest first.
+          items:
+            $ref: '#/components/schemas/Wf3WorkflowRunNode'
+      required: [nodes]
+    KnbErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of DOCUMENT_NOT_FOUND, VALIDATION_ERROR, INVALID_REQUEST, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message: { type: string }
+    KnbDocument:
+      type: object
+      description: One ingested knowledge document (tenant-scoped).
+      required: [id, title, chunk_count, created_at, updated_at]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        source:
+          type: string
+          description: Where the content came from (URL, wiki page, upload name).
+        metadata:
+          type: object
+          description: Caller-supplied free-form metadata carried through ingest.
+          additionalProperties: true
+        chunk_count:
+          type: integer
+          description: Number of chunks produced by the ingest pipeline.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    KnbDocumentsResponse:
+      type: object
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnbDocument'
+    KnbCreateDocumentRequest:
+      type: object
+      required: [title, content]
+      properties:
+        title: { type: string, minLength: 1 }
+        content:
+          type: string
+          minLength: 1
+          description: Full document text; chunked (~800 chars, 15% overlap) server-side.
+        source: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+    KnbCreateDocumentResponse:
+      type: object
+      required: [document]
+      properties:
+        document:
+          $ref: '#/components/schemas/KnbDocument'
+        warning:
+          type: string
+          description: Present when the embeddings backend failed; chunks were stored unembedded (search falls back to lexical scoring).
+    KnbSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string, minLength: 1 }
+        k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+          description: Maximum number of chunk hits to return.
+    KnbSearchResult:
+      type: object
+      description: One retrieval hit — the contract-pinned fields plus additive title/chunk id.
+      required: [document_id, chunk_ordinal, content, score, citation]
+      properties:
+        document_id: { type: string }
+        document_title: { type: string }
+        chunk_id: { type: string }
+        chunk_ordinal:
+          type: integer
+          description: Zero-based position of the chunk inside its document.
+        content: { type: string }
+        score:
+          type: number
+          format: double
+          description: Cosine similarity (or lexical fallback score) in [0,1].
+          examples:
+          - 0.83
+        citation:
+          type: string
+          description: Human-readable citation, e.g. "Billing FAQ (confluence/billing), chunk 3".
+    KnbSearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnbSearchResult'
+    MemErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of VALIDATION_ERROR, INVALID_REQUEST, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message: { type: string }
+    MemSnippetInput:
+      type: object
+      required: [content]
+      properties:
+        scope:
+          type: string
+          enum: [short_term, long_term]
+          default: long_term
+        content:
+          type: string
+          minLength: 1
+        importance:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.5
+        expires_at:
+          type: string
+          format: date-time
+          description: RFC3339; past timestamps make short-term snippets invisible immediately.
+        embedding:
+          type: array
+          items: { type: number, format: double }
+          description: Optional client-computed vector; otherwise embedded server-side.
+    MemSnippet:
+      type: object
+      description: One stored memory snippet (embedding stays server-side).
+      required: [id, agent_id, scope, content, importance, created_at, updated_at]
+      properties:
+        id: { type: string }
+        agent_id:
+          type: string
+          description: Empty for org-level shared memory.
+        scope:
+          type: string
+          enum: [short_term, long_term]
+        content: { type: string }
+        importance: { type: number, format: double }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MemSnippetsResponse:
+      type: object
+      required: [snippets]
+      properties:
+        snippets:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemSnippet'
+    MemPutMemoryRequest:
+      type: object
+      description: Replaces the snippet set of the (organization, agent_id) scope.
+      required: [snippets]
+      properties:
+        agent_id:
+          type: string
+          description: Empty replaces the org-level shared memory.
+        snippets:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemSnippetInput'
+    VdfDiffValue:
+      description: |
+        Raw JSON value of a snapshot field (string, number, boolean, array or
+        object). Null when the field is absent from that side's snapshot.
+      type: [string, number, boolean, array, object, 'null']
+    VdfVersionDiffField:
+      type: object
+      description: One comparable field's from/to pair.
+      properties:
+        field:
+          type: string
+          description: Canonical field name (model, system_prompt, temperature, params, tools, description) or an extra snapshot key.
+          examples:
+          - model
+        from:
+          $ref: '#/components/schemas/VdfDiffValue'
+        to:
+          $ref: '#/components/schemas/VdfDiffValue'
+        changed:
+          type: boolean
+          description: True when the from/to values differ.
+      required:
+      - field
+      - from
+      - to
+      - changed
+    VdfVersionDiffResponse:
+      type: object
+      description: Wave-3 contract shape {"agent_id","from","to","fields":[…]} (snake_case).
+      properties:
+        agent_id:
+          type: string
+          description: The agent the diffed versions belong to.
+          examples:
+          - 3f9d6c5e-8b21-4f0a-9c3d-7a1e5b2c4d6f
+        from:
+          type: integer
+          description: Echoes the from query parameter.
+          examples:
+          - 2
+        to:
+          type: integer
+          description: Echoes the to query parameter.
+          examples:
+          - 3
+        fields:
+          type: array
+          description: Comparable fields in stable order, extra snapshot keys appended sorted.
+          items:
+            $ref: '#/components/schemas/VdfVersionDiffField'
+      required:
+      - agent_id
+      - from
+      - to
+      - fields
+    VdfErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of AGENT_NOT_FOUND, VERSION_NOT_FOUND, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - VERSION_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+

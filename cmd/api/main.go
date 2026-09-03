@@ -26,7 +26,9 @@ import (
 	"agentos/internal/evaluations"
 	"agentos/internal/events"
 	"agentos/internal/httpx"
+	"agentos/internal/knowledge"
 	"agentos/internal/logger"
+	"agentos/internal/memory"
 	"agentos/internal/observability"
 	"agentos/internal/organizations"
 	"agentos/internal/queue"
@@ -61,8 +63,12 @@ type app struct {
 	streamSvc  *streaming.Service
 
 	// wave-2 verticals
-	wfSvc          *workflows.Service
-	apSvc          *approvals.Service
+	wfSvc *workflows.Service
+	apSvc *approvals.Service
+
+	// wave-3 verticals
+	knowledgeSvc   *knowledge.Service
+	memorySvc      *memory.Service
 	versionsSvc    *agents.VersionsService
 	deploymentsSvc *deployments.Service
 	evalSvc        *evaluations.Service
@@ -76,11 +82,22 @@ type app struct {
 // constructed with a Postgres-backed store; otherwise the original in-memory
 // services are used so the platform runs with zero infrastructure.
 func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
+	// Task queue (wave-3 3-a): AGENTOS_QUEUE selects the backend -
+	//   memory (default): in-process queue, zero infrastructure
+	//   redis:            shared Redis list across every API/worker process
+	// The constructor pings Redis and FAILS when AGENTOS_QUEUE=redis and Redis
+	// is unreachable: a silent memory fallback would split the task flow
+	// (producers enqueueing in memory, consumers reading Redis).
+	queueSvc, qerr := queue.NewFromConfig(cfg)
+	if qerr != nil {
+		logr.Error("queue backend init failed", "error", qerr)
+		os.Exit(1)
+	}
 	a := &app{
 		cfg:        cfg,
 		logr:       logr,
 		db:         db,
-		queueSvc:   queue.NewQueue(),
+		queueSvc:   queueSvc,
 		metricsSvc: observability.NewMetrics(),
 		streamSvc:  streaming.NewService(),
 	}
@@ -92,11 +109,16 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.usageSvc = usage.NewServiceWithStore(usage.NewPostgresStore(db))
 		a.agentsSvc = agents.NewServiceWithStore(agents.NewPostgresStore(db))
 		a.runsSvc = runs.NewServiceWithStore(runs.NewPostgresStore(db))
-		a.wfSvc = workflows.NewServiceWithStore(workflows.NewPostgresStore(db))
+		a.wfSvc = workflows.NewServiceWithOptions(workflows.NewPostgresStore(db),
+			workflows.WithStaleAfter(workflows.StaleAfterFromEnv()),
+			workflows.WithDefaultRunDeadline(30*time.Minute)) // watchdog budget per run (0 disables)
 		a.apSvc = approvals.NewServiceWithStore(approvals.NewPostgresStore(db))
 		a.versionsSvc = agents.NewVersionsServiceWithStore(a.agentsSvc, agents.NewVersionsPostgresStore(db))
 		a.deploymentsSvc = deployments.NewServiceWithStore(deployments.NewPostgresStore(db), a.versionsSvc)
 		a.schedSvc = scheduler.NewServiceWithStore(scheduler.NewPostgresStore(db))
+		// wave-3 3-d: knowledge/RAG + memory persistence (org-scoped)
+		a.knowledgeSvc = knowledge.NewServiceWithStore(db)
+		a.memorySvc = memory.NewServiceWithStore(db)
 		a.logr.Info("postgres stores enabled")
 	} else {
 		a.authSvc = auth.NewService(defaultJWTSecret)
@@ -106,11 +128,14 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.usageSvc = usage.NewService()
 		a.agentsSvc = agents.NewService()
 		a.runsSvc = runs.NewService()
-		a.wfSvc = workflows.NewService()
+		a.wfSvc = workflows.NewServiceWithOptions(nil, workflows.WithStaleAfter(workflows.StaleAfterFromEnv()))
 		a.apSvc = approvals.NewService()
 		a.versionsSvc = agents.NewVersionsService(a.agentsSvc)
 		a.deploymentsSvc = deployments.NewService(a.versionsSvc)
 		a.schedSvc = scheduler.NewService()
+		// wave-3 3-d: zero-infrastructure knowledge/memory (offline hash embedder)
+		a.knowledgeSvc = knowledge.NewService()
+		a.memorySvc = memory.NewService()
 		// create a dev API key for local worker polling convenience (only
 		// possible in-memory: the api_keys FK requires a real organization row)
 		if key, err := a.apiKeysSvc.Create("org-demo", "dev-user", "dev-key"); err != nil {
@@ -133,6 +158,16 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 			Runner: a.evalRunner,
 		})
 	}
+	// wave-3 3-b: price eval cases from reported token usage; the model
+	// is resolved from the agent's configuration (best-effort: unknown
+	// model -> 0 cents, never an error).
+	a.evalSvc.AttachUsageSource(evaluations.UsageSourceFunc(func(orgID, agentID string) (string, bool) {
+		agent, err := a.agentsSvc.GetAgentCtx(context.Background(), orgID, agentID)
+		if err != nil {
+			return "", false
+		}
+		return agent.Model, true
+	}))
 
 	// wave-2: event publisher (NATS JetStream when AGENTOS_NATS_URL is set and
 	// reachable; otherwise in-memory/noop fallbacks) + append-only audit trail
@@ -202,12 +237,17 @@ func (a *app) routes() http.Handler {
 	// wave-2 verticals (workflows registration also mounts run control:
 	// POST /runs/{id}/cancel|pause|resume)
 	registerWorkflowsRoutes(apiMux, a.wfSvc, a.apSvc, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)
+	registerWorkflowRunNodeRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc) // wave-3 3-c: checkpointed node timeline
 	registerVersionsRoutes(apiMux, a.versionsSvc, a.authSvc, a.apiKeysSvc)
 	registerDeploymentsRoutes(apiMux, a.deploymentsSvc, a.authSvc, a.apiKeysSvc)
 	registerEvaluationsRoutes(apiMux, a.evalSvc, a.authSvc, a.apiKeysSvc)
 	registerSchedulesRoutes(apiMux, a.schedSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	registerWebhooksRoutes(apiMux, a.whSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	registerPoliciesRoutes(apiMux, newPoliciesService(a.db), a.authSvc, a.apiKeysSvc)
+	// wave-3: cost report, knowledge/RAG, memory
+	registerUsageCostsRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)
+	registerKnowledgeRoutes(apiMux, a.knowledgeSvc, a.authSvc, a.apiKeysSvc)
+	registerMemoryRoutes(apiMux, a.memorySvc, a.authSvc, a.apiKeysSvc)
 
 	apiMux.HandleFunc("/", serviceInfoHandler)
 
@@ -273,6 +313,10 @@ func main() {
 	}
 
 	application := newApp(cfg, logr, db)
+	// wave-3 3-a: release the Redis connection on exit. Queue contents live in
+	// Redis and survive the process; Close only tears down the client (a no-op
+	// in memory mode, so it is safe unconditionally).
+	defer func() { _ = application.queueSvc.Close() }()
 
 	// wave-2: scheduler trigger loop (runs in exactly one process; claims are
 	// atomic so a second instance would be safe, just wasteful).
