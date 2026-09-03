@@ -145,3 +145,19 @@ preemptively, per the wave-2 discipline):
 7. **No migrations** in this track (diff is computed from existing
    `agent_versions.snapshot` documents; deployments/policies/schedules/
    webhooks views consume the wave-2 endpoints as-is).
+8. **Legacy v1 seam (pre-existing wave-2 data model, not introduced here)**:
+   agent creation writes the initial v1 row through the legacy
+   `agents.Service` path. In Postgres mode that row lands in the shared
+   `agent_versions` table (config/prompt columns, NULL snapshot); in
+   in-memory mode it lives only in the legacy service map, so
+   `GET /versions` and the diff both enumerate/resolve config versions
+   starting at v2. The diff behaves exactly like the versions list it is
+   diffed from — the UI's from/to selectors are populated from
+   `GET /agents/{id}/versions`, so what the list shows is always diffable
+   and no UI/API inconsistency is possible. Legacy-side snapshots without a
+   `snapshot` document diff as null vs. the other side's values (documented
+   degradation, never a 500).
+9. **Duplicate extra-key fix**: keys present on both snapshots are emitted
+   exactly once (union, sorted) — regression-tested in
+   `TestDiffVersionsCtxExtraKeysEmittedOnce` after the live smoke test
+   surfaced one-row-per-side duplicates.
