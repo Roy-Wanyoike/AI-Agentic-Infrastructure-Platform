@@ -17,7 +17,9 @@ const (
 	sqlInsertAuthUser = `INSERT INTO users (id, organization_id, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)`
 	// Credential-based tenant resolution: users.email is globally UNIQUE
 	// (migration 001), so the returned row identifies the single tenant.
-	sqlSelectAuthUserByEmail = `SELECT id, organization_id, email, password_hash, role, created_at FROM users WHERE email = $1`
+	// sso_subject/active arrive with migration 019 (issue #29); COALESCE
+	// keeps the scan total when the column value is NULL.
+	sqlSelectAuthUserByEmail = `SELECT id, organization_id, email, password_hash, role, created_at, COALESCE(sso_subject, ''), active FROM users WHERE email = $1`
 )
 
 // pgStore is the Postgres-backed Store implementation for auth identities.
@@ -68,6 +70,7 @@ func (s *pgStore) GetUserByEmail(ctx context.Context, email string) (*User, erro
 	var user User
 	err := s.db.QueryRowContext(ctx, sqlSelectAuthUserByEmail, strings.TrimSpace(email)).Scan(
 		&user.ID, &user.Organization, &user.Email, &user.PasswordHash, &user.Role, &user.CreatedAt,
+		&user.SSOSubject, &user.Active,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUserNotFound

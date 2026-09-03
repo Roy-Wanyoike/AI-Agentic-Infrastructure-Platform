@@ -29,6 +29,13 @@ type User struct {
 	PasswordHash string
 	Role         string
 	CreatedAt    time.Time
+	// SSOSubject is the OIDC IdP subject (`sub` claim) linked to this
+	// identity (issue #29). Empty for purely local users.
+	SSOSubject string
+	// Active is the SCIM 2.0 lifecycle flag: disabled accounts cannot
+	// log in. The zero value is false, so every constructor must set it
+	// to true explicitly for enabled users.
+	Active bool
 }
 
 type Claims struct {
@@ -181,6 +188,7 @@ func (s *Service) RegisterCtx(ctx context.Context, orgName, email, password stri
 		PasswordHash: hash,
 		Role:         defaultRole,
 		CreatedAt:    time.Now().UTC(),
+		Active:       true,
 	}
 
 	if s.store != nil {
@@ -201,8 +209,14 @@ func (s *Service) Login(email, password string) (string, error) {
 	return s.LoginCtx(context.Background(), email, password)
 }
 
+// ErrAccountDisabled is returned by LoginCtx when the credential is correct
+// but the account has been deprovisioned (SCIM active=false, issue #29).
+var ErrAccountDisabled = errors.New("account is disabled")
+
 // LoginCtx verifies credentials against the store (when present) and issues
-// the same HMAC token as before.
+// the same HMAC token as before. The token scheme is unchanged; the only
+// addition is the SCIM lifecycle check: a disabled account can never obtain
+// a session even with valid credentials.
 func (s *Service) LoginCtx(ctx context.Context, email, password string) (string, error) {
 	user, err := s.lookupUser(ctx, email)
 	if err != nil {
@@ -210,6 +224,9 @@ func (s *Service) LoginCtx(ctx context.Context, email, password string) (string,
 	}
 	if !VerifyPassword(user.PasswordHash, password) {
 		return "", errors.New("invalid credentials")
+	}
+	if !user.Active {
+		return "", ErrAccountDisabled
 	}
 	return s.GenerateToken(user)
 }

@@ -39,7 +39,9 @@ import (
 	"agentos/internal/runs"
 	"agentos/internal/runtime"
 	"agentos/internal/scheduler"
+	"agentos/internal/scim"
 	"agentos/internal/secrets"
+	"agentos/internal/sso"
 	"agentos/internal/streaming"
 	"agentos/internal/tools"
 	"agentos/internal/usage"
@@ -82,6 +84,8 @@ type app struct {
 	schedSvc       *scheduler.Service
 	billingSvc     *billing.Service
 	secretsSvc     *secrets.Service
+	ssoSvc         *sso.Service
+	scimSvc        *scim.Service
 	mktSvc         *marketplace.Service
 	connSvc        *connectors.Service
 	whSvc          *webhooks.Service
@@ -139,6 +143,21 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 			os.Exit(1)
 		}
 		a.secretsSvc = secretsSvc
+		// issue #29: OIDC SSO + SCIM 2.0 provisioning (identities via the
+		// Postgres provisioning store; session tokens stay the existing HMAC scheme)
+		ssoConfigs, scerr := sso.NewPostgresConfigStore(db)
+		if scerr != nil {
+			logr.Error("sso config store init failed", "error", scerr)
+			os.Exit(1)
+		}
+		identities := auth.NewProvisioningStore(db)
+		a.ssoSvc = sso.NewService(ssoConfigs, identities, a.authSvc)
+		scimTokens, scmerr := scim.NewPostgresTokenStore(db)
+		if scmerr != nil {
+			logr.Error("scim token store init failed", "error", scmerr)
+			os.Exit(1)
+		}
+		a.scimSvc = scim.NewServiceWithStore(scimTokens, identities)
 		// issue #28: agent marketplace (publish/browse/install from version snapshots)
 		a.mktSvc = marketplace.NewServiceWithStore(marketplace.NewPostgresStore(db), a.agentsSvc, a.versionsSvc)
 		// issue #30: connectors resolving secret refs through the secrets service
@@ -168,6 +187,11 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		// issue #24/#25: zero-infrastructure billing + secrets (no master key needed)
 		a.billingSvc = billing.NewService()
 		a.secretsSvc = secrets.NewService()
+		// issue #29: zero-infrastructure SSO + SCIM (shared in-memory identity store
+		// so SCIM-provisioned users can immediately SSO-login)
+		memIdentities := auth.NewMemoryStore()
+		a.ssoSvc = sso.NewService(sso.NewMemoryConfigStore(), memIdentities, a.authSvc)
+		a.scimSvc = scim.NewService(memIdentities)
 		// issue #28/#30: zero-infrastructure marketplace + connectors
 		a.mktSvc = marketplace.NewService(a.agentsSvc)
 		a.connSvc = connectors.NewService()
@@ -303,6 +327,9 @@ func (a *app) routes() http.Handler {
 	registerBillingRoutes(apiMux, a.billingSvc, a.authSvc, a.apiKeysSvc)
 	// issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)
 	registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	// issue #29: OIDC SSO browser flow + SCIM 2.0 provisioning
+	registerSsoRoutes(apiMux, a.ssoSvc)
+	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc)
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks
