@@ -1,0 +1,51 @@
+name: Web CI
+
+# Issue #11: frontend gate (npm ci, build, lint) — runs only when web/**
+# changes so Go-only PRs do not pay for the npm install. Kept as its own
+# workflow because GitHub Actions path filters are workflow-level; a job-level
+# "only when web/** changed" filter inside ci.yml would need a third-party
+# action. The workflow file itself is part of the trigger set so gate edits
+# are validated too.
+on:
+  push:
+    paths:
+      - 'web/**'
+      - '.github/workflows/web.yml'
+  pull_request:
+    paths:
+      - 'web/**'
+      - '.github/workflows/web.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web (npm ci, build, lint)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          # npm cache keyed on web/package-lock.json (issue #11).
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
