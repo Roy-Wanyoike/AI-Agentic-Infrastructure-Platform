@@ -9,6 +9,7 @@ import (
 	"agentos/internal/auth"
 	"agentos/internal/observability"
 	"agentos/internal/queue"
+	"agentos/internal/runs"
 	"agentos/internal/streaming"
 )
 
@@ -140,6 +141,21 @@ func runEventsHandler(service *streaming.Service) http.HandlerFunc {
 				return
 			}
 			service.Publish(path, ev.Type, ev.Name, ev.Payload)
+			// Issue #12: worker status callbacks carry the terminal
+			// outcome of worker-executed runs. Mirror terminal
+			// transitions onto the runs service so the durable run
+			// row reflects the final status and agentos_runs_total
+			// is fed from the API process too (the counter hook
+			// lives in runs.Service.UpdateStatusCtx). Best-effort
+			// and nil-safe: a nil runs service, an unknown run and
+			// non-terminal statuses are no-ops, and errors are
+			// ignored because the relay above already succeeded.
+			if statusRaw, ok := ev.Payload["status"].(string); ok && runs.IsTerminalStatus(runs.RunStatus(statusRaw)) {
+				if rs := runsServiceVar; rs != nil {
+					output, _ := ev.Payload["output"].(string)
+					_ = rs.UpdateStatusCtx(r.Context(), "", path, runs.RunStatus(statusRaw), output)
+				}
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

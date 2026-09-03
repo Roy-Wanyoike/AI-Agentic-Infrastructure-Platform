@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agentos/internal/observability"
 	"agentos/internal/streaming"
 )
 
@@ -91,6 +92,14 @@ type Service struct {
 	steps    map[string][]*Step
 	streamer *streaming.Service
 	store    Store
+	// metrics is optional (nil-safe DI, issue #12): when wired it feeds
+	// the agentos_runs_total counter on terminal transitions. See
+	// metrics.go for the counting rules and SetMetrics.
+	metrics *observability.Metrics
+	// terminalCounted dedupes the runs counter per run ID so queue
+	// retries, replays and idempotent control transitions never double
+	// count. Guarded by mu.
+	terminalCounted map[string]bool
 }
 
 func NewService() *Service {
@@ -259,8 +268,18 @@ func (s *Service) UpdateStatusCtx(ctx context.Context, orgID, id string, status 
 	if !ok {
 		s.mu.Unlock()
 		if s.store == nil {
+			// Trusted worker path (issue #12): the run row lives in
+			// another process or was pruned, but the terminal
+			// outcome observed here is still this process's point
+			// of truth - count it, preserving the legacy
+			// ErrRunNotFound contract. No event is published
+			// (unchanged legacy behavior).
+			s.countTerminalRun(id, status)
 			return ErrRunNotFound
 		}
+		// Store-backed update already succeeded above; the memory
+		// cache simply does not know this run.
+		s.countTerminalRun(id, status)
 		s.publishStatus(id, status, output)
 		return nil
 	}
@@ -271,6 +290,7 @@ func (s *Service) UpdateStatusCtx(ctx context.Context, orgID, id string, status 
 	run.UpdatedAt = time.Now().UTC()
 	runID := run.ID
 	s.mu.Unlock()
+	s.countTerminalRun(runID, status)
 	s.publishStatus(runID, status, output)
 	return nil
 }

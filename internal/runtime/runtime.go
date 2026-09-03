@@ -30,6 +30,7 @@ import (
 
 	"agentos/internal/agents"
 	"agentos/internal/models"
+	"agentos/internal/observability"
 	"agentos/internal/tools"
 )
 
@@ -136,6 +137,10 @@ type Runner struct {
 	maxSteps    int
 	maxRuntime  time.Duration
 	toolTimeout time.Duration
+	// metrics is optional (nil-safe DI, issue #12): when wired it feeds
+	// the agentos_tools_total counter for every recorded tool step. See
+	// WithMetrics / SetMetrics.
+	metrics *observability.Metrics
 }
 
 // Option configures a Runner.
@@ -150,6 +155,13 @@ func WithProvider(p models.Provider) Option {
 // WithStepRecorder attaches a step recorder (observability sink).
 func WithStepRecorder(rec StepRecorder) Option {
 	return func(r *Runner) { r.recorder = rec }
+}
+
+// WithMetrics attaches the process-wide Metrics registry used to maintain the
+// agentos_tools_total counter (incremented for every recorded tool step).
+// Passing nil disables the counter (nil-safe DI, issue #12).
+func WithMetrics(m *observability.Metrics) Option {
+	return func(r *Runner) { r.metrics = m }
 }
 
 // WithLimits overrides max model steps and max total runtime. Values <= 0
@@ -185,6 +197,16 @@ func NewRunner(agentService *agents.Service, toolRegistry *tools.Registry) *Runn
 		maxRuntime:   DefaultMaxRuntime,
 		toolTimeout:  DefaultToolTimeout,
 	}
+}
+
+// SetMetrics attaches (or clears, via nil) the metrics registry after
+// construction. Nil-safe on the receiver. Like the Option constructors, call
+// this before runs are in flight (the Runner is not lock-protected).
+func (r *Runner) SetMetrics(m *observability.Metrics) {
+	if r == nil {
+		return
+	}
+	r.metrics = m
 }
 
 // NewRunnerWithOptions builds a Runner with options applied.
@@ -460,9 +482,16 @@ func (r *Runner) executeTool(ctx context.Context, name string, args map[string]a
 	return formatToolResult(result), nil
 }
 
-// record pushes a step to the recorder, ignoring recorder failures
-// (observability must never break execution).
+// record pushes a step to the recorder and maintains the agentos_tools_total
+// counter for tool steps, ignoring recorder failures (observability must
+// never break execution).
 func (r *Runner) record(ctx context.Context, runID string, step Step) {
+	// Issue #12: every recorded tool step is a tool execution - count it
+	// regardless of the step outcome and even when no recorder is wired
+	// (the offline calculator path records through the same choke point).
+	if step.Type == StepTypeTool && r.metrics != nil {
+		r.metrics.IncTools()
+	}
 	if r.recorder == nil {
 		return
 	}
