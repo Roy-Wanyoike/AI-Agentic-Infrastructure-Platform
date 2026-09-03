@@ -1,0 +1,579 @@
+# AgentOS API — OpenAPI 3.1 fragment for real billing & subscriptions
+# (issue #24, wave-5 track 5-c).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/canary.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/billing.yaml` passes.
+# Components carry the track-unique `Bill*` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation. All
+#     three are EXISTING permissions (no new permission enum was introduced —
+#     internal/auth was read-only for this track):
+#       - reads (GETs) use runs.execute: the OWNER/ADMIN/MEMBER grant set,
+#         i.e. MEMBER+ — VIEWERs cannot see subscription/invoice data
+#       - POST /billing/subscriptions uses organization.manage (OWNER only:
+#         committing the org to a paid plan is an org-level decision)
+#       - POST /billing/subscription/cancel uses users.manage (OWNER/ADMIN:
+#         account administration tier)
+#   * structured error model {"error":{"code","message"}}
+#
+# Semantics (documented choices, mirrored in internal/billing):
+#   * periods are half-open [period_start, period_end); a subscription starts
+#     as a 14-day trial; activation starts a fresh monthly (30d) period;
+#     rollovers advance one lifecycle step per due subscription: trial ->
+#     past_due (a shifted 30d dunning window), past_due -> canceled,
+#     active+cancel_at_period_end -> canceled, active -> renewed
+#   * invoices are priced from EXISTING cost aggregates (runs.cost_cents via
+#     the same aggregation behind GET /usage/costs): run lines are model
+#     buckets, eval lines are a schema-supported seam, and an overage line
+#     prices runs beyond the plan's included_quota using the plan metadata
+#     knob {"overage_run_rate_cents": N}; subtotal_cents is the exact line sum
+#     and regeneration is idempotent per (org, period) unless the prior
+#     invoice was voided
+openapi: 3.1.0
+info:
+  title: AgentOS — billing & subscriptions (wave-5 track 5-c fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the billing operations added by issue #24: a global
+  plan catalog (price, currency, included monthly run budget, metadata
+  knobs), the per-organization subscription lifecycle (trial -> active ->
+  past_due -> canceled with immediate or at-period-end cancellation), the
+  monthly run-budget quota view, and usage invoicing priced from the existing
+  cost aggregates.
+paths:
+  /billing/plans:
+    get:
+      operationId: listBillingPlans
+      summary: List the global plan catalog
+      description: |
+        Read (runs.execute, MEMBER+). Returns every billable plan. Plans are
+        global (non-tenant) catalog rows: price_cents is the monthly catalog
+        price, included_quota is the included monthly run budget (0 =
+        unlimited — never exceeded, never overaged) and metadata may carry
+        pricing knobs such as {"overage_run_rate_cents": N}.
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The plan catalog (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillPlanList'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/subscriptions:
+    post:
+      operationId: createBillingSubscription
+      summary: Subscribe the caller's organization to a plan
+      description: |
+        Owner-only write (organization.manage). Creates the organization's
+        subscription in TRIAL state with a 14-day window
+        [now, now+14d). Fails with 409 while a live (trial/active/past_due)
+        subscription exists — one live subscription per organization is a
+        schema invariant; after a cancellation a fresh subscribe opens a NEW
+        lifecycle row (canceled rows remain readable history). The tenant is
+        the caller's auth-claims organization; a client-supplied organization
+        id is never trusted.
+      x-required-permission: organization.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillSubscribeRequest'
+      responses:
+        '201':
+          description: The created subscription (trial state).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillSubscriptionResponse'
+        '400':
+          description: |
+            Malformed JSON body or missing plan_id
+            (error.code INVALID_REQUEST / VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '404':
+          description: Unknown plan (error.code PLAN_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is POST-only).
+        '409':
+          description: |
+            The organization already has a live subscription
+            (error.code CONFLICT).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/subscription:
+    get:
+      operationId: getBillingSubscription
+      summary: Show the organization's current subscription and quota state
+      description: |
+        Read (runs.execute, MEMBER+). Returns the org's live subscription
+        together with its monthly run-budget quota status. When no live
+        subscription exists the most recent one in any status is returned
+        (canceled history stays readable); 404 NO_SUBSCRIPTION when the
+        organization never subscribed. Quota semantics: consumed_runs counts
+        metered runs inside the subscription's current period window,
+        remaining_runs = max(0, included_quota - consumed_runs) and exceeded
+        is true only when consumed_runs > included_quota (consumed ==
+        included is still within budget; unlimited plans — included_quota 0 —
+        are never exceeded).
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The current subscription with its quota status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillSubscriptionWithQuota'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '404':
+          description: The organization never subscribed (error.code NO_SUBSCRIPTION).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/subscription/cancel:
+    post:
+      operationId: cancelBillingSubscription
+      summary: Cancel the organization's live subscription
+      description: |
+        Owner/ADMIN write (users.manage). Body is optional. immediate=true
+        cancels NOW (status=canceled, canceled_at stamped). immediate=false
+        (the default) schedules the cancel for the end of the running period
+        (cancel_at_period_end=true; the status flips to canceled when the
+        period rolls over). Canceled subscriptions cannot be cancelled again
+        (404 NO_SUBSCRIPTION once no live row exists).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillCancelRequest'
+      responses:
+        '200':
+          description: The updated subscription (canceled now, or flagged for period end).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillSubscriptionResponse'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '404':
+          description: No live subscription (error.code NO_SUBSCRIPTION).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is POST-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/invoices:
+    get:
+      operationId: listBillingInvoices
+      summary: List the organization's invoices
+      description: |
+        Read (runs.execute, MEMBER+). Returns the org's invoices, newest
+        first, WITHOUT lines (use GET /billing/invoices/{id} for the full
+        document). Every row is scoped to the caller's organization.
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The invoice list (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillInvoiceList'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/invoices/{id}:
+    get:
+      operationId: getBillingInvoice
+      summary: Show one invoice with its lines
+      description: |
+        Read (runs.execute, MEMBER+). Returns the full invoice document
+        including its lines. Tenant-scoped: an invoice of another
+        organization is indistinguishable from an unknown id (404
+        INVOICE_NOT_FOUND). Line sources: run (model-bucketed usage priced
+        from the cost aggregates), eval (evaluation metering seam) and
+        overage (runs beyond the plan's included quota, priced by the plan
+        metadata overage_run_rate_cents knob). subtotal_cents is always the
+        exact sum of the line amounts.
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/BillInvoiceID'
+      responses:
+        '200':
+          description: The invoice with its lines.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillInvoiceResponse'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '404':
+          description: Unknown or foreign invoice (error.code INVOICE_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    BillInvoiceID:
+      name: id
+      in: path
+      required: true
+      description: Invoice identifier (UUID v4 string).
+      schema:
+        type: string
+  responses:
+    BillUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillErrorEnvelope'
+    BillForbidden:
+      description: |
+        Authenticated but the role lacks the required permission (VIEWERs
+        lack reads; only OWNER may subscribe).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillErrorEnvelope'
+    BillInternal:
+      description: Unexpected server failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillErrorEnvelope'
+  schemas:
+    BillPlan:
+      type: object
+      required: [id, name, price_cents, currency, included_quota]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: Unique plan name (max 100 chars).
+        price_cents:
+          type: integer
+          minimum: 0
+          description: Monthly catalog price in cents.
+        currency:
+          type: string
+          description: Lowercase ISO-4217-like 3-letter code (default "usd").
+        included_quota:
+          type: integer
+          minimum: 0
+          description: |
+            Included monthly run budget. 0 means UNLIMITED (never exceeded,
+            never overaged).
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: |
+            Free-form knobs; the shipped invoice generator reads
+            {"overage_run_rate_cents": N} (N > 0) to price runs beyond the
+            included quota.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BillPlanList:
+      type: object
+      required: [plans]
+      properties:
+        plans:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillPlan'
+    BillSubscription:
+      type: object
+      required: [id, plan_id, status, period_start, period_end, cancel_at_period_end]
+      properties:
+        id:
+          type: string
+        plan_id:
+          type: string
+        status:
+          type: string
+          enum: [trial, active, past_due, canceled]
+        period_start:
+          type: string
+          format: date-time
+          description: Half-open window start [period_start, period_end).
+        period_end:
+          type: string
+          format: date-time
+        cancel_at_period_end:
+          type: boolean
+          description: |
+            True while a cancellation is scheduled for the end of the running
+            period (completed by the rollover).
+        canceled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Present once the subscription is canceled.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BillSubscriptionResponse:
+      type: object
+      required: [subscription]
+      properties:
+        subscription:
+          $ref: '#/components/schemas/BillSubscription'
+    BillQuotaStatus:
+      type: object
+      required: [subscription_id, status, included_runs, unlimited, consumed_runs, remaining_runs, exceeded, period_start, period_end]
+      properties:
+        subscription_id:
+          type: string
+        status:
+          type: string
+          enum: [trial, active, past_due, canceled]
+          description: The subscription status the quota is reported against.
+        included_runs:
+          type: integer
+          description: plan.included_quota (0 = unlimited).
+        unlimited:
+          type: boolean
+        consumed_runs:
+          type: integer
+          description: Metered runs inside the current period window.
+        remaining_runs:
+          type: integer
+          description: max(0, included_runs - consumed_runs); 0 when unlimited.
+        exceeded:
+          type: boolean
+          description: True only when consumed_runs > included_runs.
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+    BillSubscriptionWithQuota:
+      type: object
+      required: [subscription, quota]
+      properties:
+        subscription:
+          $ref: '#/components/schemas/BillSubscription'
+        quota:
+          $ref: '#/components/schemas/BillQuotaStatus'
+    BillSubscribeRequest:
+      type: object
+      required: [plan_id]
+      properties:
+        plan_id:
+          type: string
+          description: The plan to subscribe to (must exist).
+    BillCancelRequest:
+      type: object
+      properties:
+        immediate:
+          type: boolean
+          default: false
+          description: |
+            true cancels NOW; false (default) schedules the cancel for the end
+            of the running period.
+    BillInvoiceLine:
+      type: object
+      required: [id, source, quantity, amount_cents]
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+          enum: [run, eval, overage]
+          description: |
+            run: model-bucketed usage priced from the cost aggregates; eval:
+            evaluation metering (schema-supported seam); overage: derived line
+            pricing runs beyond the included quota.
+        description:
+          type: string
+        quantity:
+          type: integer
+          description: Metered unit count of the line (runs).
+        amount_cents:
+          type: integer
+          minimum: 0
+        refs:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: |
+            Pricing provenance: {"model": "..."} for run lines;
+            {"included_quota", "overage_run_rate_cents", "metered_runs"} for
+            overage lines.
+        created_at:
+          type: string
+          format: date-time
+    BillInvoice:
+      type: object
+      required: [id, subscription_id, period_start, period_end, subtotal_cents, currency, status]
+      properties:
+        id:
+          type: string
+        subscription_id:
+          type: string
+        period_start:
+          type: string
+          format: date-time
+          description: Half-open invoiced window [period_start, period_end).
+        period_end:
+          type: string
+          format: date-time
+        subtotal_cents:
+          type: integer
+          minimum: 0
+          description: Exact sum of the line amounts.
+        currency:
+          type: string
+          description: Copied from the plan at generation time.
+        status:
+          type: string
+          enum: [open, paid, void]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BillInvoiceList:
+      type: object
+      required: [invoices]
+      properties:
+        invoices:
+          type: array
+          description: Newest first; line details omitted.
+          items:
+            $ref: '#/components/schemas/BillInvoice'
+    BillInvoiceResponse:
+      type: object
+      required: [invoice]
+      properties:
+        invoice:
+          allOf:
+          - $ref: '#/components/schemas/BillInvoice'
+          - type: object
+            required: [lines]
+            properties:
+              lines:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BillInvoiceLine'
+    BillErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                Machine code: INVALID_REQUEST / VALIDATION_ERROR (400),
+                UNAUTHORIZED (401), PLAN_NOT_FOUND / NO_SUBSCRIPTION /
+                INVOICE_NOT_FOUND (404), CONFLICT / INVALID_STATE (409),
+                BILLING_UNAVAILABLE (503), INTERNAL_ERROR (500).
+            message:
+              type: string
