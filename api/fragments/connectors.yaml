@@ -1,0 +1,486 @@
+# AgentOS API — OpenAPI 3.1 fragment for the connectors framework (issue #30,
+# track 6-c): registered external integrations with health checks and secret
+# references.
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/secrets.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/connectors.yaml`
+# passes. Components carry the track-unique `Con*` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation. A
+#     dedicated additive permission pair was introduced
+#     (internal/auth/permissions_connectors.go) because the issue contract is
+#     writes OWNER/ADMIN + reads MEMBER+ and NO existing read grant excludes
+#     VIEWER:
+#       - writes (create/delete/test probe) -> connectors.write (OWNER/ADMIN)
+#       - reads  (list/get)                 -> connectors.read  (MEMBER+)
+#   * structured error model {"error":{"code","message"}}
+#
+# SECURITY (secret handling): a connector stores only the secret_ref NAME —
+# a reference into the secrets store (see secrets fragment). Secret VALUES
+# never appear in any request or response of this surface; the config object
+# carries header TEMPLATES and auth style parameters only.
+openapi: 3.1.0
+info:
+  title: AgentOS — connectors framework (track 6-c fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the governed external-integration operations added
+  by issue #30. A connector is the org-scoped registry entry for an external
+  system (CRM, internal API, SaaS webhook receiver): type webhook|http, a
+  base_url every request is built from, a config object (auth style
+  none|bearer|basic|api_key_header plus static header templates), an optional
+  secret_ref name resolved at request-build time through the secrets store,
+  and an active/disabled governance status. POST /connectors/{id}/test runs a
+  live health check (GET to base_url, 5s timeout) and records the outcome as
+  last_check_at / last_check_status (ok for 2xx-3xx, error otherwise).
+paths:
+  /connectors:
+    post:
+      operationId: createConnector
+      summary: Register one org-scoped external integration
+      description: |
+        Write operation (connectors.write, OWNER/ADMIN). The body carries the
+        connector name (unique per organization), type (webhook|http),
+        base_url (absolute http(s) URL), config (auth_style plus optional
+        header templates and api-key/basic parameters) and an optional
+        secret_ref NAME referencing a secret in the secrets store. Secret
+        values are never accepted by this endpoint. Status defaults to
+        active. Duplicate (org, name) is a 409. The tenant is derived from
+        the auth claims — any client-supplied organization id is ignored.
+      x-required-permission: connectors.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConCreateRequest'
+      responses:
+        '201':
+          description: Connector registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConResponse'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '409':
+          description: A connector with the same name already exists in the caller's organization (error.code CONNECTOR_ALREADY_EXISTS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '422':
+          description: |
+            Validation error: missing name/base_url, name over 255 chars, type
+            not webhook|http, base_url not an absolute http(s) URL, status not
+            active|disabled, auth_style not one of none|bearer|basic|
+            api_key_header, or a header template containing CR/LF
+            (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+    get:
+      operationId: listConnectors
+      summary: List connectors for the caller's organization
+      description: |
+        Read operation (connectors.read, MEMBER+ — viewers are excluded
+        because connector listings expose integration topology). Returns all
+        connectors of the caller's organization ordered by name ASC; each
+        entry is the value-free projection (config templates + secret_ref
+        name only, never secret values).
+      x-required-permission: connectors.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Connector list (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConListResponse'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+  /connectors/{id}:
+    get:
+      operationId: getConnector
+      summary: Fetch one connector
+      description: |
+        Read operation (connectors.read, MEMBER+). Returns the value-free
+        projection of one connector including the recorded health-check
+        bookkeeping (last_check_at / last_check_status, null/"" when never
+        probed). Foreign or unknown ids surface as 404 (no existence leak
+        across tenants).
+      x-required-permission: connectors.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/ConId'
+      responses:
+        '200':
+          description: Connector projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConResponse'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '404':
+          description: Connector not found within the caller's organization (error.code CONNECTOR_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+    delete:
+      operationId: deleteConnector
+      summary: Hard-delete one connector
+      description: |
+        Write operation (connectors.write, OWNER/ADMIN). Removes the registry
+        entry (connectors are hard-deleted; the unique (org, name) constraint
+        frees the name immediately). Foreign or unknown ids are 404.
+        Deletion is audit-logged.
+      x-required-permission: connectors.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/ConId'
+      responses:
+        '200':
+          description: Connector deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConDeleteResponse'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '404':
+          description: Connector not found within the caller's organization (error.code CONNECTOR_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+  /connectors/{id}/test:
+    post:
+      operationId: testConnector
+      summary: Run the live health check for one connector
+      description: |
+        Write operation (connectors.write, OWNER/ADMIN — the probe triggers
+        outbound network activity and mutates connector state). Performs a
+        GET to the connector's base_url with the configured auth style
+        applied (the secret is resolved server-side through the secrets
+        store and injected into the outgoing request only — it never appears
+        here), bounded by a 5s timeout. Classifies the outcome as ok
+        (2xx-3xx) or error (non-2xx, network failure, timeout, unresolvable
+        secret), records last_check_at / last_check_status on the connector
+        and returns the probe result. Disabled connectors remain probeable —
+        the check exists precisely to inform the enable/disable decision.
+      x-required-permission: connectors.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/ConId'
+      responses:
+        '200':
+          description: Probe outcome (never includes secret values).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConTestResponse'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '404':
+          description: Connector not found within the caller's organization (error.code CONNECTOR_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '500':
+          description: Unexpected server failure (e.g. persistence of the probe outcome failed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    ConId:
+      name: id
+      in: path
+      required: true
+      description: Connector identifier (unique per organization).
+      schema:
+        type: string
+  responses:
+    ConUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConErrorEnvelope'
+    ConForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConErrorEnvelope'
+  schemas:
+    ConConfig:
+      type: object
+      description: |
+        Non-secret request configuration. Contains header TEMPLATES and auth
+        style parameters only — secret values are structurally absent (the
+        sensitive material lives in the secrets store behind secret_ref).
+      properties:
+        auth_style:
+          type: string
+          enum: [none, bearer, basic, api_key_header]
+          description: |
+            bearer injects "Authorization: Bearer <secret>"; basic injects
+            "Authorization: Basic base64(<username>:<secret>)"; api_key_header
+            injects "<api_key_header|X-API-Key>: <api_key_prefix><secret>".
+            none injects nothing (secret_ref is not consumed).
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Static header templates merged into every built request (per-request headers win over these; injected auth headers win over both). CR/LF is rejected.
+        api_key_header:
+          type: string
+          description: Header name for the api_key_header style (defaults to X-API-Key).
+        api_key_prefix:
+          type: string
+          description: Prefix prepended to the resolved secret for the api_key_header style.
+        username:
+          type: string
+          description: Basic-auth username (the password comes from the secret referenced by secret_ref).
+    ConCreateRequest:
+      type: object
+      description: Create payload. Never carries secret values — secret_ref is a NAME reference into the secrets store.
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          description: Connector name, unique per organization.
+        type:
+          type: string
+          enum: [webhook, http]
+        base_url:
+          type: string
+          format: uri
+          description: Absolute http(s) origin every request is built from (base path is preserved when joining paths).
+        auth_style:
+          type: string
+          enum: [none, bearer, basic, api_key_header]
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        api_key_header:
+          type: string
+        api_key_prefix:
+          type: string
+        username:
+          type: string
+        secret_ref:
+          type: string
+          description: NAME of a secret in the secrets store; resolved only at request-build time.
+        status:
+          type: string
+          enum: [active, disabled]
+          default: active
+      required:
+      - name
+      - type
+      - base_url
+    ConConnector:
+      type: object
+      description: Value-free connector projection. There is no field that could carry a secret value — secret_ref is a name reference.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [webhook, http]
+        base_url:
+          type: string
+        config:
+          $ref: '#/components/schemas/ConConfig'
+        secret_ref:
+          type: string
+          description: Secret NAME reference ("" when the connector needs no secret).
+        status:
+          type: string
+          enum: [active, disabled]
+        last_check_at:
+          type: [string, 'null']
+          format: date-time
+          description: Timestamp of the last health-check probe (null when never probed).
+        last_check_status:
+          type: string
+          enum: [ok, error, '']
+          description: Outcome of the last probe ("" when never probed).
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - name
+      - type
+      - base_url
+      - config
+      - secret_ref
+      - status
+      - last_check_at
+      - last_check_status
+      - created_at
+      - updated_at
+    ConTestResult:
+      type: object
+      description: Outcome of one live health-check probe (secret values never included).
+      properties:
+        connector_id:
+          type: string
+        status:
+          type: string
+          enum: [ok, error]
+        status_code:
+          type: integer
+          description: Upstream HTTP status (0 when no response was received).
+        latency_ms:
+          type: integer
+        error:
+          type: string
+          description: Probe failure detail (absent on success; names the secret NAME on resolution failures, never a value).
+        checked_at:
+          type: string
+          format: date-time
+      required:
+      - connector_id
+      - status
+      - status_code
+      - latency_ms
+      - checked_at
+    ConResponse:
+      type: object
+      properties:
+        connector:
+          $ref: '#/components/schemas/ConConnector'
+      required:
+      - connector
+    ConListResponse:
+      type: object
+      properties:
+        connectors:
+          type: array
+          description: Value-free projections ordered by name ASC; empty when the organization has no connectors.
+          items:
+            $ref: '#/components/schemas/ConConnector'
+      required:
+      - connectors
+    ConTestResponse:
+      type: object
+      properties:
+        test:
+          $ref: '#/components/schemas/ConTestResult'
+      required:
+      - test
+    ConDeleteResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          description: Always true on success.
+      required:
+      - deleted
+    ConErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of CONNECTOR_NOT_FOUND, CONNECTOR_ALREADY_EXISTS, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - CONNECTOR_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
