@@ -20,6 +20,7 @@ import (
 	"agentos/internal/approvals"
 	"agentos/internal/audit"
 	"agentos/internal/auth"
+	"agentos/internal/billing"
 	"agentos/internal/config"
 	"agentos/internal/database"
 	"agentos/internal/deployments"
@@ -36,7 +37,9 @@ import (
 	"agentos/internal/runs"
 	"agentos/internal/runtime"
 	"agentos/internal/scheduler"
+	"agentos/internal/secrets"
 	"agentos/internal/streaming"
+	"agentos/internal/tools"
 	"agentos/internal/usage"
 	"agentos/internal/webhooks"
 	"agentos/internal/workflows"
@@ -75,6 +78,8 @@ type app struct {
 	evalSvc        *evaluations.Service
 	evalRunner     *runtime.Runner
 	schedSvc       *scheduler.Service
+	billingSvc     *billing.Service
+	secretsSvc     *secrets.Service
 	whSvc          *webhooks.Service
 	publisher      events.Publisher
 }
@@ -120,6 +125,16 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		// wave-3 3-d: knowledge/RAG + memory persistence (org-scoped)
 		a.knowledgeSvc = knowledge.NewServiceWithStore(db)
 		a.memorySvc = memory.NewServiceWithStore(db)
+		// issue #24: billing (plans/subscriptions/invoices) billed from the runs cost ledger
+		a.billingSvc = billing.NewServiceWithStore(billing.NewPostgresStore(db), billing.NewRunsUsageSource(a.runsSvc))
+		// issue #25: encrypted org-scoped secrets; FAIL FAST without a valid
+		// AGENTOS_SECRETS_MASTER_KEY (plaintext persistence is the regression)
+		secretsSvc, serr := secrets.NewPostgresService(db)
+		if serr != nil {
+			logr.Error("secrets service init failed", "error", serr)
+			os.Exit(1)
+		}
+		a.secretsSvc = secretsSvc
 		a.logr.Info("postgres stores enabled")
 	} else {
 		a.authSvc = auth.NewService(defaultJWTSecret)
@@ -137,6 +152,9 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		// wave-3 3-d: zero-infrastructure knowledge/memory (offline hash embedder)
 		a.knowledgeSvc = knowledge.NewService()
 		a.memorySvc = memory.NewService()
+		// issue #24/#25: zero-infrastructure billing + secrets (no master key needed)
+		a.billingSvc = billing.NewService()
+		a.secretsSvc = secrets.NewService()
 		// create a dev API key for local worker polling convenience (only
 		// possible in-memory: the api_keys FK requires a real organization row)
 		if key, err := a.apiKeysSvc.Create("org-demo", "dev-user", "dev-key"); err != nil {
@@ -262,6 +280,13 @@ func (a *app) routes() http.Handler {
 	registerUsageCostsRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)
 	registerKnowledgeRoutes(apiMux, a.knowledgeSvc, a.authSvc, a.apiKeysSvc)
 	registerMemoryRoutes(apiMux, a.memorySvc, a.authSvc, a.apiKeysSvc)
+	// issue #18: public tool registry + audit trail
+	registerToolsRoutes(apiMux, tools.DefaultRegistry(), a.authSvc, a.apiKeysSvc)
+	registerAuditEventsRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
+	// issue #24: billing plans/subscriptions/invoices
+	registerBillingRoutes(apiMux, a.billingSvc, a.authSvc, a.apiKeysSvc)
+	// issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)
+	registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 
 	apiMux.HandleFunc("/", serviceInfoHandler)
 

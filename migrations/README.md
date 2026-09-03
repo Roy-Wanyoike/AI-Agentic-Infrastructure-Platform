@@ -19,6 +19,8 @@ Current migration structure:
 - 013_durable_workflows.sql
 - 014_memory_knowledge.sql
 - 015_canary_deployments.sql
+- 016_billing.sql
+- 017_secrets.sql
 
 Migration conventions:
 
