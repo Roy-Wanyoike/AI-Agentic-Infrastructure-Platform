@@ -3,56 +3,36 @@ info:
   title: AgentOS API
   version: 0.1.0
   summary: Multi-tenant AI-agent infrastructure platform API
-  description: |
-    AgentOS is a multi-tenant AI-agent infrastructure platform. This contract
-    covers the versioned REST API (/api/v1), the worker pull endpoint, the
-    Server-Sent Events (SSE) execution-event stream, and platform health /
-    metrics endpoints.
-
-    ## Authentication
-    Two schemes are accepted on every protected endpoint (see
-    `securitySchemes`):
-    1. `bearerToken` — `Authorization: Bearer <token>` where `<token>` is the
-       HMAC-SHA256 JWT-style token returned by `POST /auth/login`
-       (registration creates the first OWNER user; log in to get a token).
-    2. `apiKey` — `X-API-Key: ak_...` header. API keys are created server-side
-       (dev key created at startup) and authenticate as the key's OWNER role.
-    Browser `EventSource` clients that cannot set headers may pass
-    `?api_key=<key>` as a query parameter (legacy compatibility).
-
-    ## RBAC
-    Permissions: `agents.read`, `agents.write`, `runs.read`, `runs.execute`,
-    `users.manage`, `organization.manage`. Roles: `OWNER` (all), `ADMIN`
-    (all but organization.manage), `MEMBER` (agents.read, runs.read,
-    runs.execute), `VIEWER` (agents.read, runs.read). Each operation declares
-    its required permission via `x-required-permission`.
-
-    ## Multi-tenancy
-    Requests are scoped to an organization derived from the auth token. For
-    agent/run creation the body may carry `organization_id`; when omitted the
-    authenticated principal's organization is used. Access to another
-    organization's resources returns 403.
-
-    ## Error model
-    Target structured error (Content-Type application/json):
-    `{"error":{"code":"not_found","message":"agent not found","request_id":"..."}}`.
-    During migration, some handlers still emit `http.Error`-style
-    `text/plain` bodies; the structured model is authoritative for new code.
-
-    ## Pagination
-    List endpoints (`GET /agents`, `GET /runs`) are **unpaginated** today;
-    they return the full result set. This is a documented limitation and will
-    change in a future minor version (see `x-unpaginated`).
+  description: "AgentOS is a multi-tenant AI-agent infrastructure platform. This contract\ncovers the versioned REST API (/api/v1),\
+    \ the worker pull endpoint, the\nServer-Sent Events (SSE) execution-event stream, and platform health /\nmetrics endpoints.\n\
+    \n## Authentication\nTwo schemes are accepted on every protected endpoint (see\n`securitySchemes`):\n1. `bearerToken`\
+    \ — `Authorization: Bearer <token>` where `<token>` is the\n   HMAC-SHA256 JWT-style token returned by `POST /auth/login`\n\
+    \   (registration creates the first OWNER user; log in to get a token).\n2. `apiKey` — `X-API-Key: ak_...` header. API\
+    \ keys are created server-side\n   (dev key created at startup) and authenticate as the key's OWNER role.\nBrowser `EventSource`\
+    \ clients that cannot set headers may pass\n`?api_key=<key>` as a query parameter (legacy compatibility).\n\n## RBAC\n\
+    Permissions: `agents.read`, `agents.write`, `runs.read`, `runs.execute`,\n`users.manage`, `organization.manage`. Roles:\
+    \ `OWNER` (all), `ADMIN`\n(all but organization.manage), `MEMBER` (agents.read, runs.read,\nruns.execute), `VIEWER` (agents.read,\
+    \ runs.read). Each operation declares\nits required permission via `x-required-permission`.\n\n## Multi-tenancy\nRequests\
+    \ are scoped to an organization derived from the auth token. For\nagent/run creation the body may carry `organization_id`;\
+    \ when omitted the\nauthenticated principal's organization is used. Access to another\norganization's resources returns\
+    \ 403.\n\n## Error model\nTarget structured error (Content-Type application/json):\n`{\"error\":{\"code\":\"not_found\"\
+    ,\"message\":\"agent not found\",\"request_id\":\"...\"}}`.\nDuring migration, some handlers still emit `http.Error`-style\n\
+    `text/plain` bodies; the structured model is authoritative for new code.\n\n## Pagination\nList endpoints (`GET /agents`,\
+    \ `GET /runs`) are **unpaginated** today;\nthey return the full result set. This is a documented limitation and will\n\
+    change in a future minor version (see `x-unpaginated`).\n"
   contact:
     name: AgentOS Platform Team
 servers:
 - url: /api/v1
   description: Canonical versioned base path.
 - url: /
-  description: |
-    Legacy root where all /v1/* routes are served identically
+  description: 'Legacy root where all /v1/* routes are served identically
+
     (e.g. /v1/agents). Deprecated alias kept for backward compatibility
+
     (cmd/worker and existing clients still use it).
+
+    '
 tags:
 - name: auth
   description: Registration and token issuance.
@@ -74,9 +54,11 @@ paths:
       tags:
       - platform
       summary: Service identity banner (catch-all route)
-      description: |
-        Catch-all route returning the service identity. Reachable at the
+      description: 'Catch-all route returning the service identity. Reachable at the
+
         server root (outside the versioned base path). No authentication.
+
+        '
       security: []
       x-required-permission: null
       responses:
@@ -105,11 +87,15 @@ paths:
       tags:
       - agents
       summary: List agents in the caller's organization
-      description: |
-        Returns a JSON **array** (not an envelope) of agents belonging to the
+      description: 'Returns a JSON **array** (not an envelope) of agents belonging to the
+
         requested organization. `organization_id` query parameter defaults to
-        the authenticated principal's organization; cross-organization access
+
+        the authenticated principal''s organization; cross-organization access
+
         is forbidden. Unpaginated today.
+
+        '
       x-required-permission: agents.read
       x-unpaginated: true
       parameters:
@@ -150,11 +136,15 @@ paths:
       tags:
       - agents
       summary: Create an agent
-      description: |
-        Creates an agent in `DRAFT` status and an initial AgentVersion
+      description: 'Creates an agent in `DRAFT` status and an initial AgentVersion
+
         (version 1) which becomes `CurrentVersionID`. Required fields:
+
         `name`, `instructions`, `model` (service-side validation);
-        `organization_id` defaults to the caller's organization.
+
+        `organization_id` defaults to the caller''s organization.
+
+        '
       x-required-permission: agents.write
       requestBody:
         required: true
@@ -226,13 +216,19 @@ paths:
       tags:
       - agents
       summary: Update an agent (NOT IMPLEMENTED — returns the agent unchanged)
-      description: |
-        **Reality check (documented, not aspirational):** the shared detail
+      description: '**Reality check (documented, not aspirational):** the shared detail
+
         handler (cmd/api/agents.go agentDetailHandler) has no method switch;
+
         PATCH behaves exactly like GET and does not mutate anything.
+
         `agents.write` is NOT currently enforced on this route (it is
+
         registered under `agents.read`). Updating happens server-side via
+
         version creation, not yet via the API.
+
+        '
       x-required-permission: agents.read
       x-note: not-implemented; returns current agent representation
       deprecated: true
@@ -256,10 +252,13 @@ paths:
       tags:
       - agents
       summary: Delete an agent (NOT IMPLEMENTED — returns the agent unchanged)
-      description: |
-        **Reality check (documented, not aspirational):** DELETE behaves
+      description: '**Reality check (documented, not aspirational):** DELETE behaves
+
         exactly like GET; no data is deleted and `agents.write` is not
+
         enforced on this route today.
+
+        '
       x-required-permission: agents.read
       x-note: not-implemented; returns current agent representation
       deprecated: true
@@ -490,10 +489,13 @@ paths:
       tags:
       - approvals
       summary: Approve or reject an approval
-      description: |
-        Sets the approver from the authenticated principal and decided_at to
+      description: 'Sets the approver from the authenticated principal and decided_at to
+
         now. When the decision is `approved` and a run is linked, the paused
+
         run is resumed (status back to `pending`). Deciding twice returns 409.
+
+        '
       x-required-permission: approvals.decide
       parameters:
       - $ref: '#/components/parameters/WfApprovalID'
@@ -546,10 +548,13 @@ paths:
       tags:
       - auth
       summary: Exchange credentials for a bearer token
-      description: |
-        Returns an HMAC-SHA256 JWT-style token (24h expiry) carrying claims
+      description: 'Returns an HMAC-SHA256 JWT-style token (24h expiry) carrying claims
+
         `user_id`, `organization_id`, `email`, `role`, `exp`. Use it as
+
         `Authorization: Bearer <token>` afterwards. No authentication required.
+
+        '
       security: []
       x-required-permission: null
       requestBody:
@@ -585,12 +590,17 @@ paths:
       tags:
       - auth
       summary: Register an organization and its first OWNER user
-      description: |
-        Creates a new organization (ID pattern `org-<n>`) and a user with the
+      description: 'Creates a new organization (ID pattern `org-<n>`) and a user with the
+
         default role `OWNER`. No authentication required. The response
+
         intentionally includes the stored user record as implemented today —
+
         including `PasswordHash` (bcrypt digest). This is a known contract
+
         wart tracked for removal; clients must treat it as opaque.
+
+        '
       security: []
       x-required-permission: null
       requestBody:
@@ -622,10 +632,13 @@ paths:
                   Role: OWNER
                   CreatedAt: '2025-01-01T12:00:00.123456789Z'
         '400':
-          description: |
-            Missing field, invalid JSON body, or email already registered.
+          description: 'Missing field, invalid JSON body, or email already registered.
+
             Body is plain text today (http.Error); structured error is the
+
             target model.
+
+            '
           content:
             text/plain:
               schema:
@@ -698,10 +711,13 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '422':
-          description: |
-            Validation failed (VALIDATION_ERROR for bad environment/fields;
+          description: 'Validation failed (VALIDATION_ERROR for bad environment/fields;
+
             VERSION_NOT_PUBLISHED when the target version does not exist or is
+
             not published).
+
+            '
           content:
             application/json:
               schema:
@@ -788,8 +804,7 @@ paths:
       - $ref: '#/components/parameters/DeploymentID'
       responses:
         '200':
-          description: Environment re-pointed; response carries the new healthy deployment and the version
-            it serves.
+          description: Environment re-pointed; response carries the new healthy deployment and the version it serves.
           content:
             application/json:
               schema:
@@ -843,13 +858,19 @@ paths:
     post:
       operationId: createEvalDataset
       summary: Create an evaluation dataset with its cases
-      description: |
-        Validates every case before persisting: supported scorers are
+      description: 'Validates every case before persisting: supported scorers are
+
         `exact`, `contains`, `regex`, `latency_under_ms`, `cost_under_cents`;
+
         `regex` requires `params.pattern` (compilable), `latency_under_ms`
+
         requires `params.threshold_ms > 0`, `cost_under_cents` requires
+
         `params.threshold_cents > 0`; case ids must be unique (auto-generated
+
         when omitted); at most 50 cases per dataset.
+
+        '
       security:
       - bearerToken: []
       - apiKey: []
@@ -936,11 +957,15 @@ paths:
     post:
       operationId: runEvalDataset
       summary: Execute every case of a dataset against an agent (synchronous, bounded)
-      description: |
-        Runs each case through the agent runtime with a per-case context
+      description: 'Runs each case through the agent runtime with a per-case context
+
         deadline (30s) and at most 50 cases. Returns the completed run id;
+
         fetch `GET /eval-runs/{id}` for results and summary. Cost is recorded
+
         as 0 until the runtime exposes cost (token usage only today).
+
+        '
       security:
       - bearerToken: []
       - apiKey: []
@@ -1007,10 +1032,13 @@ paths:
     post:
       operationId: compareEvalRuns
       summary: Compare a candidate run against a baseline run
-      description: |
-        Cases are matched by case_id; only the intersection of both runs is
+      description: 'Cases are matched by case_id; only the intersection of both runs is
+
         judged. A regression is a case the baseline passed and the candidate
+
         failed; an improvement is the reverse.
+
+        '
       security:
       - bearerToken: []
       - apiKey: []
@@ -1107,13 +1135,19 @@ paths:
       tags:
       - platform
       summary: Application metrics snapshot
-      description: |
-        Returns in-process counters and the latest latency observations keyed
+      description: 'Returns in-process counters and the latest latency observations keyed
+
         by metric name, plus the current queue length. When the HTTP metrics
+
         middleware (internal/observability.MetricsMiddleware) is wired,
+
         entries follow the label format
+
         `http_requests_total{route="...",method="...",status="..."}` and
+
         `http_request_duration_seconds{...}`.
+
+        '
       x-required-permission: runs.read
       responses:
         '200':
@@ -1136,10 +1170,13 @@ paths:
     get:
       operationId: listPolicies
       summary: List policies of the authenticated organization
-      description: |
-        Returns the governance policies of the caller's organization ordered
+      description: 'Returns the governance policies of the caller''s organization ordered
+
         by priority (desc) then creation time (asc) — the same order the
+
         evaluation engine applies. Unpaginated (see base spec limitation).
+
+        '
       tags:
       - Governance
       security:
@@ -1163,13 +1200,19 @@ paths:
     post:
       operationId: createPolicy
       summary: Create a policy
-      description: |
-        Validates the policy record (name required; effect allow|deny;
+      description: 'Validates the policy record (name required; effect allow|deny;
+
         resource_type tool|agent|workflow|deployment|*; no empty entries in
+
         actions / tool_allowlist / environments; max_cost_cents >= 0) and
-        persists it for the caller's organization. id and timestamps are
+
+        persists it for the caller''s organization. id and timestamps are
+
         assigned server-side. Returns 422 with an invalid_policy error when
+
         validation fails.
+
+        '
       tags:
       - Governance
       security:
@@ -1209,19 +1252,13 @@ paths:
     post:
       operationId: evaluatePolicies
       summary: Evaluate the caller's policies against one action
-      description: |
-        Runs the governance engine over the enabled policies of the caller's
-        organization: highest-priority match wins, deny beats allow on a
-        priority tie, and the default decision is allow when nothing matches.
-        Condition semantics (conditions are applicability predicates):
-          * tool_allowlist (non-empty) — the request tool must be listed;
-          * environments (non-empty) — the request environment must be listed;
-          * max_cost_cents (set >= 0) — the request is over budget, i.e.
-            estimated_cost_cents > max_cost_cents (budget-guard);
-          * require_approval — annotated in the decision reason.
-        The tenant scope always comes from the authenticated principal;
-        resource.tenant_id is informational. Evaluate is a read-only operation
-        and requires policies.read.
+      description: "Runs the governance engine over the enabled policies of the caller's\norganization: highest-priority match\
+        \ wins, deny beats allow on a\npriority tie, and the default decision is allow when nothing matches.\nCondition semantics\
+        \ (conditions are applicability predicates):\n  * tool_allowlist (non-empty) — the request tool must be listed;\n\
+        \  * environments (non-empty) — the request environment must be listed;\n  * max_cost_cents (set >= 0) — the request\
+        \ is over budget, i.e.\n    estimated_cost_cents > max_cost_cents (budget-guard);\n  * require_approval — annotated\
+        \ in the decision reason.\nThe tenant scope always comes from the authenticated principal;\nresource.tenant_id is\
+        \ informational. Evaluate is a read-only operation\nand requires policies.read.\n"
       tags:
       - Governance
       security:
@@ -1285,10 +1322,13 @@ paths:
     put:
       operationId: updatePolicy
       summary: Full update of one policy
-      description: |
-        Replaces the mutable fields (name, effect, resource_type, actions,
+      description: 'Replaces the mutable fields (name, effect, resource_type, actions,
+
         conditions, priority, enabled). id, organization_id and created_at
+
         are preserved; updated_at is bumped. Validates like create.
+
+        '
       tags:
       - Governance
       security:
@@ -1365,11 +1405,15 @@ paths:
       tags:
       - queue
       summary: Pull the next task (worker pull model)
-      description: |
-        Dequeues the next task (FIFO) for the calling worker. Returns `200`
+      description: 'Dequeues the next task (FIFO) for the calling worker. Returns `200`
+
         with the Task JSON, or `204 No Content` when the queue is empty.
-        Intended for the worker's `AGENTOS_API_PULL=true` mode; a POST is
+
+        Intended for the worker''s `AGENTOS_API_PULL=true` mode; a POST is
+
         accepted as an alias of GET. Requires `runs.execute`.
+
+        '
       x-required-permission: runs.execute
       responses:
         '200':
@@ -1438,10 +1482,13 @@ paths:
       tags:
       - runs
       summary: List runs
-      description: |
-        Returns an envelope `{"runs":[...]}`. **Today this lists all runs
+      description: 'Returns an envelope `{"runs":[...]}`. **Today this lists all runs
+
         across organizations** (handler TODO notes org filtering is future
+
         work). Unpaginated today.
+
+        '
       x-required-permission: runs.read
       x-unpaginated: true
       x-note: no organization filter applied yet
@@ -1471,11 +1518,15 @@ paths:
       tags:
       - runs
       summary: Create and enqueue a run
-      description: |
-        Creates a run (status `QUEUED`) and enqueues an `agent.run` task.
+      description: 'Creates a run (status `QUEUED`) and enqueues an `agent.run` task.
+
         Responds 201 with the run ID and `status: "queued"`. Actual execution
+
         happens in the worker; watch `GET /runs/{id}/events` (SSE) for
+
         `status.changed` events.
+
+        '
       x-required-permission: runs.execute
       requestBody:
         required: true
@@ -1547,11 +1598,15 @@ paths:
       tags:
       - run-control
       summary: Cancel a run (idempotent)
-      description: |
-        Transitions the run to `cancelled`. Cancelling an already-cancelled
+      description: 'Transitions the run to `cancelled`. Cancelling an already-cancelled
+
         run is a no-op; cancelling a completed/failed/timed-out run returns
+
         409. New status vocabulary: pending|running|paused|waiting_approval|
+
         completed|failed|cancelled|timeout.
+
+        '
       x-required-permission: runs.control
       parameters:
       - $ref: '#/components/parameters/WfRunID'
@@ -1582,16 +1637,11 @@ paths:
       tags:
       - runs
       summary: Stream run events (SSE) or fetch history (JSON)
-      description: |
-        Dual-protocol endpoint:
-        * `Accept: text/event-stream` → a live SSE stream. After the headers,
-          buffered history events are replayed first, then live events follow.
-          Each frame is `data: <RunEvent JSON>\n\n` (no `event:` field is
-          sent; clients should key off the `name` field inside the JSON,
-          e.g. `status.changed`). Comment keep-alive pings (`: ping`) may be
-          interleaved. The stream ends when the client disconnects.
-        * Any other `Accept` → JSON history envelope
-          `{"run_id": "...", "events": [RunEvent, ...]}`.
+      description: "Dual-protocol endpoint:\n* `Accept: text/event-stream` → a live SSE stream. After the headers,\n  buffered\
+        \ history events are replayed first, then live events follow.\n  Each frame is `data: <RunEvent JSON>\\n\\n` (no `event:`\
+        \ field is\n  sent; clients should key off the `name` field inside the JSON,\n  e.g. `status.changed`). Comment keep-alive\
+        \ pings (`: ping`) may be\n  interleaved. The stream ends when the client disconnects.\n* Any other `Accept` → JSON\
+        \ history envelope\n  `{\"run_id\": \"...\", \"events\": [RunEvent, ...]}`.\n"
       x-required-permission: runs.read
       x-event-names:
       - status.changed
@@ -1607,19 +1657,23 @@ paths:
           - text/event-stream
       responses:
         '200':
-          description: |
-            SSE stream (text/event-stream) or JSON history depending on the
+          description: 'SSE stream (text/event-stream) or JSON history depending on the
+
             Accept header.
+
+            '
           content:
             text/event-stream:
               schema:
                 type: string
-                description: 'SSE byte stream; each frame is "data: <RunEvent JSON>" followed by a blank
-                  line.'
-                example: |
-                  data: {"run_id":"3f6c2b62-...","type":"status","name":"status.changed","payload":{"status":"RUNNING","ts":"2025-01-01T12:00:01Z"},"created_at":"2025-01-01T12:00:01.123456789Z"}
+                description: 'SSE byte stream; each frame is "data: <RunEvent JSON>" followed by a blank line.'
+                example: 'data: {"run_id":"3f6c2b62-...","type":"status","name":"status.changed","payload":{"status":"RUNNING","ts":"2025-01-01T12:00:01Z"},"created_at":"2025-01-01T12:00:01.123456789Z"}
 
-                  data: {"run_id":"3f6c2b62-...","type":"status","name":"status.changed","payload":{"status":"COMPLETED","output":"The result of 2+2 is 4","ts":"2025-01-01T12:00:05Z"},"created_at":"2025-01-01T12:00:05.987654321Z"}
+
+                  data: {"run_id":"3f6c2b62-...","type":"status","name":"status.changed","payload":{"status":"COMPLETED","output":"The
+                  result of 2+2 is 4","ts":"2025-01-01T12:00:05Z"},"created_at":"2025-01-01T12:00:05.987654321Z"}
+
+                  '
             application/json:
               schema:
                 $ref: '#/components/schemas/RunEventsResponse'
@@ -1652,12 +1706,17 @@ paths:
       tags:
       - runs
       summary: Publish an external event to a run's stream
-      description: |
-        Ingestion endpoint used by workers to report execution events. Accepts
+      description: 'Ingestion endpoint used by workers to report execution events. Accepts
+
         `{"type","name","payload"}` and fans the event out to SSE subscribers
+
         plus history. Returns 204 No Content. Note: today this route is
+
         registered under the `runs.read` permission gate; API keys
+
         authenticate with the OWNER role so worker callbacks succeed.
+
+        '
       x-required-permission: runs.read
       x-note: permission gate shared with GET; revisit before exposing publicly
       parameters:
@@ -1696,8 +1755,8 @@ paths:
       tags:
       - run-control
       summary: Pause a run (idempotent)
-      description: Transitions a queued/pending/running/waiting_approval run to `paused`. Workers observe
-        the paused status and stop processing.
+      description: Transitions a queued/pending/running/waiting_approval run to `paused`. Workers observe the paused status
+        and stop processing.
       x-required-permission: runs.control
       parameters:
       - $ref: '#/components/parameters/WfRunID'
@@ -1726,8 +1785,8 @@ paths:
       tags:
       - run-control
       summary: Resume a paused run (idempotent)
-      description: Transitions a paused run back to `pending` so it can be re-enqueued. Runs waiting on
-        an approval must be resumed through the approval decision instead.
+      description: Transitions a paused run back to `pending` so it can be re-enqueued. Runs waiting on an approval must be
+        resumed through the approval decision instead.
       x-required-permission: runs.control
       parameters:
       - $ref: '#/components/parameters/WfRunID'
@@ -1743,9 +1802,11 @@ paths:
         '404':
           $ref: '#/components/responses/WfNotFound'
         '409':
-          description: |
-            Invalid transition (only `paused` runs can be resumed;
+          description: 'Invalid transition (only `paused` runs can be resumed;
+
             already-`pending` runs are an idempotent success).
+
+            '
           content:
             application/json:
               schema:
@@ -1758,12 +1819,17 @@ paths:
       tags:
       - runs
       summary: List the execution steps (trace) of a run
-      description: |
-        Returns the recorded execution timeline for a run: one entry per model
-        call and tool invocation, captured by the worker's runtime step
+      description: 'Returns the recorded execution timeline for a run: one entry per model
+
+        call and tool invocation, captured by the worker''s runtime step
+
         recorder and persisted as `run_steps`. Each step carries its type,
+
         status, input/output metadata, error, token usage and timestamps.
+
         Steps are tenant-scoped: the org is derived from the run row.
+
+        '
       x-required-permission: runs.read
       parameters:
       - $ref: '#/components/parameters/RunID'
@@ -1829,16 +1895,11 @@ paths:
     post:
       operationId: createSchedule
       summary: Create a schedule (kind once | recurring | cron)
-      description: |
-        Requires `schedules.write`. Validation rules:
-          * `kind=once` requires `run_at` (RFC3339).
-          * `kind=recurring` requires `interval_seconds >= 60`.
-          * `kind=cron` requires a valid 5-field `cron_expr`
-            (minute hour day-of-month month day-of-week; supports
-            `*`, numbers, ranges `a-b`, lists `a,b,c`, steps `*/n`)
-            and an IANA `timezone` (e.g. `UTC`, `Europe/Berlin`).
-        `next_run_at` is computed server-side; timezone defaults to `UTC` for
-        once/recurring when omitted.
+      description: "Requires `schedules.write`. Validation rules:\n  * `kind=once` requires `run_at` (RFC3339).\n  * `kind=recurring`\
+        \ requires `interval_seconds >= 60`.\n  * `kind=cron` requires a valid 5-field `cron_expr`\n    (minute hour day-of-month\
+        \ month day-of-week; supports\n    `*`, numbers, ranges `a-b`, lists `a,b,c`, steps `*/n`)\n    and an IANA `timezone`\
+        \ (e.g. `UTC`, `Europe/Berlin`).\n`next_run_at` is computed server-side; timezone defaults to `UTC` for\nonce/recurring\
+        \ when omitted.\n"
       tags:
       - Schedules
       security:
@@ -1930,9 +1991,11 @@ paths:
     delete:
       operationId: deleteSchedule
       summary: Delete a schedule
-      description: |
-        Requires `schedules.write`. Deleting an unknown or foreign id returns
+      description: 'Requires `schedules.write`. Deleting an unknown or foreign id returns
+
         404. The worker stops firing deleted schedules on its next poll.
+
+        '
       tags:
       - Schedules
       security:
@@ -1970,10 +2033,13 @@ paths:
     post:
       operationId: pauseSchedule
       summary: Pause a schedule (active -> paused)
-      description: |
-        Requires `schedules.write`. Paused schedules never fire; `next_run_at`
+      description: 'Requires `schedules.write`. Paused schedules never fire; `next_run_at`
+
         is preserved so resume continues the cadence (an overdue schedule
+
         fires once on the next worker poll).
+
+        '
       tags:
       - Schedules
       security:
@@ -2071,10 +2137,13 @@ paths:
       tags:
       - webhooks
       summary: List the tenant's outbound webhook endpoints
-      description: |
-        Returns all webhook registrations of the authenticated organization,
+      description: 'Returns all webhook registrations of the authenticated organization,
+
         newest first. The signing secret is never included in list responses —
+
         only `secret_set` (always `true` for records that carry a secret hash).
+
+        '
       security:
       - bearerToken: []
       - apiKey: []
@@ -2102,12 +2171,17 @@ paths:
       tags:
       - webhooks
       summary: Register an outbound webhook endpoint
-      description: |
-        Creates a webhook subscribed to the given event types (empty `events`
+      description: 'Creates a webhook subscribed to the given event types (empty `events`
+
         array = subscribe to ALL event types). An HMAC signing secret is
+
         generated and returned in this response body as `secret` — EXACTLY
+
         ONCE; only its SHA-256 hash is persisted. Invalid input (non-http(s)
+
         URL, unknown event type) returns 422.
+
+        '
       security:
       - bearerToken: []
       - apiKey: []
@@ -2147,10 +2221,13 @@ paths:
       tags:
       - webhooks
       summary: Delete a webhook endpoint
-      description: |
-        Removes the webhook (and its delivery records, via FK cascade).
+      description: 'Removes the webhook (and its delivery records, via FK cascade).
+
         Deleting an unknown or foreign-tenant id returns 404 (existence is
+
         not leaked across tenants).
+
+        '
       security:
       - bearerToken: []
       - apiKey: []
@@ -2180,12 +2257,17 @@ paths:
       tags:
       - webhooks
       summary: List recent delivery attempts of one webhook
-      description: |
-        Returns the webhook's delivery records, newest first. Each record
+      description: 'Returns the webhook''s delivery records, newest first. Each record
+
         mirrors the LATEST attempt (attempts / last_status_code / latency_ms /
+
         error are updated in place by the delivery worker after every retry).
+
         `limit` defaults to 50 and is capped at 500; non-integer or
+
         non-positive values return 400.
+
+        '
       security:
       - bearerToken: []
       - apiKey: []
@@ -2269,12 +2351,17 @@ paths:
       tags:
       - workflows
       summary: Create a draft workflow from a DSL
-      description: |
-        Runs DSL validation first: invalid definitions are rejected with 422
+      description: 'Runs DSL validation first: invalid definitions are rejected with 422
+
         and the structured error list (code, message, node_id). The workflow
+
         starts as `draft` with `current_version` 0. The tenant is taken from
+
         the authenticated principal; client-supplied organization ids are
+
         ignored.
+
+        '
       x-required-permission: workflows.write
       requestBody:
         required: true
@@ -2317,11 +2404,15 @@ paths:
         '403':
           $ref: '#/components/responses/WfForbidden'
         '422':
-          description: |
-            DSL validation failed. Body: `{"errors":[{"code","message","node_id"}]}`.
+          description: 'DSL validation failed. Body: `{"errors":[{"code","message","node_id"}]}`.
+
             Error codes: empty_graph, missing_node_id, duplicate_node_id,
+
             unknown_node_type, missing_config, missing_node_ref,
+
             invalid_edge_condition, cycle_detected.
+
+            '
           content:
             application/json:
               schema:
@@ -2358,14 +2449,21 @@ paths:
       tags:
       - workflows
       summary: Execute the workflow (expand its DAG into agent runs)
-      description: |
-        Expands the DAG in topological order: one agent run per agent/tool
+      description: 'Expands the DAG in topological order: one agent run per agent/tool
+
         node (tool nodes without an explicit config.agent_id ride the first
+
         agent node), every run is enqueued on the worker queue. An approval
+
         node creates a pending approval, pauses the run preceding it and flips
+
         the workflow run to `waiting_approval`; approving the approval resumes
+
         the paused run. Structural nodes (condition/parallel/delay/webhook/end)
+
         record completed node runs without agent runs.
+
+        '
       x-required-permission: workflows.execute
       parameters:
       - $ref: '#/components/parameters/WfWorkflowID'
@@ -2416,8 +2514,8 @@ paths:
       tags:
       - workflows
       summary: Publish the current DSL as the next immutable version
-      description: Snapshots the workflow's DSL into a new version (1, 2, …) and marks the workflow published.
-        Invalid DSLs are rejected with 422.
+      description: Snapshots the workflow's DSL into a new version (1, 2, …) and marks the workflow published. Invalid DSLs
+        are rejected with 422.
       x-required-permission: workflows.write
       parameters:
       - $ref: '#/components/parameters/WfWorkflowID'
@@ -2488,44 +2586,57 @@ paths:
     get:
       operationId: getUsageCosts
       summary: Tenant usage-cost report aggregated from run costs
-      description: |
-        Aggregates `runs.cost_cents` for the caller's organization over the
+      description: 'Aggregates `runs.cost_cents` for the caller''s organization over the
+
         half-open [from, to) window. `from`/`to` accept RFC3339 timestamps or
+
         bare `YYYY-MM-DD` UTC dates; when omitted the window defaults to the
+
         30 days ending now (capped at 366 days). `group_by` selects the
+
         aggregation dimension: `day` (UTC day buckets), `agent` (runs grouped
-        by the run's agent_id) or `model` (grouped by the serving model,
+
+        by the run''s agent_id) or `model` (grouped by the serving model,
+
         resolved from the agents catalog at query time).
+
         Costs are USD cents; runs without pricing data count as 0 and are
+
         still included in the `runs` counters.
+
+        '
       security:
-        - bearerToken: []
-        - apiKey: []
+      - bearerToken: []
+      - apiKey: []
       x-required-permission: usage.read
-      tags: [Usage]
+      tags:
+      - Usage
       parameters:
-        - name: from
-          in: query
-          required: false
-          description: Window start (inclusive). RFC3339 or YYYY-MM-DD (UTC). Defaults to `to` minus 30 days.
-          schema:
-            type: string
-            example: "2026-09-01T00:00:00Z"
-        - name: to
-          in: query
-          required: false
-          description: Window end (exclusive). RFC3339 or YYYY-MM-DD (UTC). Defaults to now.
-          schema:
-            type: string
-            example: "2026-10-01T00:00:00Z"
-        - name: group_by
-          in: query
-          required: false
-          description: Aggregation dimension (default `day`).
-          schema:
-            type: string
-            enum: [day, agent, model]
-            default: day
+      - name: from
+        in: query
+        required: false
+        description: Window start (inclusive). RFC3339 or YYYY-MM-DD (UTC). Defaults to `to` minus 30 days.
+        schema:
+          type: string
+          example: '2026-09-01T00:00:00Z'
+      - name: to
+        in: query
+        required: false
+        description: Window end (exclusive). RFC3339 or YYYY-MM-DD (UTC). Defaults to now.
+        schema:
+          type: string
+          example: '2026-10-01T00:00:00Z'
+      - name: group_by
+        in: query
+        required: false
+        description: Aggregation dimension (default `day`).
+        schema:
+          type: string
+          enum:
+          - day
+          - agent
+          - model
+          default: day
       responses:
         '200':
           description: Aggregated cost report for the caller's organization.
@@ -2534,61 +2645,78 @@ paths:
               schema:
                 $ref: '#/components/schemas/UsgUsageCostsResponse'
         '400':
-          description: |
-            Invalid query: unknown `group_by` (machine code
+          description: 'Invalid query: unknown `group_by` (machine code
+
             `INVALID_GROUP_BY`) or an unparsable/inverted/too-wide window
+
             (machine code `INVALID_TIME_RANGE`).
+
+            '
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/UsgErrorEnvelope'
-        '401': { $ref: '#/components/responses/UsgUnauthorized' }
-        '403': { $ref: '#/components/responses/UsgForbidden' }
+        '401':
+          $ref: '#/components/responses/UsgUnauthorized'
+        '403':
+          $ref: '#/components/responses/UsgForbidden'
         '405':
           description: Method not allowed (only GET is served).
           content:
             text/plain:
-              schema: { type: string }
+              schema:
+                type: string
         '503':
           description: Runs service not wired into the API server (machine code `USAGE_UNAVAILABLE`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/UsgErrorEnvelope'
-
   /workflow-runs/{id}/nodes:
     get:
       operationId: listWorkflowRunNodes
-      tags: [workflow-runs]
+      tags:
+      - workflow-runs
       summary: Get the checkpointed node timeline of a workflow run
-      description: |
-        Returns every node execution checkpoint of one workflow run, oldest
+      description: 'Returns every node execution checkpoint of one workflow run, oldest
+
         first: one entry per (node, attempt) pair. Entries are the durable
+
         checkpoints written synchronously by the executor/worker, so the
+
         response reflects the exact state the recovery pass acts on.
 
+
         `status` uses the workflow status vocabulary (pending, running,
+
         waiting_approval, completed, failed, cancelled, timeout — `timeout` is
+
         assigned by the recovery watchdog). `error_code` is a machine code
+
         (NODE_ORPHANED, WORKFLOW_RUN_TIMEOUT, ...) or `null` while healthy.
 
+
         A run owned by another tenant surfaces as 404, never 403.
+
+        '
       x-required-permission: workflows.read
       parameters:
-        - $ref: '#/components/parameters/Wf3WorkflowRunID'
+      - $ref: '#/components/parameters/Wf3WorkflowRunID'
       responses:
         '200':
-          description: The checkpointed node timeline (may be empty while the
-            DAG expansion has not recorded any node yet).
+          description: The checkpointed node timeline (may be empty while the DAG expansion has not recorded any node yet).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Wf3NodeTimelineResponse'
-        '401': { $ref: '#/components/responses/Wf3Unauthorized' }
-        '403': { $ref: '#/components/responses/Wf3Forbidden' }
-        '404': { $ref: '#/components/responses/Wf3NotFound' }
-        '500': { $ref: '#/components/responses/Wf3ServerError' }
-
+        '401':
+          $ref: '#/components/responses/Wf3Unauthorized'
+        '403':
+          $ref: '#/components/responses/Wf3Forbidden'
+        '404':
+          $ref: '#/components/responses/Wf3NotFound'
+        '500':
+          $ref: '#/components/responses/Wf3ServerError'
   /knowledge/documents:
     get:
       operationId: listKnowledgeDocuments
@@ -2598,7 +2726,8 @@ paths:
       security:
       - bearerToken: []
       - apiKey: []
-      tags: [Knowledge]
+      tags:
+      - Knowledge
       responses:
         '200':
           description: Documents of the caller's organization, newest first.
@@ -2606,8 +2735,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/KnbDocumentsResponse'
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           description: Unexpected server failure.
           content:
@@ -2617,19 +2748,26 @@ paths:
     post:
       operationId: createKnowledgeDocument
       summary: Ingest a document (chunk ~800 chars / 15% overlap -> embed -> store)
-      description: |
-        Runs the ingestion pipeline: the content is chunked on boundaries
+      description: 'Runs the ingestion pipeline: the content is chunked on boundaries
+
         (~800 chars, ~15% overlap), each chunk is embedded through the
+
         OpenAI-compatible embeddings backend, and document + chunks are
+
         stored atomically. An embeddings-backend failure is NON-FATAL: the
+
         response is still 201 with an additive `warning` field, and the
+
         unembedded chunks stay searchable via lexical scoring.
+
+        '
       x-required-permission: agents.write
       x-contract-permission: knowledge:write
       security:
       - bearerToken: []
       - apiKey: []
-      tags: [Knowledge]
+      tags:
+      - Knowledge
       requestBody:
         required: true
         content:
@@ -2649,8 +2787,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/KnbErrorEnvelope'
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '422':
           description: Validation failed (title/content required).
           content:
@@ -2667,17 +2807,22 @@ paths:
     post:
       operationId: searchKnowledge
       summary: Top-k chunk retrieval over the caller's knowledge base
-      description: |
-        Scores the org-scoped chunk candidates against the query with cosine
+      description: 'Scores the org-scoped chunk candidates against the query with cosine
+
         similarity when embeddings exist on both sides, and lexical token
+
         overlap otherwise (offline hash embeddings / unembedded chunks).
+
         Returns at most `k` results (default 5, capped at 50) with citations.
+
+        '
       x-required-permission: agents.read
       x-contract-permission: knowledge:read
       security:
       - bearerToken: []
       - apiKey: []
-      tags: [Knowledge]
+      tags:
+      - Knowledge
       requestBody:
         required: true
         content:
@@ -2697,8 +2842,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/KnbErrorEnvelope'
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '422':
           description: Validation failed (query required).
           content:
@@ -2715,22 +2862,27 @@ paths:
     get:
       operationId: listMemorySnippets
       summary: List the caller's visible (non-expired) memory snippets
-      description: |
-        agent_id filters to exactly that agent's snippets; omitted lists the
+      description: 'agent_id filters to exactly that agent''s snippets; omitted lists the
+
         whole organization (org-level shared memory + all agents). Expired
+
         short-term snippets never surface. Results are newest first.
+
+        '
       x-required-permission: agents.read
       x-contract-permission: memory:read
       security:
       - bearerToken: []
       - apiKey: []
-      tags: [Memory]
+      tags:
+      - Memory
       parameters:
       - name: agent_id
         in: query
         required: false
         description: Restrict the listing to one agent's snippets.
-        schema: { type: string }
+        schema:
+          type: string
       responses:
         '200':
           description: Visible snippets of the caller's organization.
@@ -2738,8 +2890,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MemSnippetsResponse'
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           description: Unexpected server failure.
           content:
@@ -2749,18 +2903,24 @@ paths:
     put:
       operationId: putMemorySnippets
       summary: Replace the snippet set of one (organization, agent) scope
-      description: |
-        Atomically replaces the memory of the caller's organization for the
+      description: 'Atomically replaces the memory of the caller''s organization for the
+
         given agent_id (empty = org-level shared memory). expires_at is
+
         RFC3339 and drives short-term expiry; the optional embedding field
+
         accepts client-computed vectors, otherwise content is embedded with
+
         the service embedder. Embeddings are never echoed back.
+
+        '
       x-required-permission: agents.write
       x-contract-permission: memory:write
       security:
       - bearerToken: []
       - apiKey: []
-      tags: [Memory]
+      tags:
+      - Memory
       requestBody:
         required: true
         content:
@@ -2780,10 +2940,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MemErrorEnvelope'
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '422':
-          description: 'Validation failed (blank content, unknown scope, malformed expires_at).'
+          description: Validation failed (blank content, unknown scope, malformed expires_at).
           content:
             application/json:
               schema:
@@ -2794,23 +2956,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MemErrorEnvelope'
-# NOTE: '#/components/responses/Unauthorized' and 'Forbidden' resolve against
-# the EXISTING definitions in api/openapi.yaml (auth middleware responses);
-# this fragment intentionally does not redefine them.
-
   /agents/{id}/versions/diff:
     get:
       operationId: diffAgentVersions
       summary: Structured field-level diff between two config versions of one agent
-      description: |
-        Compares the immutable snapshot documents of version `from` and version
+      description: 'Compares the immutable snapshot documents of version `from` and version
+
         `to` of the same agent. The response always contains one entry per
+
         comparable field (model, system_prompt, temperature, params, tools,
+
         description — null when a snapshot does not capture the field) plus any
+
         additional snapshot keys, sorted, so future snapshot fields diff too.
+
         `changed` is true when the from/to values differ. Both versions are
-        resolved strictly within the caller's organization; unknown versions,
+
+        resolved strictly within the caller''s organization; unknown versions,
+
         cross-agent version numbers and foreign-tenant agents surface as 404.
+
+        '
       x-required-permission: agents.read
       security:
       - bearerToken: []
@@ -2837,9 +3003,11 @@ paths:
         '403':
           $ref: '#/components/responses/VdfForbidden'
         '404':
-          description: |
-            Agent or version not found within the caller's organization
+          description: 'Agent or version not found within the caller''s organization
+
             (error.code AGENT_NOT_FOUND or VERSION_NOT_FOUND).
+
+            '
           content:
             application/json:
               schema:
@@ -2850,7 +3018,200 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VdfErrorEnvelope'
+  /deployments/{id}/canary:
+    post:
+      operationId: setDeploymentCanary
+      summary: Attach or replace the canary version and/or move the traffic split
+      description: 'Traffic-changing operation (deployments.deploy, OWNER/ADMIN). Body
 
+        fields are optional but at least one must be provided; omitted fields
+
+        keep their current value. `canary_version` attaches/replaces the
+
+        canary: it must be an EXISTING version of the SAME agent (any
+
+        publication status — only one version can be published at a time and a
+
+        canary runs next to the stable version) and differ from the stable
+
+        version. `canary_weight` moves the 0-100 split point and requires an
+
+        attached canary; out-of-range values are rejected, not clamped. Only
+
+        the environment''s HEALTHY deployment accepts canary operations;
+
+        `canary_version` on non-healthy rows is staged config that never
+
+        serves traffic.
+
+        '
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/CanaryDeploymentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CanaryConfigRequest'
+      responses:
+        '200':
+          description: Updated deployment (canary fields included).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryDeploymentResponse'
+        '400':
+          description: Malformed JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/CanaryUnauthorized'
+        '403':
+          $ref: '#/components/responses/CanaryForbidden'
+        '404':
+          description: Deployment not found within the caller's organization (error.code DEPLOYMENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '409':
+          description: 'State conflict: the deployment has no canary configured yet
+
+            (canary_weight-only body) or is not the environment''s healthy
+
+            deployment (error.code INVALID_STATE).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '422':
+          description: 'Validation error: empty body, canary_weight outside 0-100, canary
+
+            version unknown/cross-agent/equal to the stable version
+
+            (error.code VALIDATION_ERROR).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+  /deployments/{id}/canary/promote:
+    post:
+      operationId: promoteCanaryDeployment
+      summary: Make the canary the stable version (weight -> 0, config cleared)
+      description: 'Traffic-changing operation (deployments.deploy, OWNER/ADMIN). The
+
+        canary becomes the stable version: the deployment''s `version` swaps to
+
+        the canary version and the canary config is cleared (canary_version 0,
+
+        canary_weight 0). The row STAYS healthy — no lifecycle transition, no
+
+        new ledger row — so the one-healthy-per-agent+environment invariant
+
+        holds and history remains append-only. Rejected when the deployment
+
+        has no canary or is not healthy (INVALID_STATE).
+
+        '
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/CanaryDeploymentID'
+      responses:
+        '200':
+          description: The promotion result (stable version swapped, canary cleared).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryDeploymentResponse'
+        '401':
+          $ref: '#/components/responses/CanaryUnauthorized'
+        '403':
+          $ref: '#/components/responses/CanaryForbidden'
+        '404':
+          description: Deployment not found within the caller's organization (error.code DEPLOYMENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '409':
+          description: No canary configured or deployment not healthy (error.code INVALID_STATE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+  /deployments/{id}/canary/abort:
+    post:
+      operationId: abortCanaryDeployment
+      summary: Clear the canary and keep the stable version serving 100%
+      description: 'Traffic-changing operation (deployments.deploy, OWNER/ADMIN). Clears
+
+        the canary config (canary_version 0, canary_weight 0); the stable
+
+        version keeps serving all traffic. Rejected when the deployment has no
+
+        canary or is not healthy (INVALID_STATE).
+
+        '
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/CanaryDeploymentID'
+      responses:
+        '200':
+          description: The aborted deployment (stable version unchanged, canary cleared).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryDeploymentResponse'
+        '401':
+          $ref: '#/components/responses/CanaryUnauthorized'
+        '403':
+          $ref: '#/components/responses/CanaryForbidden'
+        '404':
+          description: Deployment not found within the caller's organization (error.code DEPLOYMENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '409':
+          description: No canary configured or deployment not healthy (error.code INVALID_STATE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
 components:
   parameters:
     AgentID:
@@ -2902,7 +3263,6 @@ components:
         type: integer
         minimum: 1
       example: 3
-
     WfApprovalID:
       name: id
       in: path
@@ -2910,7 +3270,6 @@ components:
       description: Approval identifier (UUID v4 string).
       schema:
         type: string
-
     DeploymentID:
       name: id
       in: path
@@ -2919,7 +3278,6 @@ components:
       schema:
         type: string
       example: 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
-
     PolicyID:
       name: id
       in: path
@@ -2927,7 +3285,6 @@ components:
       description: Policy id (UUID string)
       schema:
         type: string
-
     WfRunID:
       name: id
       in: path
@@ -2935,7 +3292,6 @@ components:
       description: Agent run identifier (UUID v4 string).
       schema:
         type: string
-
     WfWorkflowRunID:
       name: id
       in: path
@@ -2943,7 +3299,6 @@ components:
       description: Workflow run identifier (UUID v4 string).
       schema:
         type: string
-
     WfWorkflowID:
       name: id
       in: path
@@ -2951,31 +3306,31 @@ components:
       description: Workflow identifier (UUID v4 string).
       schema:
         type: string
-
+    CanaryDeploymentID:
+      name: id
+      in: path
+      required: true
+      description: Deployment identifier (UUID v4 string).
+      schema:
+        type: string
+      example: 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
   securitySchemes:
     bearerToken:
       type: http
       scheme: bearer
       bearerFormat: HS256-HMAC
-      description: |
-        HMAC-SHA256 JWT-style token from `POST /auth/login` (24h expiry).
+      description: 'HMAC-SHA256 JWT-style token from `POST /auth/login` (24h expiry).
+
         Claims: user_id, organization_id, email, role, exp.
+
+        '
     apiKey:
       type: apiKey
       in: header
       name: X-API-Key
-      description: |
-        Pre-provisioned API key (`ak_...`). Authenticates as the key's
-        organization with the OWNER role. Browser EventSource clients may
-        alternatively pass `?api_key=<key>` (legacy query-param auth).
-      type: http
+      description: Pre-provisioned API key (see main spec).
       scheme: bearer
       bearerFormat: HS256-HMAC
-      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
-      type: apiKey
-      in: header
-      name: X-API-Key
-      description: Pre-provisioned API key (see main spec).
     Wf3BearerToken:
       type: http
       scheme: bearer
@@ -2986,7 +3341,6 @@ components:
       in: header
       name: X-API-Key
       description: Pre-provisioned API key (see main spec).
-
   responses:
     Unauthorized:
       description: Missing/invalid credentials (plain text body today; JSON model is the target).
@@ -3019,7 +3373,8 @@ components:
       description: Missing or invalid credentials.
       content:
         text/plain:
-          schema: { type: string }
+          schema:
+            type: string
         application/json:
           schema:
             $ref: '#/components/schemas/UsgErrorEnvelope'
@@ -3027,7 +3382,8 @@ components:
       description: Authenticated but lacking the `usage.read` permission.
       content:
         text/plain:
-          schema: { type: string }
+          schema:
+            type: string
         application/json:
           schema:
             $ref: '#/components/schemas/UsgErrorEnvelope'
@@ -3035,7 +3391,8 @@ components:
       description: Missing/invalid credentials.
       content:
         text/plain:
-          schema: { type: string }
+          schema:
+            type: string
         application/json:
           schema:
             $ref: '#/components/schemas/Wf3ErrorEnvelope'
@@ -3043,13 +3400,13 @@ components:
       description: Authenticated but lacking the required permission.
       content:
         text/plain:
-          schema: { type: string }
+          schema:
+            type: string
         application/json:
           schema:
             $ref: '#/components/schemas/Wf3ErrorEnvelope'
     Wf3NotFound:
-      description: Workflow run not found (or owned by another tenant —
-        cross-tenant access surfaces as 404, never 403).
+      description: Workflow run not found (or owned by another tenant — cross-tenant access surfaces as 404, never 403).
       content:
         application/json:
           schema:
@@ -3072,61 +3429,66 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/VdfErrorEnvelope'
-
     WfUnauthorized:
       description: Missing/invalid credentials.
       content:
         text/plain:
-          schema: { type: string }
+          schema:
+            type: string
         application/json:
           schema:
             $ref: '#/components/schemas/WfErrorEnvelope'
-
     WfForbidden:
       description: Authenticated but lacking the required permission.
       content:
         text/plain:
-          schema: { type: string }
+          schema:
+            type: string
         application/json:
           schema:
             $ref: '#/components/schemas/WfErrorEnvelope'
-
     WfNotFound:
-      description: Resource not found (or owned by another tenant — cross-tenant
-        access surfaces as 404, never 403).
+      description: Resource not found (or owned by another tenant — cross-tenant access surfaces as 404, never 403).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/WfErrorEnvelope'
-
     WfBadRequest:
       description: Malformed JSON body.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/WfErrorEnvelope'
-
     WfServerError:
       description: Unexpected server error.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/WfErrorEnvelope'
-
     Internal:
       description: Unexpected server error
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
-
     Error:
       description: Unexpected server error.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/WfErrorEnvelope'
-
+    CanaryUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CanaryErrorEnvelope'
+    CanaryForbidden:
+      description: Authenticated but lacking the deployments.deploy permission (OWNER/ADMIN only).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CanaryErrorEnvelope'
   schemas:
     LegacyTextError:
       type: string
@@ -3141,8 +3503,7 @@ components:
           properties:
             code:
               type: string
-              description: Machine-readable stable error code (e.g. unauthorized, forbidden, not_found,
-                bad_request, internal_error).
+              description: Machine-readable stable error code (e.g. unauthorized, forbidden, not_found, bad_request, internal_error).
               examples:
               - not_found
             message:
@@ -3178,10 +3539,13 @@ components:
       - Name
     User:
       type: object
-      description: |
-        User record (auth.User; no json tags — PascalCase keys). NOTE: the
+      description: 'User record (auth.User; no json tags — PascalCase keys). NOTE: the
+
         register response currently includes PasswordHash (bcrypt digest);
+
         treat as opaque and do not log it.
+
+        '
       properties:
         ID:
           type: string
@@ -3280,9 +3644,11 @@ components:
       - token
     Agent:
       type: object
-      description: |
-        Agent record (agents.Agent; no json tags — PascalCase keys as
+      description: 'Agent record (agents.Agent; no json tags — PascalCase keys as
+
         serialized by encoding/json today).
+
+        '
       properties:
         ID:
           type: string
@@ -3336,10 +3702,13 @@ components:
       - UpdatedAt
     AgentVersion:
       type: object
-      description: |
-        Immutable agent configuration version (agents.AgentVersion). Not yet
+      description: 'Immutable agent configuration version (agents.AgentVersion). Not yet
+
         exposed via a dedicated HTTP route; part of the domain contract for
+
         upcoming version endpoints.
+
+        '
       properties:
         ID:
           type: string
@@ -3398,9 +3767,11 @@ components:
       - model
     Run:
       type: object
-      description: |
-        Agent execution record (runs.Run; no json tags — PascalCase keys).
+      description: 'Agent execution record (runs.Run; no json tags — PascalCase keys).
+
         Status transitions: QUEUED → RUNNING → COMPLETED | FAILED.
+
+        '
       properties:
         ID:
           type: string
@@ -3497,9 +3868,11 @@ components:
       - runs
     RunEvent:
       type: object
-      description: |
-        Execution event as delivered over SSE (`data:` frame payload) and in
+      description: 'Execution event as delivered over SSE (`data:` frame payload) and in
+
         the JSON history envelope (snake_case keys — built in the handler).
+
+        '
       properties:
         run_id:
           type: string
@@ -3515,10 +3888,13 @@ components:
           - status.changed
         payload:
           type: object
-          description: |
-            Event-specific data. For `status.changed`:
+          description: 'Event-specific data. For `status.changed`:
+
             `{status: QUEUED|RUNNING|COMPLETED|FAILED, output?, ts?}` where
+
             `output` appears on COMPLETED and `ts` is an RFC3339 worker timestamp.
+
+            '
         created_at:
           type: string
           format: date-time
@@ -3562,9 +3938,11 @@ components:
       - payload
     Task:
       type: object
-      description: |
-        Queue task delivered to workers (queue.Task; no json tags — PascalCase
+      description: 'Queue task delivered to workers (queue.Task; no json tags — PascalCase
+
         keys). Status values: queued, running, completed, dead_letter.
+
+        '
       properties:
         ID:
           type: string
@@ -3577,9 +3955,11 @@ components:
         Payload:
           type: object
           additionalProperties: true
-          description: |
-            For `agent.run`: {organization_id, agent_id, input, run_id};
+          description: 'For `agent.run`: {organization_id, agent_id, input, run_id};
+
             the worker augments it with result and status on completion.
+
+            '
         Status:
           type: string
           enum:
@@ -3612,10 +3992,13 @@ components:
       - LastError
     MetricsResponse:
       type: object
-      description: |
-        Metrics snapshot (metricsHandler). `counts` maps metric keys to
+      description: 'Metrics snapshot (metricsHandler). `counts` maps metric keys to
+
         counters; `latency` maps metric keys to the latest observed duration
+
         in seconds; `queue_length` is the current in-memory queue depth.
+
+        '
       properties:
         counts:
           type: object
@@ -3638,10 +4021,13 @@ components:
       - queue_length
     RunStep:
       type: object
-      description: |
-        One recorded execution step of a run's timeline (runs.Step; no json
+      description: 'One recorded execution step of a run''s timeline (runs.Step; no json
+
         tags — PascalCase keys). StepType is `model` or `tool`; Status is
+
         `succeeded`, `failed` or `PENDING`.
+
+        '
       properties:
         ID:
           type: string
@@ -3902,9 +4288,11 @@ components:
             $ref: '#/components/schemas/EvalCaseComparison'
     PolicyConditions:
       type: object
-      description: |
-        Applicability predicates for a policy. An absent condition does not
+      description: 'Applicability predicates for a policy. An absent condition does not
+
         restrict the policy. See POST /policies/evaluate for the semantics.
+
+        '
       properties:
         tool_allowlist:
           type: array
@@ -3916,9 +4304,11 @@ components:
           - type: integer
             minimum: 0
           - type: 'null'
-          description: |
-            When set, the policy applies to requests whose estimated cost
+          description: 'When set, the policy applies to requests whose estimated cost
+
             exceeds this cap (budget-guard condition).
+
+            '
         environments:
           type: array
           description: Restricts the policy to the listed environments.
@@ -3930,9 +4320,11 @@ components:
             - production
         require_approval:
           type: boolean
-          description: |
-            Not a match predicate; when the winning policy carries it the
+          description: 'Not a match predicate; when the winning policy carries it the
+
             decision reason notes that approval is required.
+
+            '
     Policy:
       type: object
       required:
@@ -3966,9 +4358,11 @@ components:
           - '*'
         actions:
           type: array
-          description: |
-            Actions this policy governs, e.g. ["runs.execute","tools.call"].
+          description: 'Actions this policy governs, e.g. ["runs.execute","tools.call"].
+
             An empty list matches every action.
+
+            '
           items:
             type: string
         conditions:
@@ -4088,9 +4482,11 @@ components:
           type: array
           items:
             type: string
-          description: |
-            Subscribed event types (e.g. "run.failed"). An empty array means
+          description: 'Subscribed event types (e.g. "run.failed"). An empty array means
+
             ALL event types.
+
+            '
         status:
           type: string
           enum:
@@ -4136,9 +4532,11 @@ components:
           $ref: '#/components/schemas/Webhook'
         secret:
           type: string
-          description: |
-            The HMAC signing secret — returned EXACTLY ONCE in this response.
+          description: 'The HMAC signing secret — returned EXACTLY ONCE in this response.
+
             Store it safely; only its SHA-256 hash is persisted server-side.
+
+            '
     WebhookDelivery:
       type: object
       required:
@@ -4229,9 +4627,9 @@ components:
           properties:
             code:
               type: string
-              description: Machine-readable code (VALIDATION_ERROR, WORKFLOW_NOT_FOUND, WORKFLOW_RUN_NOT_FOUND,
-                APPROVAL_NOT_FOUND, RUN_NOT_FOUND, INVALID_DECISION, ALREADY_DECIDED, INVALID_STATE, ENGINE_NOT_WIRED,
-                INVALID_REQUEST, INTERNAL_ERROR, UNAUTHORIZED).
+              description: Machine-readable code (VALIDATION_ERROR, WORKFLOW_NOT_FOUND, WORKFLOW_RUN_NOT_FOUND, APPROVAL_NOT_FOUND,
+                RUN_NOT_FOUND, INVALID_DECISION, ALREADY_DECIDED, INVALID_STATE, ENGINE_NOT_WIRED, INVALID_REQUEST, INTERNAL_ERROR,
+                UNAUTHORIZED).
             message:
               type: string
           required:
@@ -4276,11 +4674,15 @@ components:
           description: Human-readable display name.
         config:
           type: object
-          description: |
-            Per-type config. Required keys: agent → agent_id; tool → tool_id;
+          description: 'Per-type config. Required keys: agent → agent_id; tool → tool_id;
+
             condition → expression; delay → seconds (> 0); webhook → url.
+
             Optional: input ({{input}} placeholder is replaced with the
+
             workflow input), approval → action/reason/risk.
+
+            '
           additionalProperties: true
       required:
       - id
@@ -4630,10 +5032,13 @@ components:
       - decision
     RunControlResponse:
       type: object
-      description: |
-        The updated runs.Run (legacy PascalCase serialization, no json tags):
+      description: 'The updated runs.Run (legacy PascalCase serialization, no json tags):
+
         ID, OrganizationID, AgentID, Input, Output, Status, CreatedAt,
+
         UpdatedAt. Status uses the new lowercase vocabulary.
+
+        '
       properties:
         ID:
           type: string
@@ -4979,9 +5384,8 @@ components:
           properties:
             code:
               type: string
-              description: One of AGENT_NOT_FOUND, VERSION_NOT_FOUND, VERSION_ARCHIVED, DEPLOYMENT_NOT_FOUND,
-                INVALID_STATE, NO_PREVIOUS_HEALTHY, VERSION_NOT_PUBLISHED, VALIDATION_ERROR, INVALID_REQUEST,
-                INTERNAL_ERROR.
+              description: One of AGENT_NOT_FOUND, VERSION_NOT_FOUND, VERSION_ARCHIVED, DEPLOYMENT_NOT_FOUND, INVALID_STATE,
+                NO_PREVIOUS_HEALTHY, VERSION_NOT_PUBLISHED, VALIDATION_ERROR, INVALID_REQUEST, INTERNAL_ERROR.
               examples:
               - VERSION_NOT_PUBLISHED
             message:
@@ -5039,16 +5443,21 @@ components:
               type: string
     UsgCostBucket:
       type: object
-      description: |
-        One aggregated row of the report. Exactly one of `bucket` /
+      description: 'One aggregated row of the report. Exactly one of `bucket` /
+
         `agent_id` / `model` is populated depending on `group_by`; the other
+
         identity fields are omitted.
-      required: [cost_cents, runs]
+
+        '
+      required:
+      - cost_cents
+      - runs
       properties:
         bucket:
           type: string
           description: UTC day (YYYY-MM-DD); present only for group_by=day.
-          example: "2026-09-03"
+          example: '2026-09-03'
         agent_id:
           type: string
           description: Present only for group_by=agent.
@@ -5066,7 +5475,9 @@ components:
           example: 4
     UsgUsageCostsResponse:
       type: object
-      required: [total_cost_cents, series]
+      required:
+      - total_cost_cents
+      - series
       properties:
         total_cost_cents:
           type: number
@@ -5087,24 +5498,38 @@ components:
             code:
               type: string
               description: Machine-readable code (WORKFLOW_RUN_NOT_FOUND, WORKFLOWS_UNAVAILABLE, INTERNAL_ERROR, UNAUTHORIZED).
-              examples: [WORKFLOW_RUN_NOT_FOUND]
+              examples:
+              - WORKFLOW_RUN_NOT_FOUND
             message:
               type: string
-          required: [code, message]
-      required: [error]
+          required:
+          - code
+          - message
+      required:
+      - error
     Wf3NodeTimelineStatus:
       type: string
-      description: |
-        Node-run status. pending/running/waiting_approval are non-terminal
+      description: 'Node-run status. pending/running/waiting_approval are non-terminal
+
         (waiting_approval is a human gate); completed/failed/cancelled/timeout
+
         are terminal. A failed attempt with error_code NODE_ORPHANED is a
+
         recovery artifact that is re-executed on a fresh attempt.
-      enum: [pending, running, waiting_approval, completed, failed, cancelled, timeout]
+
+        '
+      enum:
+      - pending
+      - running
+      - waiting_approval
+      - completed
+      - failed
+      - cancelled
+      - timeout
     Wf3WorkflowRunNode:
       type: object
-      description: One checkpointed node execution attempt (workflow_run_id +
-        node_id + attempt is the idempotency key; a replayed task never
-        re-executes an already-terminal attempt).
+      description: One checkpointed node execution attempt (workflow_run_id + node_id + attempt is the idempotency key; a
+        replayed task never re-executes an already-terminal attempt).
       properties:
         id:
           type: string
@@ -5116,22 +5541,33 @@ components:
           $ref: '#/components/schemas/Wf3NodeTimelineStatus'
         attempt:
           type: integer
-          description: 1-based execution attempt (0 for legacy pre-migration
-            placeholder rows that were never claimed).
+          description: 1-based execution attempt (0 for legacy pre-migration placeholder rows that were never claimed).
           minimum: 0
         started_at:
-          type: [string, 'null']
+          type:
+          - string
+          - 'null'
           format: date-time
           description: First claim instant of the attempt (null before the first claim).
         finished_at:
-          type: [string, 'null']
+          type:
+          - string
+          - 'null'
           format: date-time
           description: Terminal transition instant (null while non-terminal).
         error_code:
-          type: [string, 'null']
-          description: Machine-readable failure code (NODE_ORPHANED,
-            WORKFLOW_RUN_TIMEOUT, ...) or null while healthy.
-      required: [id, node_id, status, attempt, started_at, finished_at, error_code]
+          type:
+          - string
+          - 'null'
+          description: Machine-readable failure code (NODE_ORPHANED, WORKFLOW_RUN_TIMEOUT, ...) or null while healthy.
+      required:
+      - id
+      - node_id
+      - status
+      - attempt
+      - started_at
+      - finished_at
+      - error_code
     Wf3NodeTimelineResponse:
       type: object
       properties:
@@ -5140,29 +5576,41 @@ components:
           description: Checkpointed node attempts, oldest first.
           items:
             $ref: '#/components/schemas/Wf3WorkflowRunNode'
-      required: [nodes]
+      required:
+      - nodes
     KnbErrorEnvelope:
       type: object
       description: Structured error envelope {"error":{"code","message"}}.
-      required: [error]
+      required:
+      - error
       properties:
         error:
           type: object
-          required: [code, message]
+          required:
+          - code
+          - message
           properties:
             code:
               type: string
               description: One of DOCUMENT_NOT_FOUND, VALIDATION_ERROR, INVALID_REQUEST, INTERNAL_ERROR.
               examples:
               - VALIDATION_ERROR
-            message: { type: string }
+            message:
+              type: string
     KnbDocument:
       type: object
       description: One ingested knowledge document (tenant-scoped).
-      required: [id, title, chunk_count, created_at, updated_at]
+      required:
+      - id
+      - title
+      - chunk_count
+      - created_at
+      - updated_at
       properties:
-        id: { type: string }
-        title: { type: string }
+        id:
+          type: string
+        title:
+          type: string
         source:
           type: string
           description: Where the content came from (URL, wiki page, upload name).
@@ -5173,11 +5621,16 @@ components:
         chunk_count:
           type: integer
           description: Number of chunks produced by the ingest pipeline.
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     KnbDocumentsResponse:
       type: object
-      required: [documents]
+      required:
+      - documents
       properties:
         documents:
           type: array
@@ -5185,31 +5638,41 @@ components:
             $ref: '#/components/schemas/KnbDocument'
     KnbCreateDocumentRequest:
       type: object
-      required: [title, content]
+      required:
+      - title
+      - content
       properties:
-        title: { type: string, minLength: 1 }
+        title:
+          type: string
+          minLength: 1
         content:
           type: string
           minLength: 1
           description: Full document text; chunked (~800 chars, 15% overlap) server-side.
-        source: { type: string }
+        source:
+          type: string
         metadata:
           type: object
           additionalProperties: true
     KnbCreateDocumentResponse:
       type: object
-      required: [document]
+      required:
+      - document
       properties:
         document:
           $ref: '#/components/schemas/KnbDocument'
         warning:
           type: string
-          description: Present when the embeddings backend failed; chunks were stored unembedded (search falls back to lexical scoring).
+          description: Present when the embeddings backend failed; chunks were stored unembedded (search falls back to lexical
+            scoring).
     KnbSearchRequest:
       type: object
-      required: [query]
+      required:
+      - query
       properties:
-        query: { type: string, minLength: 1 }
+        query:
+          type: string
+          minLength: 1
         k:
           type: integer
           minimum: 1
@@ -5219,15 +5682,24 @@ components:
     KnbSearchResult:
       type: object
       description: One retrieval hit — the contract-pinned fields plus additive title/chunk id.
-      required: [document_id, chunk_ordinal, content, score, citation]
+      required:
+      - document_id
+      - chunk_ordinal
+      - content
+      - score
+      - citation
       properties:
-        document_id: { type: string }
-        document_title: { type: string }
-        chunk_id: { type: string }
+        document_id:
+          type: string
+        document_title:
+          type: string
+        chunk_id:
+          type: string
         chunk_ordinal:
           type: integer
           description: Zero-based position of the chunk inside its document.
-        content: { type: string }
+        content:
+          type: string
         score:
           type: number
           format: double
@@ -5239,7 +5711,8 @@ components:
           description: Human-readable citation, e.g. "Billing FAQ (confluence/billing), chunk 3".
     KnbSearchResponse:
       type: object
-      required: [results]
+      required:
+      - results
       properties:
         results:
           type: array
@@ -5248,25 +5721,32 @@ components:
     MemErrorEnvelope:
       type: object
       description: Structured error envelope {"error":{"code","message"}}.
-      required: [error]
+      required:
+      - error
       properties:
         error:
           type: object
-          required: [code, message]
+          required:
+          - code
+          - message
           properties:
             code:
               type: string
               description: One of VALIDATION_ERROR, INVALID_REQUEST, INTERNAL_ERROR.
               examples:
               - VALIDATION_ERROR
-            message: { type: string }
+            message:
+              type: string
     MemSnippetInput:
       type: object
-      required: [content]
+      required:
+      - content
       properties:
         scope:
           type: string
-          enum: [short_term, long_term]
+          enum:
+          - short_term
+          - long_term
           default: long_term
         content:
           type: string
@@ -5283,31 +5763,51 @@ components:
           description: RFC3339; past timestamps make short-term snippets invisible immediately.
         embedding:
           type: array
-          items: { type: number, format: double }
+          items:
+            type: number
+            format: double
           description: Optional client-computed vector; otherwise embedded server-side.
     MemSnippet:
       type: object
       description: One stored memory snippet (embedding stays server-side).
-      required: [id, agent_id, scope, content, importance, created_at, updated_at]
+      required:
+      - id
+      - agent_id
+      - scope
+      - content
+      - importance
+      - created_at
+      - updated_at
       properties:
-        id: { type: string }
+        id:
+          type: string
         agent_id:
           type: string
           description: Empty for org-level shared memory.
         scope:
           type: string
-          enum: [short_term, long_term]
-        content: { type: string }
-        importance: { type: number, format: double }
+          enum:
+          - short_term
+          - long_term
+        content:
+          type: string
+        importance:
+          type: number
+          format: double
         expires_at:
           type: string
           format: date-time
           nullable: true
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     MemSnippetsResponse:
       type: object
-      required: [snippets]
+      required:
+      - snippets
       properties:
         snippets:
           type: array
@@ -5316,7 +5816,8 @@ components:
     MemPutMemoryRequest:
       type: object
       description: Replaces the snippet set of the (organization, agent_id) scope.
-      required: [snippets]
+      required:
+      - snippets
       properties:
         agent_id:
           type: string
@@ -5326,17 +5827,26 @@ components:
           items:
             $ref: '#/components/schemas/MemSnippetInput'
     VdfDiffValue:
-      description: |
-        Raw JSON value of a snapshot field (string, number, boolean, array or
-        object). Null when the field is absent from that side's snapshot.
-      type: [string, number, boolean, array, object, 'null']
+      description: 'Raw JSON value of a snapshot field (string, number, boolean, array or
+
+        object). Null when the field is absent from that side''s snapshot.
+
+        '
+      type:
+      - string
+      - number
+      - boolean
+      - array
+      - object
+      - 'null'
     VdfVersionDiffField:
       type: object
       description: One comparable field's from/to pair.
       properties:
         field:
           type: string
-          description: Canonical field name (model, system_prompt, temperature, params, tools, description) or an extra snapshot key.
+          description: Canonical field name (model, system_prompt, temperature, params, tools, description) or an extra snapshot
+            key.
           examples:
           - model
         from:
@@ -5399,4 +5909,154 @@ components:
           - message
       required:
       - error
+    CanaryConfigRequest:
+      type: object
+      description: 'Canary configuration patch. At least one property is required; omitted
 
+        properties keep their current value.
+
+        '
+      properties:
+        canary_version:
+          type: integer
+          minimum: 1
+          description: 'Canary target version. Must be an existing version of the SAME
+
+            agent (any publication status) and differ from the deployment''s
+
+            stable version.
+
+            '
+          examples:
+          - 3
+        canary_weight:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percentage of traffic routed to the canary (0-100). Requires an attached canary.
+          examples:
+          - 50
+      minProperties: 1
+    CanaryDeploymentHealth:
+      type: object
+      description: Health payload (mirrors the base DeploymentHealth schema; superseded_by/error appear only on demoted/failed
+        rows).
+      properties:
+        error_rate:
+          type: number
+          format: double
+          examples:
+          - 0.0
+        last_check_at:
+          type: string
+          format: date-time
+          nullable: true
+          examples:
+          - '2025-01-02T03:04:05Z'
+        superseded_by:
+          type: string
+          description: ID of the deployment that replaced this (previously healthy) row.
+        error:
+          type: string
+          description: Failure reason when status is failed.
+    CanaryDeploymentView:
+      type: object
+      description: 'Deployment wire shape extended with the canary fields (issue #13).
+
+        canary_version 0 means "no canary" — all traffic serves the stable
+
+        `version`. While the row is the environment''s healthy deployment,
+
+        canary_weight percent of the agent''s traffic deterministically
+
+        resolves to canary_version.
+
+        '
+      properties:
+        id:
+          type: string
+          examples:
+          - 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+        agent_id:
+          type: string
+          examples:
+          - agent-1
+        version:
+          type: integer
+          description: The STABLE version (serves 100 - canary_weight percent of traffic).
+          examples:
+          - 2
+        environment:
+          type: string
+          enum:
+          - development
+          - staging
+          - production
+        status:
+          type: string
+          enum:
+          - requested
+          - validated
+          - deploying
+          - healthy
+          - failed
+        health:
+          $ref: '#/components/schemas/CanaryDeploymentHealth'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        canary_version:
+          type: integer
+          description: The CANARY version; 0 = no canary configured.
+          examples:
+          - 3
+        canary_weight:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percentage of traffic deterministically routed to the canary (0 when no canary).
+          examples:
+          - 50
+      required:
+      - id
+      - agent_id
+      - version
+      - environment
+      - status
+      - health
+      - created_at
+      - updated_at
+      - canary_version
+      - canary_weight
+    CanaryDeploymentResponse:
+      type: object
+      properties:
+        deployment:
+          $ref: '#/components/schemas/CanaryDeploymentView'
+      required:
+      - deployment
+    CanaryErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of DEPLOYMENT_NOT_FOUND, INVALID_STATE, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN,
+                INTERNAL_ERROR.
+              examples:
+              - INVALID_STATE
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+  requestBodies: {}
+  headers: {}
