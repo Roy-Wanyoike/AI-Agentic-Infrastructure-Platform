@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"agentos/internal/agents"
+	"agentos/internal/models"
 	"agentos/internal/runtime"
 )
 
@@ -130,6 +131,29 @@ type AgentRunner interface {
 	Run(ctx context.Context, agentID, input string) (*runtime.Run, error)
 }
 
+// UsageSource is the optional pricing collaborator attached via
+// AttachUsageSource: it resolves which model serves an agent's completions so
+// the pricing hook (models.ComputeCostCents) can price the token usage the
+// runner reports on runtime.Run.Tokens. Wire it when the process has a model
+// provider configured; without a source, an unresolvable model, or unreported
+// usage the per-case cost stays 0 — pricing is best-effort metering and never
+// fails or skews a case (documented offline-mode behavior).
+type UsageSource interface {
+	// ModelForAgent returns the model id serving agentID's completions
+	// within orgID. ok=false means pricing is unavailable for the case.
+	ModelForAgent(orgID, agentID string) (model string, ok bool)
+}
+
+// UsageSourceFunc adapts a plain function to UsageSource (handy for wiring:
+// the API process resolves the model from the agents service, see
+// docs/wiring/cost.md).
+type UsageSourceFunc func(orgID, agentID string) (model string, ok bool)
+
+// ModelForAgent implements UsageSource.
+func (f UsageSourceFunc) ModelForAgent(orgID, agentID string) (string, bool) {
+	return f(orgID, agentID)
+}
+
 // Deps bundles the collaborators the evaluation service needs. Agents is
 // required for the tenant guard before execution; Runner is required to
 // execute cases; CaseTimeout defaults to DefaultCaseTimeout.
@@ -155,6 +179,9 @@ type Service struct {
 	runs     map[string]*EvalRun
 	store    Store
 	deps     Deps
+	// usageSrc is the optional pricing collaborator (AttachUsageSource);
+	// guarded by mu.
+	usageSrc UsageSource
 }
 
 // NewService returns the in-memory service (zero-infrastructure mode).
@@ -172,6 +199,18 @@ func NewServiceWithStore(store Store, deps Deps) *Service {
 	s := NewService(deps)
 	s.store = store
 	return s
+}
+
+// AttachUsageSource wires the optional pricing collaborator used to compute
+// per-case cost_cents from the runner's token usage (models.ComputeCostCents).
+// Passing nil detaches it. Safe to call before or between runs.
+func (s *Service) AttachUsageSource(src UsageSource) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.usageSrc = src
 }
 
 // CreateDataset validates and persists a new dataset with its cases.
@@ -337,7 +376,7 @@ func (s *Service) RunDataset(ctx context.Context, orgID, datasetID, agentID stri
 
 	results := make([]Result, 0, len(cases))
 	for _, c := range cases {
-		results = append(results, s.runCase(ctx, run.ID, agentID, c, caseTimeout))
+		results = append(results, s.runCase(ctx, orgID, run.ID, agentID, c, caseTimeout))
 	}
 
 	run.Results = results
@@ -362,7 +401,7 @@ func (s *Service) RunDataset(ctx context.Context, orgID, datasetID, agentID stri
 
 // runCase executes and scores one case. Every case gets its own timeout
 // context so a stuck agent turn cannot consume the whole run budget.
-func (s *Service) runCase(ctx context.Context, runID, agentID string, c Case, caseTimeout time.Duration) Result {
+func (s *Service) runCase(ctx context.Context, orgID, runID, agentID string, c Case, caseTimeout time.Duration) Result {
 	result := Result{CaseID: c.ID, Scorer: c.Scorer}
 
 	caseCtx, cancel := context.WithTimeout(ctx, caseTimeout)
@@ -385,9 +424,16 @@ func (s *Service) runCase(ctx context.Context, runID, agentID string, c Case, ca
 		return result
 	}
 
-	// Cost: the runtime Run outcome does not expose cost today (token usage
-	// only), so the recorded cost is 0 until a pricing hook exists.
-	const costCents = 0.0
+	// Cost: price the token usage the runner reported (runtime.Run.Tokens)
+	// through the pricing hook. The model comes from the optional usage
+	// source; without a source, an unresolvable model, or unreported usage
+	// the cost stays 0 (never an error — see UsageSource docs).
+	var promptTokens, completionTokens int
+	if out != nil {
+		promptTokens, completionTokens = out.Tokens.PromptTokens, out.Tokens.CompletionTokens
+	}
+	costCents := s.caseCostCents(orgID, agentID, promptTokens, completionTokens)
+	result.CostCents = costCents
 	score, passed, scoreErr := c.Score(result.Output, result.LatencyMS, costCents)
 	if scoreErr != nil {
 		result.Error = scoreErr.Error()
@@ -398,6 +444,26 @@ func (s *Service) runCase(ctx context.Context, runID, agentID string, c Case, ca
 	result.Score = score
 	result.Passed = passed
 	return result
+}
+
+// caseCostCents resolves the case's model through the attached UsageSource and
+// prices the reported token usage. Best-effort by contract: any missing input
+// (no source, no model, no usage) yields 0 cents.
+func (s *Service) caseCostCents(orgID, agentID string, promptTokens, completionTokens int) float64 {
+	if promptTokens <= 0 && completionTokens <= 0 {
+		return 0
+	}
+	s.mu.Lock()
+	src := s.usageSrc
+	s.mu.Unlock()
+	if src == nil {
+		return 0
+	}
+	model, ok := src.ModelForAgent(orgID, agentID)
+	if !ok || strings.TrimSpace(model) == "" {
+		return 0
+	}
+	return models.ComputeCostCents(model, promptTokens, completionTokens)
 }
 
 // GetRun returns one eval run of one tenant including results and summary.
