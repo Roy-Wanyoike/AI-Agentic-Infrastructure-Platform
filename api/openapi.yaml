@@ -3212,6 +3212,1436 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CanaryErrorEnvelope'
+  /billing/plans:
+    get:
+      operationId: listBillingPlans
+      summary: List the global plan catalog
+      description: 'Read (runs.execute, MEMBER+). Returns every billable plan. Plans are
+
+        global (non-tenant) catalog rows: price_cents is the monthly catalog
+
+        price, included_quota is the included monthly run budget (0 =
+
+        unlimited — never exceeded, never overaged) and metadata may carry
+
+        pricing knobs such as {"overage_run_rate_cents": N}.
+
+        '
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The plan catalog (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillPlanList'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/subscriptions:
+    post:
+      operationId: createBillingSubscription
+      summary: Subscribe the caller's organization to a plan
+      description: 'Owner-only write (organization.manage). Creates the organization''s
+
+        subscription in TRIAL state with a 14-day window
+
+        [now, now+14d). Fails with 409 while a live (trial/active/past_due)
+
+        subscription exists — one live subscription per organization is a
+
+        schema invariant; after a cancellation a fresh subscribe opens a NEW
+
+        lifecycle row (canceled rows remain readable history). The tenant is
+
+        the caller''s auth-claims organization; a client-supplied organization
+
+        id is never trusted.
+
+        '
+      x-required-permission: organization.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillSubscribeRequest'
+      responses:
+        '201':
+          description: The created subscription (trial state).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillSubscriptionResponse'
+        '400':
+          description: 'Malformed JSON body or missing plan_id
+
+            (error.code INVALID_REQUEST / VALIDATION_ERROR).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '404':
+          description: Unknown plan (error.code PLAN_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is POST-only).
+        '409':
+          description: 'The organization already has a live subscription
+
+            (error.code CONFLICT).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/subscription:
+    get:
+      operationId: getBillingSubscription
+      summary: Show the organization's current subscription and quota state
+      description: 'Read (runs.execute, MEMBER+). Returns the org''s live subscription
+
+        together with its monthly run-budget quota status. When no live
+
+        subscription exists the most recent one in any status is returned
+
+        (canceled history stays readable); 404 NO_SUBSCRIPTION when the
+
+        organization never subscribed. Quota semantics: consumed_runs counts
+
+        metered runs inside the subscription''s current period window,
+
+        remaining_runs = max(0, included_quota - consumed_runs) and exceeded
+
+        is true only when consumed_runs > included_quota (consumed ==
+
+        included is still within budget; unlimited plans — included_quota 0 —
+
+        are never exceeded).
+
+        '
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The current subscription with its quota status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillSubscriptionWithQuota'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '404':
+          description: The organization never subscribed (error.code NO_SUBSCRIPTION).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/subscription/cancel:
+    post:
+      operationId: cancelBillingSubscription
+      summary: Cancel the organization's live subscription
+      description: 'Owner/ADMIN write (users.manage). Body is optional. immediate=true
+
+        cancels NOW (status=canceled, canceled_at stamped). immediate=false
+
+        (the default) schedules the cancel for the end of the running period
+
+        (cancel_at_period_end=true; the status flips to canceled when the
+
+        period rolls over). Canceled subscriptions cannot be cancelled again
+
+        (404 NO_SUBSCRIPTION once no live row exists).
+
+        '
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillCancelRequest'
+      responses:
+        '200':
+          description: The updated subscription (canceled now, or flagged for period end).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillSubscriptionResponse'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '404':
+          description: No live subscription (error.code NO_SUBSCRIPTION).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is POST-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/invoices:
+    get:
+      operationId: listBillingInvoices
+      summary: List the organization's invoices
+      description: 'Read (runs.execute, MEMBER+). Returns the org''s invoices, newest
+
+        first, WITHOUT lines (use GET /billing/invoices/{id} for the full
+
+        document). Every row is scoped to the caller''s organization.
+
+        '
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The invoice list (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillInvoiceList'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /billing/invoices/{id}:
+    get:
+      operationId: getBillingInvoice
+      summary: Show one invoice with its lines
+      description: 'Read (runs.execute, MEMBER+). Returns the full invoice document
+
+        including its lines. Tenant-scoped: an invoice of another
+
+        organization is indistinguishable from an unknown id (404
+
+        INVOICE_NOT_FOUND). Line sources: run (model-bucketed usage priced
+
+        from the cost aggregates), eval (evaluation metering seam) and
+
+        overage (runs beyond the plan''s included quota, priced by the plan
+
+        metadata overage_run_rate_cents knob). subtotal_cents is always the
+
+        exact sum of the line amounts.
+
+        '
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/BillInvoiceID'
+      responses:
+        '200':
+          description: The invoice with its lines.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillInvoiceResponse'
+        '401':
+          $ref: '#/components/responses/BillUnauthorized'
+        '403':
+          $ref: '#/components/responses/BillForbidden'
+        '404':
+          description: Unknown or foreign invoice (error.code INVOICE_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/BillInternal'
+  /secrets:
+    post:
+      operationId: createSecret
+      summary: Create one org-scoped secret (value sealed server-side)
+      description: 'Write operation (agents.write, OWNER/ADMIN). Body carries the secret
+
+        `name` and plaintext `value`; the value is sealed with AES-256-GCM
+
+        under the current master-key version before storage and is never
+
+        echoed back, logged, or persisted in plaintext. Names must match
+
+        `[A-Za-z0-9][A-Za-z0-9._-]{0,254}` (URL-path safe, env-var friendly);
+
+        values are capped at 64 KiB. Duplicate (org, name) among live secrets
+
+        is a 409. The tenant is derived from the auth claims — any
+
+        client-supplied organization id is ignored.
+
+        '
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecCreateRequest'
+      responses:
+        '201':
+          description: Secret created (metadata only — the value is never echoed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecResponse'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/SecUnauthorized'
+        '403':
+          $ref: '#/components/responses/SecForbidden'
+        '409':
+          description: A live secret with the same name already exists in the caller's organization (error.code SECRET_ALREADY_EXISTS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+        '422':
+          description: 'Validation error: missing org/name/value, invalid name charset, or
+
+            value above the 64 KiB limit (error.code VALIDATION_ERROR).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+        '500':
+          description: Unexpected server failure (also covers key-material failures; details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+    get:
+      operationId: listSecrets
+      summary: List secret metadata for the caller's organization (never values)
+      description: 'Read operation (runs.execute, MEMBER+ — viewers are excluded because
+
+        even secret NAMES are sensitive). Returns metadata only: name, the
+
+        key_version that encrypted each value, created_by and timestamps. The
+
+        response schema has no value field and the server never includes the
+
+        plaintext in list responses. Results are ordered by name ASC.
+
+        '
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Metadata list (possibly empty; values are structurally absent).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecListResponse'
+        '401':
+          $ref: '#/components/responses/SecUnauthorized'
+        '403':
+          $ref: '#/components/responses/SecForbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+  /secrets/{name}:
+    delete:
+      operationId: deleteSecret
+      summary: Soft-delete one secret (tombstone; name becomes reusable)
+      description: 'Write operation (agents.write, OWNER/ADMIN). Sets the deleted_at
+
+        tombstone; every subsequent read/resolve behaves as 404 and the name
+
+        can be recreated fresh. Foreign or unknown names surface as 404
+
+        (no existence leak across tenants). Deletion is audit-logged.
+
+        '
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/SecName'
+      responses:
+        '200':
+          description: Secret tombstoned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecDeleteResponse'
+        '401':
+          $ref: '#/components/responses/SecUnauthorized'
+        '403':
+          $ref: '#/components/responses/SecForbidden'
+        '404':
+          description: Secret not found within the caller's organization (error.code SECRET_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+  /secrets/{name}/reveal:
+    post:
+      operationId: revealSecret
+      summary: Return the plaintext value once (OWNER only, audit-logged)
+      description: 'OWNER-only operation (organization.manage). Decrypts the sealed value
+
+        and returns it exactly once inside the secret object; this is the only
+
+        response in the whole API that carries a plaintext secret. Every call
+
+        writes a `secret.revealed` audit entry (the value itself is never part
+
+        of the audit metadata). Foreign/unknown/tombstoned names are 404.
+
+        '
+      x-required-permission: organization.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/SecName'
+      responses:
+        '200':
+          description: The decrypted value (single-use response; never cached or logged).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecRevealResponse'
+        '401':
+          $ref: '#/components/responses/SecUnauthorized'
+        '403':
+          description: Authenticated but not an OWNER (organization.manage is OWNER-only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+        '404':
+          description: Secret not found within the caller's organization (error.code SECRET_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+        '500':
+          description: Unexpected server failure (e.g. decryption failed under the configured master key; details are never
+            surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecErrorEnvelope'
+  /tools:
+    get:
+      operationId: listRegisteredTools
+      summary: List the runtime's registered tools (name, description, input schema)
+      description: 'Read-only catalog of the agent tool registry: the built-in tools plus
+
+        anything else registered by the serving process. Tool registrations
+
+        are runtime surface (not tenant data), so the response carries no
+
+        organization fields; access is still authenticated and RBAC-gated.
+
+        '
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags:
+      - Tools
+      responses:
+        '200':
+          description: The registered tools, sorted by name; empty when none are registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolErrorEnvelope'
+  /audit-events:
+    get:
+      operationId: listAuditEvents
+      summary: List the caller organization's audit trail (newest first, keyset-paginated)
+      description: 'The append-only audit trail of the caller''s organization, newest
+
+        first. The tenant is taken from the auth claims only — client-supplied
+
+        organization ids are never trusted. Pagination is keyset-based on
+
+        (created_at, id): pass the returned next_cursor back as the cursor
+
+        query parameter; appends between pages can neither duplicate nor skip
+
+        rows. next_cursor is the empty string when the trail is exhausted.
+
+        '
+      x-required-permission: audit.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags:
+      - Audit
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        description: 'Page size (1-200; defaults to 50). Values above 200 are clamped
+
+          server-side instead of erroring.
+
+          '
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+      - name: cursor
+        in: query
+        required: false
+        description: Opaque continuation token from a previous page's next_cursor.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: One page of the tenant's audit trail (empty array when nothing is recorded yet).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventsResponse'
+        '400':
+          description: Invalid query (non-integer/zero limit, or malformed cursor).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: Unexpected server failure (e.g. store unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditErrorEnvelope'
+  /marketplace/listings:
+    post:
+      operationId: publishMarketplaceListing
+      summary: Publish an agent as a marketplace listing
+      description: 'Creates a listing from an existing agent in the caller''s organization,
+
+        snapshotting the agent''s current configuration (config only — never
+
+        secrets). Requires OWNER/ADMIN of the publishing organization.
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MktPublishRequest'
+      responses:
+        '201':
+          description: Listing created (status published)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktListingEnvelope'
+        '401':
+          $ref: '#/components/responses/MktUnauthorized'
+        '403':
+          $ref: '#/components/responses/MktForbidden'
+        '409':
+          description: Slug already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktError'
+        '422':
+          description: Validation error (unknown agent, empty name, ...)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktError'
+    get:
+      operationId: browseMarketplaceListings
+      summary: Browse / search published listings
+      description: 'Global read across organizations. Supports text search over name and
+
+        description (`q`), tag filtering (`tag`, repeatable) and keyset
+
+        pagination (`limit` + `cursor` from `next_cursor`).
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: authenticated
+      parameters:
+      - name: q
+        in: query
+        schema:
+          type: string
+        description: Text match over listing name and description.
+      - name: tag
+        in: query
+        schema:
+          type: string
+        description: Filter by tag (repeatable; OR semantics).
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+      - name: cursor
+        in: query
+        schema:
+          type: string
+        description: Keyset cursor from a previous response's next_cursor.
+      responses:
+        '200':
+          description: Paginated listings page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktListingPage'
+        '401':
+          $ref: '#/components/responses/MktUnauthorized'
+  /marketplace/listings/{slug}:
+    get:
+      operationId: getMarketplaceListing
+      summary: Get a single listing by slug
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: authenticated
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The listing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktListingEnvelope'
+        '404':
+          $ref: '#/components/responses/MktNotFound'
+    delete:
+      operationId: unlistMarketplaceListing
+      summary: Unlist a listing (publisher org OWNER/ADMIN only)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: agents.write (publisher OWNER/ADMIN)
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Listing unlisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktListingEnvelope'
+        '403':
+          $ref: '#/components/responses/MktForbidden'
+        '404':
+          $ref: '#/components/responses/MktNotFound'
+  /marketplace/listings/{slug}/install:
+    post:
+      operationId: installMarketplaceListing
+      summary: Install a listing as a new agent in the caller's organization
+      description: 'Creates a NEW agent in the caller''s organization from the listing''s
+
+        version snapshot. Name collisions get a deterministic `-2`/`-3`/...
+
+        suffix. Increments the listing''s download counter and writes an
+
+        audit entry.
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: agents.write
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '201':
+          description: Agent created from the snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktInstallResponse'
+        '404':
+          $ref: '#/components/responses/MktNotFound'
+        '422':
+          description: Snapshot no longer installable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktError'
+  /connectors:
+    post:
+      operationId: createConnector
+      summary: Register one org-scoped external integration
+      description: 'Write operation (connectors.write, OWNER/ADMIN). The body carries the
+
+        connector name (unique per organization), type (webhook|http),
+
+        base_url (absolute http(s) URL), config (auth_style plus optional
+
+        header templates and api-key/basic parameters) and an optional
+
+        secret_ref NAME referencing a secret in the secrets store. Secret
+
+        values are never accepted by this endpoint. Status defaults to
+
+        active. Duplicate (org, name) is a 409. The tenant is derived from
+
+        the auth claims — any client-supplied organization id is ignored.
+
+        '
+      x-required-permission: connectors.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConCreateRequest'
+      responses:
+        '201':
+          description: Connector registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConResponse'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '409':
+          description: A connector with the same name already exists in the caller's organization (error.code CONNECTOR_ALREADY_EXISTS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '422':
+          description: 'Validation error: missing name/base_url, name over 255 chars, type
+
+            not webhook|http, base_url not an absolute http(s) URL, status not
+
+            active|disabled, auth_style not one of none|bearer|basic|
+
+            api_key_header, or a header template containing CR/LF
+
+            (error.code VALIDATION_ERROR).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+    get:
+      operationId: listConnectors
+      summary: List connectors for the caller's organization
+      description: 'Read operation (connectors.read, MEMBER+ — viewers are excluded
+
+        because connector listings expose integration topology). Returns all
+
+        connectors of the caller''s organization ordered by name ASC; each
+
+        entry is the value-free projection (config templates + secret_ref
+
+        name only, never secret values).
+
+        '
+      x-required-permission: connectors.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Connector list (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConListResponse'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+  /connectors/{id}:
+    get:
+      operationId: getConnector
+      summary: Fetch one connector
+      description: 'Read operation (connectors.read, MEMBER+). Returns the value-free
+
+        projection of one connector including the recorded health-check
+
+        bookkeeping (last_check_at / last_check_status, null/"" when never
+
+        probed). Foreign or unknown ids surface as 404 (no existence leak
+
+        across tenants).
+
+        '
+      x-required-permission: connectors.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/ConId'
+      responses:
+        '200':
+          description: Connector projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConResponse'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '404':
+          description: Connector not found within the caller's organization (error.code CONNECTOR_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+    delete:
+      operationId: deleteConnector
+      summary: Hard-delete one connector
+      description: 'Write operation (connectors.write, OWNER/ADMIN). Removes the registry
+
+        entry (connectors are hard-deleted; the unique (org, name) constraint
+
+        frees the name immediately). Foreign or unknown ids are 404.
+
+        Deletion is audit-logged.
+
+        '
+      x-required-permission: connectors.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/ConId'
+      responses:
+        '200':
+          description: Connector deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConDeleteResponse'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '404':
+          description: Connector not found within the caller's organization (error.code CONNECTOR_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+  /connectors/{id}/test:
+    post:
+      operationId: testConnector
+      summary: Run the live health check for one connector
+      description: 'Write operation (connectors.write, OWNER/ADMIN — the probe triggers
+
+        outbound network activity and mutates connector state). Performs a
+
+        GET to the connector''s base_url with the configured auth style
+
+        applied (the secret is resolved server-side through the secrets
+
+        store and injected into the outgoing request only — it never appears
+
+        here), bounded by a 5s timeout. Classifies the outcome as ok
+
+        (2xx-3xx) or error (non-2xx, network failure, timeout, unresolvable
+
+        secret), records last_check_at / last_check_status on the connector
+
+        and returns the probe result. Disabled connectors remain probeable —
+
+        the check exists precisely to inform the enable/disable decision.
+
+        '
+      x-required-permission: connectors.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/ConId'
+      responses:
+        '200':
+          description: Probe outcome (never includes secret values).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConTestResponse'
+        '401':
+          $ref: '#/components/responses/ConUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConForbidden'
+        '404':
+          description: Connector not found within the caller's organization (error.code CONNECTOR_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+        '500':
+          description: Unexpected server failure (e.g. persistence of the probe outcome failed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConErrorEnvelope'
+  /auth/sso/{org_slug}/login:
+    get:
+      operationId: beginSsoLogin
+      summary: Start the OIDC login flow (302 to the IdP authorize URL)
+      description: 'Resolves the organization by its URL slug, validates the stored
+
+        sso_config against the live discovery document and returns a 302
+
+        redirect to the IdP authorization endpoint carrying client_id,
+
+        redirect_uri (the derived callback
+
+        `<scheme>://<host>/auth/sso/callback`, overridable by a config-pinned
+
+        redirect_uri), state, nonce and scopes. Unknown slugs and
+
+        unconfigured organizations both answer 404. No authentication header
+
+        applies: this endpoint exists to start a browser login.
+
+        '
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/SsoOrgSlug'
+      responses:
+        '302':
+          description: Redirect to the IdP authorization endpoint (Location header).
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+                format: uri
+            Cache-Control:
+              schema:
+                type: string
+        '404':
+          description: 'No organization matches the slug (ORG_NOT_FOUND) or the
+
+            organization has no sso_config (SSO_NOT_CONFIGURED).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '502':
+          description: 'The identity provider is unreachable or its discovery document is
+
+            invalid (SSO_UPSTREAM_ERROR). The upstream URL is never echoed.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+  /auth/sso/callback:
+    get:
+      operationId: completeSsoLogin
+      summary: Complete the OIDC login flow (returns the platform session token)
+      description: 'The IdP redirects here with `code` and `state`. The single-use state
+
+        is consumed (replays and 10-minute-expired states are 401), the code
+
+        is exchanged (client_secret_post; inline secret or
+
+        client_secret_ref resolved from the platform secrets store), the
+
+        RS256 ID token is verified end-to-end and the local identity is
+
+        JIT-provisioned or linked by the email claim. Returns the platform''s
+
+        existing HMAC session token — the same format as POST /auth/login —
+
+        plus a credential-free user view. Disabled accounts (SCIM
+
+        active=false) are refused with 403 ACCOUNT_DISABLED.
+
+        '
+      security: []
+      parameters:
+      - name: code
+        in: query
+        required: true
+        description: Authorization code issued by the IdP.
+        schema:
+          type: string
+      - name: state
+        in: query
+        required: true
+        description: Opaque single-use state issued by beginSsoLogin.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Login completed; the identity is provisioned/linked.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoLoginResponse'
+        '400':
+          description: Missing code or state (SSO_INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '401':
+          description: 'Unknown/expired/replayed state (SSO_STATE_INVALID) or a failed
+
+            identity-provider exchange / ID-token validation
+
+            (SSO_LOGIN_FAILED).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '403':
+          description: Account deprovisioned (ACCOUNT_DISABLED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '409':
+          description: 'The email belongs to another organization
+
+            (SSO_EMAIL_FOREIGN_ORG) or the account is linked to a different
+
+            IdP subject (SSO_SUBJECT_MISMATCH — potential account takeover).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+        '502':
+          description: Identity provider unreachable or misconfigured (SSO_UPSTREAM_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+  /scim/tokens:
+    post:
+      operationId: createScimToken
+      summary: Mint a SCIM bearer credential (plaintext shown exactly once)
+      description: 'OWNER-only (organization.manage). Creates one org-scoped SCIM bearer
+
+        credential of the form `scim_<64 hex>`. Only the SHA-256 hex hash is
+
+        persisted (UNIQUE, the api_keys.key_hash trust model); the plaintext
+
+        is returned exactly once in `secret` and never stored or logged. The
+
+        response metadata never echoes the hash.
+
+        '
+      x-required-permission: organization.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '201':
+          description: Credential minted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScimTokenCreated'
+        '401':
+          $ref: '#/components/schemas/SsoUnauthorized'
+        '403':
+          description: Caller is not an OWNER (organization.manage).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoError'
+  /scim/v2/Users:
+    get:
+      operationId: listScimUsers
+      summary: List (SCIM 2.0 ListResponse) with optional userName-eq filter
+      description: 'Returns the tenant''s identities as a standard SCIM 2.0 ListResponse
+
+        (urn:ietf:params:scim:api:messages:2.0:ListResponse) with
+
+        totalResults/startIndex/itemsPerPage and an always-present `Resources`
+
+        array (never null). The only supported filter is
+
+        `userName eq "<email>"` (RFC 7644 §3.4.2.2, case-insensitive, exact);
+
+        any other filter is 400 and NEVER degrades into a full listing.
+
+        Authentication is the dedicated scim_ bearer credential ONLY.
+
+        '
+      security:
+      - scimBearer: []
+      parameters:
+      - name: filter
+        in: query
+        required: false
+        description: Supported form — userName eq "user@example.com"
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The tenant's users (possibly an empty Resources array).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimListResponse'
+        '400':
+          description: Unsupported filter (ScimError, RFC 7644 §3.12 envelope).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '401':
+          description: 'Missing/unknown/revoked scim_ bearer credential (indistinguishable
+
+            on purpose).
+
+            '
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+    post:
+      operationId: createScimUser
+      summary: JIT-provision one identity (SCIM 2.0 create)
+      description: 'Creates the identity from a SCIM 2.0 core-user document. userName is
+
+        the login email (validated, lowercased) and `active` defaults to
+
+        true. The user is created passwordless (invite-pending) and pinned to
+
+        MEMBER — directory sync never mints privilege. Extra attributes
+
+        (name, displayName, externalId, emails, password) are accepted and
+
+        ignored by design. Duplicate emails conflict with 409 regardless of
+
+        tenant (users.email is globally UNIQUE).
+
+        '
+      security:
+      - scimBearer: []
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimUserRequest'
+      responses:
+        '201':
+          description: Identity provisioned; Location carries the resource URL.
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+        '400':
+          description: Malformed body or invalid userName.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '401':
+          description: Missing/unknown/revoked scim_ bearer credential.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '409':
+          description: A user with this email already exists.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+  /scim/v2/Users/{id}:
+    get:
+      operationId: getScimUser
+      summary: Read one identity (SCIM 2.0 core user)
+      description: 'Point read of one identity by SCIM id. Unknown AND foreign-tenant ids
+
+        both answer 404 without an existence leak.
+
+        '
+      security:
+      - scimBearer: []
+      parameters:
+      - $ref: '#/components/parameters/ScimUserId'
+      responses:
+        '200':
+          description: The identity.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+        '401':
+          description: Missing/unknown/revoked scim_ bearer credential.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '404':
+          description: Unknown or foreign id (no existence leak).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+    put:
+      operationId: replaceScimUser
+      summary: Replace an identity (userName immutable)
+      description: 'SCIM 2.0 full replace of the mutable attributes. userName is
+
+        immutable in this deployment (it IS the login credential): a
+
+        mismatching userName is 400, so a directory rename can never hijack
+
+        an account. Full-replace semantics per RFC 7644 §3.5.1: an omitted
+
+        `active` resets to the default true.
+
+        '
+      security:
+      - scimBearer: []
+      parameters:
+      - $ref: '#/components/parameters/ScimUserId'
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimUserRequest'
+      responses:
+        '200':
+          description: The replaced identity.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+        '400':
+          description: Malformed body, invalid userName or userName mismatch (immutable).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '401':
+          description: Missing/unknown/revoked scim_ bearer credential.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '404':
+          description: Unknown or foreign id.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+    patch:
+      operationId: patchScimUser
+      summary: Patch an identity (replace active — deprovisioning)
+      description: 'SCIM 2.0 PATCH. Supports the standard deprovisioning operations:
+
+        `{"op":"replace","path":"active","value":false}` and the pathless
+
+        `{"op":"replace","value":{"active":false}}` (op case-insensitive,
+
+        boolean values may be string-encoded for stock IdP connectors).
+
+        Anything else is 400 and applied nothing. Disabling the user blocks
+
+        password login platform-wide; re-enabling restores it.
+
+        '
+      security:
+      - scimBearer: []
+      parameters:
+      - $ref: '#/components/parameters/ScimUserId'
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: '#/components/schemas/ScimPatchRequest'
+      responses:
+        '200':
+          description: The patched identity.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimUser'
+        '400':
+          description: Unsupported or malformed patch operations (nothing applied).
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '401':
+          description: Missing/unknown/revoked scim_ bearer credential.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
+        '404':
+          description: Unknown or foreign id.
+          content:
+            application/scim+json:
+              schema:
+                $ref: '#/components/schemas/ScimError'
 components:
   parameters:
     AgentID:
@@ -3314,6 +4744,47 @@ components:
       schema:
         type: string
       example: 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+    BillInvoiceID:
+      name: id
+      in: path
+      required: true
+      description: Invoice identifier (UUID v4 string).
+      schema:
+        type: string
+    SecName:
+      name: name
+      in: path
+      required: true
+      description: 'Secret name (unique per organization among live secrets). Must match
+
+        `[A-Za-z0-9][A-Za-z0-9._-]{0,254}`.
+
+        '
+      schema:
+        type: string
+        pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$
+      example: OPENAI_API_KEY
+    ConId:
+      name: id
+      in: path
+      required: true
+      description: Connector identifier (unique per organization).
+      schema:
+        type: string
+    SsoOrgSlug:
+      name: org_slug
+      in: path
+      required: true
+      description: URL slug of the organization (case-insensitive).
+      schema:
+        type: string
+    ScimUserId:
+      name: id
+      in: path
+      required: true
+      description: SCIM resource id (the platform user id).
+      schema:
+        type: string
   securitySchemes:
     bearerToken:
       type: http
@@ -3341,6 +4812,18 @@ components:
       in: header
       name: X-API-Key
       description: Pre-provisioned API key (see main spec).
+    scimBearer:
+      type: http
+      scheme: bearer
+      description: 'Dedicated SCIM credential minted by POST /scim/tokens
+
+        (`Authorization: Bearer scim_...`). ONLY valid on /scim/v2/* —
+
+        session tokens and API keys are rejected here, and scim_ credentials
+
+        are rejected everywhere else.
+
+        '
   responses:
     Unauthorized:
       description: Missing/invalid credentials (plain text body today; JSON model is the target).
@@ -3489,6 +4972,70 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/CanaryErrorEnvelope'
+    BillUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillErrorEnvelope'
+    BillForbidden:
+      description: 'Authenticated but the role lacks the required permission (VIEWERs
+
+        lack reads; only OWNER may subscribe).
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillErrorEnvelope'
+    BillInternal:
+      description: Unexpected server failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BillErrorEnvelope'
+    SecUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SecErrorEnvelope'
+    SecForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SecErrorEnvelope'
+    MktUnauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MktError'
+    MktForbidden:
+      description: Authenticated but not permitted for this operation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MktError'
+    MktNotFound:
+      description: Listing not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MktError'
+    ConUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConErrorEnvelope'
+    ConForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConErrorEnvelope'
   schemas:
     LegacyTextError:
       type: string
@@ -6058,5 +7605,1178 @@ components:
           - message
       required:
       - error
+    BillPlan:
+      type: object
+      required:
+      - id
+      - name
+      - price_cents
+      - currency
+      - included_quota
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: Unique plan name (max 100 chars).
+        price_cents:
+          type: integer
+          minimum: 0
+          description: Monthly catalog price in cents.
+        currency:
+          type: string
+          description: Lowercase ISO-4217-like 3-letter code (default "usd").
+        included_quota:
+          type: integer
+          minimum: 0
+          description: 'Included monthly run budget. 0 means UNLIMITED (never exceeded,
+
+            never overaged).
+
+            '
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 'Free-form knobs; the shipped invoice generator reads
+
+            {"overage_run_rate_cents": N} (N > 0) to price runs beyond the
+
+            included quota.
+
+            '
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BillPlanList:
+      type: object
+      required:
+      - plans
+      properties:
+        plans:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillPlan'
+    BillSubscription:
+      type: object
+      required:
+      - id
+      - plan_id
+      - status
+      - period_start
+      - period_end
+      - cancel_at_period_end
+      properties:
+        id:
+          type: string
+        plan_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - trial
+          - active
+          - past_due
+          - canceled
+        period_start:
+          type: string
+          format: date-time
+          description: Half-open window start [period_start, period_end).
+        period_end:
+          type: string
+          format: date-time
+        cancel_at_period_end:
+          type: boolean
+          description: 'True while a cancellation is scheduled for the end of the running
+
+            period (completed by the rollover).
+
+            '
+        canceled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Present once the subscription is canceled.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BillSubscriptionResponse:
+      type: object
+      required:
+      - subscription
+      properties:
+        subscription:
+          $ref: '#/components/schemas/BillSubscription'
+    BillQuotaStatus:
+      type: object
+      required:
+      - subscription_id
+      - status
+      - included_runs
+      - unlimited
+      - consumed_runs
+      - remaining_runs
+      - exceeded
+      - period_start
+      - period_end
+      properties:
+        subscription_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - trial
+          - active
+          - past_due
+          - canceled
+          description: The subscription status the quota is reported against.
+        included_runs:
+          type: integer
+          description: plan.included_quota (0 = unlimited).
+        unlimited:
+          type: boolean
+        consumed_runs:
+          type: integer
+          description: Metered runs inside the current period window.
+        remaining_runs:
+          type: integer
+          description: max(0, included_runs - consumed_runs); 0 when unlimited.
+        exceeded:
+          type: boolean
+          description: True only when consumed_runs > included_runs.
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+    BillSubscriptionWithQuota:
+      type: object
+      required:
+      - subscription
+      - quota
+      properties:
+        subscription:
+          $ref: '#/components/schemas/BillSubscription'
+        quota:
+          $ref: '#/components/schemas/BillQuotaStatus'
+    BillSubscribeRequest:
+      type: object
+      required:
+      - plan_id
+      properties:
+        plan_id:
+          type: string
+          description: The plan to subscribe to (must exist).
+    BillCancelRequest:
+      type: object
+      properties:
+        immediate:
+          type: boolean
+          default: false
+          description: 'true cancels NOW; false (default) schedules the cancel for the end
+
+            of the running period.
+
+            '
+    BillInvoiceLine:
+      type: object
+      required:
+      - id
+      - source
+      - quantity
+      - amount_cents
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+          enum:
+          - run
+          - eval
+          - overage
+          description: 'run: model-bucketed usage priced from the cost aggregates; eval:
+
+            evaluation metering (schema-supported seam); overage: derived line
+
+            pricing runs beyond the included quota.
+
+            '
+        description:
+          type: string
+        quantity:
+          type: integer
+          description: Metered unit count of the line (runs).
+        amount_cents:
+          type: integer
+          minimum: 0
+        refs:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 'Pricing provenance: {"model": "..."} for run lines;
+
+            {"included_quota", "overage_run_rate_cents", "metered_runs"} for
+
+            overage lines.
+
+            '
+        created_at:
+          type: string
+          format: date-time
+    BillInvoice:
+      type: object
+      required:
+      - id
+      - subscription_id
+      - period_start
+      - period_end
+      - subtotal_cents
+      - currency
+      - status
+      properties:
+        id:
+          type: string
+        subscription_id:
+          type: string
+        period_start:
+          type: string
+          format: date-time
+          description: Half-open invoiced window [period_start, period_end).
+        period_end:
+          type: string
+          format: date-time
+        subtotal_cents:
+          type: integer
+          minimum: 0
+          description: Exact sum of the line amounts.
+        currency:
+          type: string
+          description: Copied from the plan at generation time.
+        status:
+          type: string
+          enum:
+          - open
+          - paid
+          - void
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BillInvoiceList:
+      type: object
+      required:
+      - invoices
+      properties:
+        invoices:
+          type: array
+          description: Newest first; line details omitted.
+          items:
+            $ref: '#/components/schemas/BillInvoice'
+    BillInvoiceResponse:
+      type: object
+      required:
+      - invoice
+      properties:
+        invoice:
+          allOf:
+          - $ref: '#/components/schemas/BillInvoice'
+          - type: object
+            required:
+            - lines
+            properties:
+              lines:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BillInvoiceLine'
+    BillErrorEnvelope:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              description: 'Machine code: INVALID_REQUEST / VALIDATION_ERROR (400),
+
+                UNAUTHORIZED (401), PLAN_NOT_FOUND / NO_SUBSCRIPTION /
+
+                INVOICE_NOT_FOUND (404), CONFLICT / INVALID_STATE (409),
+
+                BILLING_UNAVAILABLE (503), INTERNAL_ERROR (500).
+
+                '
+            message:
+              type: string
+    SecCreateRequest:
+      type: object
+      description: Create payload. The plaintext value is consumed at seal time and never echoed, logged, or listed afterwards.
+      properties:
+        name:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$
+          description: Secret name, unique per organization among live secrets.
+          examples:
+          - OPENAI_API_KEY
+        value:
+          type: string
+          maxLength: 65536
+          description: Plaintext secret value (sealed with AES-256-GCM before storage; max 64 KiB).
+      required:
+      - name
+      - value
+    SecMetadata:
+      type: object
+      description: 'Value-free metadata projection. This is the ONLY shape list endpoints
+
+        return; the plaintext value is structurally absent (no `value`
+
+        property exists on this schema).
+
+        '
+      properties:
+        name:
+          type: string
+        key_version:
+          type: integer
+          description: Master-key version that encrypted the value (v1 envelope; bump on rotation).
+          examples:
+          - 1
+        created_by:
+          type: string
+          description: User id of the original creator (preserved across value updates).
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - name
+      - key_version
+      - created_by
+      - created_at
+      - updated_at
+    SecRevealMetadata:
+      type: object
+      description: Metadata extended with the decrypted `value` — returned ONLY by the reveal operation, once per call.
+      properties:
+        name:
+          type: string
+        key_version:
+          type: integer
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        value:
+          type: string
+          description: The plaintext secret value. Appears exactly here and exactly once.
+      required:
+      - name
+      - key_version
+      - created_by
+      - created_at
+      - updated_at
+      - value
+    SecResponse:
+      type: object
+      properties:
+        secret:
+          $ref: '#/components/schemas/SecMetadata'
+      required:
+      - secret
+    SecListResponse:
+      type: object
+      properties:
+        secrets:
+          type: array
+          description: Metadata-only views ordered by name ASC; empty when the organization has no live secrets.
+          items:
+            $ref: '#/components/schemas/SecMetadata'
+      required:
+      - secrets
+    SecRevealResponse:
+      type: object
+      properties:
+        secret:
+          $ref: '#/components/schemas/SecRevealMetadata'
+      required:
+      - secret
+    SecDeleteResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          description: Always true on success.
+      required:
+      - deleted
+    SecErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of SECRET_NOT_FOUND, SECRET_ALREADY_EXISTS, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED,
+                FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - SECRET_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    ToolErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              description: One of INTERNAL_ERROR (500); 401/403 use the shared auth responses.
+              examples:
+              - INTERNAL_ERROR
+            message:
+              type: string
+    ToolInfo:
+      type: object
+      description: 'One read-only registry entry. description/input_schema are omitted
+
+        for tools that publish no catalog metadata (they still execute).
+
+        '
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          description: Registry key the model uses in tool calls (e.g. "calculator").
+        description:
+          type: string
+          description: Human-readable summary of what the tool does.
+        input_schema:
+          type: object
+          description: JSON-Schema-style contract the tool arguments must satisfy.
+          additionalProperties: true
+    ToolListResponse:
+      type: object
+      required:
+      - tools
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolInfo'
+    AuditErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              description: One of INVALID_REQUEST (bad limit), INVALID_CURSOR (malformed cursor), INTERNAL_ERROR.
+              examples:
+              - INVALID_CURSOR
+            message:
+              type: string
+    AuditEvent:
+      type: object
+      description: One append-only audit entry (tenant stays server-side; organization_id is implied by the caller's claims).
+      required:
+      - id
+      - actor
+      - action
+      - created_at
+      properties:
+        id:
+          type: string
+        actor:
+          type: string
+        action:
+          type: string
+          description: Dotted event name (e.g. "agent.created", "run.failed").
+        resource:
+          type: string
+          description: Resource reference the action applies to (e.g. "agents/a-1"); omitted when empty.
+        metadata:
+          type: object
+          description: Free-form action context; omitted when empty.
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+    AuditEventsResponse:
+      type: object
+      required:
+      - events
+      - next_cursor
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        next_cursor:
+          type: string
+          description: 'Opaque continuation token for the next page; the empty string
+
+            means the trail is exhausted.
+
+            '
+    MktPublishRequest:
+      type: object
+      required:
+      - agent_id
+      - name
+      properties:
+        agent_id:
+          type: string
+          description: Agent (in the caller's org) to snapshot into the listing.
+        name:
+          type: string
+          description: Display name of the listing.
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+    MktListing:
+      type: object
+      properties:
+        id:
+          type: string
+        publisher_org_id:
+          type: string
+        publisher_user_id:
+          type: string
+        source_agent_id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum:
+          - draft
+          - published
+          - unlisted
+        download_count:
+          type: integer
+        version_snapshot:
+          description: Snapshot of the agent configuration at publish time.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    MktListingEnvelope:
+      type: object
+      required:
+      - listing
+      properties:
+        listing:
+          $ref: '#/components/schemas/MktListing'
+    MktListingPage:
+      type: object
+      required:
+      - listings
+      properties:
+        listings:
+          type: array
+          items:
+            $ref: '#/components/schemas/MktListing'
+        next_cursor:
+          type: string
+          description: Empty string when the page is the last one.
+    MktInstallResponse:
+      type: object
+      required:
+      - listing
+      - agent
+      properties:
+        listing:
+          $ref: '#/components/schemas/MktListing'
+        agent:
+          type: object
+          properties:
+            id:
+              type: string
+            organization_id:
+              type: string
+            name:
+              type: string
+            description:
+              type: string
+            instructions:
+              type: string
+            model:
+              type: string
+            status:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+    MktError:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+    ConConfig:
+      type: object
+      description: 'Non-secret request configuration. Contains header TEMPLATES and auth
+
+        style parameters only — secret values are structurally absent (the
+
+        sensitive material lives in the secrets store behind secret_ref).
+
+        '
+      properties:
+        auth_style:
+          type: string
+          enum:
+          - none
+          - bearer
+          - basic
+          - api_key_header
+          description: 'bearer injects "Authorization: Bearer <secret>"; basic injects
+
+            "Authorization: Basic base64(<username>:<secret>)"; api_key_header
+
+            injects "<api_key_header|X-API-Key>: <api_key_prefix><secret>".
+
+            none injects nothing (secret_ref is not consumed).
+
+            '
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Static header templates merged into every built request (per-request headers win over these; injected
+            auth headers win over both). CR/LF is rejected.
+        api_key_header:
+          type: string
+          description: Header name for the api_key_header style (defaults to X-API-Key).
+        api_key_prefix:
+          type: string
+          description: Prefix prepended to the resolved secret for the api_key_header style.
+        username:
+          type: string
+          description: Basic-auth username (the password comes from the secret referenced by secret_ref).
+    ConCreateRequest:
+      type: object
+      description: Create payload. Never carries secret values — secret_ref is a NAME reference into the secrets store.
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          description: Connector name, unique per organization.
+        type:
+          type: string
+          enum:
+          - webhook
+          - http
+        base_url:
+          type: string
+          format: uri
+          description: Absolute http(s) origin every request is built from (base path is preserved when joining paths).
+        auth_style:
+          type: string
+          enum:
+          - none
+          - bearer
+          - basic
+          - api_key_header
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        api_key_header:
+          type: string
+        api_key_prefix:
+          type: string
+        username:
+          type: string
+        secret_ref:
+          type: string
+          description: NAME of a secret in the secrets store; resolved only at request-build time.
+        status:
+          type: string
+          enum:
+          - active
+          - disabled
+          default: active
+      required:
+      - name
+      - type
+      - base_url
+    ConConnector:
+      type: object
+      description: Value-free connector projection. There is no field that could carry a secret value — secret_ref is a name
+        reference.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum:
+          - webhook
+          - http
+        base_url:
+          type: string
+        config:
+          $ref: '#/components/schemas/ConConfig'
+        secret_ref:
+          type: string
+          description: Secret NAME reference ("" when the connector needs no secret).
+        status:
+          type: string
+          enum:
+          - active
+          - disabled
+        last_check_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: Timestamp of the last health-check probe (null when never probed).
+        last_check_status:
+          type: string
+          enum:
+          - ok
+          - error
+          - ''
+          description: Outcome of the last probe ("" when never probed).
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - name
+      - type
+      - base_url
+      - config
+      - secret_ref
+      - status
+      - last_check_at
+      - last_check_status
+      - created_at
+      - updated_at
+    ConTestResult:
+      type: object
+      description: Outcome of one live health-check probe (secret values never included).
+      properties:
+        connector_id:
+          type: string
+        status:
+          type: string
+          enum:
+          - ok
+          - error
+        status_code:
+          type: integer
+          description: Upstream HTTP status (0 when no response was received).
+        latency_ms:
+          type: integer
+        error:
+          type: string
+          description: Probe failure detail (absent on success; names the secret NAME on resolution failures, never a value).
+        checked_at:
+          type: string
+          format: date-time
+      required:
+      - connector_id
+      - status
+      - status_code
+      - latency_ms
+      - checked_at
+    ConResponse:
+      type: object
+      properties:
+        connector:
+          $ref: '#/components/schemas/ConConnector'
+      required:
+      - connector
+    ConListResponse:
+      type: object
+      properties:
+        connectors:
+          type: array
+          description: Value-free projections ordered by name ASC; empty when the organization has no connectors.
+          items:
+            $ref: '#/components/schemas/ConConnector'
+      required:
+      - connectors
+    ConTestResponse:
+      type: object
+      properties:
+        test:
+          $ref: '#/components/schemas/ConTestResult'
+      required:
+      - test
+    ConDeleteResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          description: Always true on success.
+      required:
+      - deleted
+    ConErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of CONNECTOR_NOT_FOUND, CONNECTOR_ALREADY_EXISTS, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED,
+                FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - CONNECTOR_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    SsoError:
+      type: object
+      description: Shared structured error envelope.
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (ORG_NOT_FOUND, SSO_NOT_CONFIGURED, SSO_STATE_INVALID, SSO_LOGIN_FAILED,
+                ACCOUNT_DISABLED, SSO_EMAIL_FOREIGN_ORG, SSO_SUBJECT_MISMATCH, SSO_UPSTREAM_ERROR, ...).
+            message:
+              type: string
+    SsoUnauthorized:
+      description: Missing or invalid platform credentials (session/API key).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SsoError'
+    SsoLoginResponse:
+      type: object
+      required:
+      - token
+      - user
+      properties:
+        token:
+          type: string
+          description: The platform's existing HMAC session token (same format as POST /auth/login).
+        user:
+          type: object
+          description: Credential-free view of the logged-in identity.
+          required:
+          - id
+          - email
+          - role
+          - new
+          properties:
+            id:
+              type: string
+            email:
+              type: string
+              format: email
+            role:
+              type: string
+              description: Platform role (JIT-provisioned users default to MEMBER unless the config overrides default_role).
+            new:
+              type: boolean
+              description: True when this login freshly JIT-provisioned a passwordless identity.
+    ScimTokenCreated:
+      type: object
+      required:
+      - token
+      - secret
+      properties:
+        token:
+          type: object
+          description: Credential metadata (the stored hash is deliberately NOT included).
+          required:
+          - id
+          - organization_id
+          - created_by
+          - created_at
+          properties:
+            id:
+              type: string
+            organization_id:
+              type: string
+            created_by:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+        secret:
+          type: string
+          description: 'The plaintext `scim_<64 hex>` bearer credential, shown EXACTLY
+
+            ONCE. Store it now; only its SHA-256 hash is persisted.
+
+            '
+    ScimUserEmail:
+      type: object
+      required:
+      - value
+      - primary
+      properties:
+        value:
+          type: string
+          format: email
+        primary:
+          type: boolean
+    ScimResourceMeta:
+      type: object
+      required:
+      - resourceType
+      - created
+      - lastModified
+      - location
+      properties:
+        resourceType:
+          type: string
+        created:
+          type: string
+          description: SCIM dateTime (ISO-8601).
+        lastModified:
+          type: string
+          description: SCIM dateTime (ISO-8601).
+        location:
+          type: string
+          description: Canonical relative resource path (/scim/v2/Users/{id}).
+    ScimUser:
+      type: object
+      description: 'RFC 7643 core user projection. Deliberate omissions (never invented
+
+        here): name/displayName (no platform columns), password/credential
+
+        material (SCIM users stay invite-pending), roles/groups (directory
+
+        sync never mints privilege — SCIM users are pinned MEMBER).
+
+        '
+      required:
+      - schemas
+      - id
+      - userName
+      - active
+      - meta
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example:
+          - urn:ietf:params:scim:schemas:core:2.0:User
+        id:
+          type: string
+        userName:
+          type: string
+          format: email
+          description: The login email (lowercased, immutable).
+        active:
+          type: boolean
+          description: 'Lifecycle flag. active=false blocks password login platform-wide.
+
+            '
+        emails:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScimUserEmail'
+        meta:
+          $ref: '#/components/schemas/ScimResourceMeta'
+    ScimUserRequest:
+      type: object
+      description: 'Create (POST) / replace (PUT) body. Fields beyond userName/active are
+
+        accepted and IGNORED (a permissive body keeps stock IdP connectors
+
+        working without pretending the platform persists what it does not).
+
+        '
+      required:
+      - userName
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+        userName:
+          type: string
+          format: email
+          description: The login email; validated, stored lowercased.
+        active:
+          type: boolean
+          description: 'Defaults to true on create; on PUT an omitted active resets to
+
+            true (RFC 7644 full-replace semantics).
+
+            '
+        password:
+          type: string
+          writeOnly: true
+          description: Accepted and NEVER stored (users stay invite-pending).
+        name:
+          type: object
+          properties:
+            givenName:
+              type: string
+            familyName:
+              type: string
+        displayName:
+          type: string
+        externalId:
+          type: string
+        emails:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScimUserEmail'
+    ScimPatchOperation:
+      type: object
+      required:
+      - op
+      properties:
+        op:
+          type: string
+          description: replace (case-insensitive) is the only supported op.
+        path:
+          type: string
+          description: active (or omitted for the pathless value-object form).
+        value:
+          description: 'Boolean (or string ''true''/''false'') for path form; object {''active'': bool} for the pathless form.'
+    ScimPatchRequest:
+      type: object
+      description: RFC 7644 §3.5.2 patch envelope ("Operations" with a capital O).
+      required:
+      - Operations
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example:
+          - urn:ietf:params:scim:api:messages:2.0:PatchOp
+        Operations:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ScimPatchOperation'
+    ScimListResponse:
+      type: object
+      description: RFC 7644 §3.4.2 listing envelope; Resources is always an array (never null).
+      required:
+      - schemas
+      - totalResults
+      - startIndex
+      - itemsPerPage
+      - Resources
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example:
+          - urn:ietf:params:scim:api:messages:2.0:ListResponse
+        totalResults:
+          type: integer
+        startIndex:
+          type: integer
+        itemsPerPage:
+          type: integer
+        Resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScimUser'
+    ScimError:
+      type: object
+      description: RFC 7644 §3.12 error envelope (application/scim+json).
+      required:
+      - schemas
+      - status
+      - detail
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example:
+          - urn:ietf:params:scim:api:messages:2.0:Error
+        status:
+          type: string
+          description: HTTP status as a string.
+        detail:
+          type: string
   requestBodies: {}
   headers: {}
