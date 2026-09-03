@@ -49,7 +49,11 @@ import { WorkflowsView } from './views/workflows'
 import { ApprovalsView } from './views/approvals'
 import { EvaluationsView } from './views/evaluations'
 import { UsageView } from './views/usage'
-import { canDecide, canWrite } from './lib/rbac'
+import { VersionsView } from './views/versions'
+import { PoliciesView } from './views/policies'
+import { SchedulesView } from './views/schedules'
+import { WebhooksView } from './views/webhooks'
+import { canDecide, canDeploy, canManagePolicies, canManageVersions, canWrite } from './lib/rbac'
 
 const COMMON_MODELS = ['gpt-4o-mini', 'gpt-4o', 'claude-3-7-sonnet', 'llama-3.1-70b']
 
@@ -1421,6 +1425,11 @@ export default function App() {
   // permission (mirrors the backend matrix — the API still enforces it).
   const canWriteRole = canWrite(auth.user?.role)
   const canDecideRole = canDecide(auth.user?.role)
+  // Finer-grained capabilities for the wave-3 views (mirrors the API grants:
+  // agents.write and deployments.deploy / policies.write are OWNER/ADMIN).
+  const canManageVersionsRole = canManageVersions(auth.user?.role)
+  const canDeployRole = canDeploy(auth.user?.role)
+  const canManagePoliciesRole = canManagePolicies(auth.user?.role)
 
   const navigateTo = (view: ViewName) => {
     setSelectedAgentId(null)
@@ -1436,7 +1445,11 @@ export default function App() {
         ['Runs', 'runs executions traces'],
         ['Approvals', 'approvals pending review risk'],
         ['Evaluations', 'evals evaluations datasets quality pass rate'],
+        ['Versions', 'versions deployments releases diff environments promote rollback'],
         ['Usage', 'usage metrics tokens cost'],
+        ['Policies', 'policies governance allow deny evaluate rbac'],
+        ['Schedules', 'schedules cron automation recurring triggers'],
+        ['Webhooks', 'webhooks events integrations deliveries secrets'],
       ] as const
     ).map(([view, keywords]) => ({
       id: `nav-${view}`,
@@ -1495,6 +1508,16 @@ export default function App() {
         return <ApprovalsView canDecide={canDecideRole} />
       case 'Evaluations':
         return <EvaluationsView canWrite={canWriteRole} />
+      case 'Versions':
+        return (
+          <VersionsView canManageVersions={canManageVersionsRole} canWrite={canWriteRole} canDeploy={canDeployRole} />
+        )
+      case 'Policies':
+        return <PoliciesView canManage={canManagePoliciesRole} />
+      case 'Schedules':
+        return <SchedulesView canWrite={canWriteRole} />
+      case 'Webhooks':
+        return <WebhooksView canWrite={canWriteRole} />
       case 'Tools':
         return <ToolsView />
       case 'Knowledge':
