@@ -1,0 +1,393 @@
+# AgentOS API — OpenAPI 3.1 fragment for canary deployments with
+# deterministic traffic splitting (issue #13, wave-4 track 4-c).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/cost.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/canary.yaml` passes.
+# Components carry the track-unique `Canary*` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation
+#     (deployments.deploy — the strictest EXISTING deployment permission,
+#     OWNER/ADMIN; no new permission enum was introduced)
+#   * structured error model {"error":{"code","message"}}
+#
+# NOTE for the orchestrator (existing paths extended by this track):
+#   1. POST /deployments/create (base CreateDeploymentRequest) gains two
+#      OPTIONAL properties — merge into the base schema:
+#        canary_version:
+#          type: integer
+#          minimum: 1
+#          description: Optional canary target; must be an existing version of
+#            the SAME agent (any publication status) and differ from `version`.
+#        canary_weight:
+#          type: integer
+#          minimum: 0
+#          maximum: 100
+#          description: Percentage of traffic routed to the canary (0-100).
+#            Requires canary_version.
+#   2. The base `Deployment` response schema gains the same two properties
+#      (canary_version int, canary_weight int; canary_version 0 = no canary).
+#      The CanaryDeploymentView schema below is the authoritative full shape;
+#      alternatively merge its properties into the base `Deployment` schema
+#      and drop the view.
+openapi: 3.1.0
+info:
+  title: AgentOS — canary deployments (wave-4 track 4-c fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the canary traffic-split operations added by issue
+  #13. A deployment row carries an optional canary config (canary_version +
+  canary_weight): while the row is the environment's HEALTHY deployment,
+  canary_weight percent of that agent's traffic deterministically resolves to
+  the canary version (bucket = FNV-1a32("<org_id>/<agent_id>") % 100; canary
+  when bucket < canary_weight — the same agent always lands on the same side,
+  weight 0 -> always stable, 100 -> always canary). Promote makes the canary
+  the stable version (version swap, canary config cleared, row stays healthy);
+  abort clears the canary and keeps the stable version serving 100%.
+paths:
+  /deployments/{id}/canary:
+    post:
+      operationId: setDeploymentCanary
+      summary: Attach or replace the canary version and/or move the traffic split
+      description: |
+        Traffic-changing operation (deployments.deploy, OWNER/ADMIN). Body
+        fields are optional but at least one must be provided; omitted fields
+        keep their current value. `canary_version` attaches/replaces the
+        canary: it must be an EXISTING version of the SAME agent (any
+        publication status — only one version can be published at a time and a
+        canary runs next to the stable version) and differ from the stable
+        version. `canary_weight` moves the 0-100 split point and requires an
+        attached canary; out-of-range values are rejected, not clamped. Only
+        the environment's HEALTHY deployment accepts canary operations;
+        `canary_version` on non-healthy rows is staged config that never
+        serves traffic.
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/CanaryDeploymentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CanaryConfigRequest'
+      responses:
+        '200':
+          description: Updated deployment (canary fields included).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryDeploymentResponse'
+        '400':
+          description: Malformed JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/CanaryUnauthorized'
+        '403':
+          $ref: '#/components/responses/CanaryForbidden'
+        '404':
+          description: Deployment not found within the caller's organization (error.code DEPLOYMENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '409':
+          description: |
+            State conflict: the deployment has no canary configured yet
+            (canary_weight-only body) or is not the environment's healthy
+            deployment (error.code INVALID_STATE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '422':
+          description: |
+            Validation error: empty body, canary_weight outside 0-100, canary
+            version unknown/cross-agent/equal to the stable version
+            (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+  /deployments/{id}/canary/promote:
+    post:
+      operationId: promoteCanaryDeployment
+      summary: Make the canary the stable version (weight -> 0, config cleared)
+      description: |
+        Traffic-changing operation (deployments.deploy, OWNER/ADMIN). The
+        canary becomes the stable version: the deployment's `version` swaps to
+        the canary version and the canary config is cleared (canary_version 0,
+        canary_weight 0). The row STAYS healthy — no lifecycle transition, no
+        new ledger row — so the one-healthy-per-agent+environment invariant
+        holds and history remains append-only. Rejected when the deployment
+        has no canary or is not healthy (INVALID_STATE).
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/CanaryDeploymentID'
+      responses:
+        '200':
+          description: The promotion result (stable version swapped, canary cleared).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryDeploymentResponse'
+        '401':
+          $ref: '#/components/responses/CanaryUnauthorized'
+        '403':
+          $ref: '#/components/responses/CanaryForbidden'
+        '404':
+          description: Deployment not found within the caller's organization (error.code DEPLOYMENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '409':
+          description: No canary configured or deployment not healthy (error.code INVALID_STATE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+  /deployments/{id}/canary/abort:
+    post:
+      operationId: abortCanaryDeployment
+      summary: Clear the canary and keep the stable version serving 100%
+      description: |
+        Traffic-changing operation (deployments.deploy, OWNER/ADMIN). Clears
+        the canary config (canary_version 0, canary_weight 0); the stable
+        version keeps serving all traffic. Rejected when the deployment has no
+        canary or is not healthy (INVALID_STATE).
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/CanaryDeploymentID'
+      responses:
+        '200':
+          description: The aborted deployment (stable version unchanged, canary cleared).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryDeploymentResponse'
+        '401':
+          $ref: '#/components/responses/CanaryUnauthorized'
+        '403':
+          $ref: '#/components/responses/CanaryForbidden'
+        '404':
+          description: Deployment not found within the caller's organization (error.code DEPLOYMENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '409':
+          description: No canary configured or deployment not healthy (error.code INVALID_STATE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    CanaryDeploymentID:
+      name: id
+      in: path
+      required: true
+      description: Deployment identifier (UUID v4 string).
+      schema:
+        type: string
+      example: 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+  responses:
+    CanaryUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CanaryErrorEnvelope'
+    CanaryForbidden:
+      description: Authenticated but lacking the deployments.deploy permission (OWNER/ADMIN only).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CanaryErrorEnvelope'
+  schemas:
+    CanaryConfigRequest:
+      type: object
+      description: |
+        Canary configuration patch. At least one property is required; omitted
+        properties keep their current value.
+      properties:
+        canary_version:
+          type: integer
+          minimum: 1
+          description: |
+            Canary target version. Must be an existing version of the SAME
+            agent (any publication status) and differ from the deployment's
+            stable version.
+          examples:
+          - 3
+        canary_weight:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percentage of traffic routed to the canary (0-100). Requires an attached canary.
+          examples:
+          - 50
+      minProperties: 1
+    CanaryDeploymentHealth:
+      type: object
+      description: Health payload (mirrors the base DeploymentHealth schema; superseded_by/error appear only on demoted/failed rows).
+      properties:
+        error_rate:
+          type: number
+          format: double
+          examples:
+          - 0.0
+        last_check_at:
+          type: string
+          format: date-time
+          nullable: true
+          examples:
+          - '2025-01-02T03:04:05Z'
+        superseded_by:
+          type: string
+          description: ID of the deployment that replaced this (previously healthy) row.
+        error:
+          type: string
+          description: Failure reason when status is failed.
+    CanaryDeploymentView:
+      type: object
+      description: |
+        Deployment wire shape extended with the canary fields (issue #13).
+        canary_version 0 means "no canary" — all traffic serves the stable
+        `version`. While the row is the environment's healthy deployment,
+        canary_weight percent of the agent's traffic deterministically
+        resolves to canary_version.
+      properties:
+        id:
+          type: string
+          examples:
+          - 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+        agent_id:
+          type: string
+          examples:
+          - agent-1
+        version:
+          type: integer
+          description: The STABLE version (serves 100 - canary_weight percent of traffic).
+          examples:
+          - 2
+        environment:
+          type: string
+          enum:
+          - development
+          - staging
+          - production
+        status:
+          type: string
+          enum:
+          - requested
+          - validated
+          - deploying
+          - healthy
+          - failed
+        health:
+          $ref: '#/components/schemas/CanaryDeploymentHealth'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        canary_version:
+          type: integer
+          description: The CANARY version; 0 = no canary configured.
+          examples:
+          - 3
+        canary_weight:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percentage of traffic deterministically routed to the canary (0 when no canary).
+          examples:
+          - 50
+      required:
+      - id
+      - agent_id
+      - version
+      - environment
+      - status
+      - health
+      - created_at
+      - updated_at
+      - canary_version
+      - canary_weight
+    CanaryDeploymentResponse:
+      type: object
+      properties:
+        deployment:
+          $ref: '#/components/schemas/CanaryDeploymentView'
+      required:
+      - deployment
+    CanaryErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of DEPLOYMENT_NOT_FOUND, INVALID_STATE, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - INVALID_STATE
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
