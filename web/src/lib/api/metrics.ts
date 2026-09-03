@@ -1,7 +1,14 @@
 // Metrics + platform health endpoints.
 //
-// GET /metrics (confirmed against cmd/api/handlers.go metricsHandler) returns:
-//   { "counts": { "<name>": n, ... }, "latency": { "<name>": ms, ... }, "queue_length": n }
+// GET /metrics (Prometheus text by default; ?format=json for the JSON shape)
+// returns:
+//   { "counts": { "<name>": n, ... },
+//     "latency": { "<name>": ms, ... },
+//     "queue_length": n,
+//     "histograms": { "<name>": { count, sum, min, max, p50, p95, p99, buckets } } }
+// where the histogram section (wave-2 track 2-h) carries bucketed
+// p50/p95/p99 summaries keyed like
+// agentos_request_duration_seconds{route="…",method="…",status="…"} (seconds).
 
 import { API_BASE, apiFetch } from './client'
 import { normalizeMetrics, type MetricsSnapshot } from './types'
