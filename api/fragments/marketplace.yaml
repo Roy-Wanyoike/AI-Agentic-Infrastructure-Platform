@@ -1,0 +1,272 @@
+# AgentOS API — OpenAPI 3.1 fragment for the agent marketplace (#28).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment
+# (Mkt* schema prefix is track-unique; operationIds verified unique against
+# the base spec).
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (see base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation
+#   * structured error model {"error":{"code","message"}}
+paths:
+  /marketplace/listings:
+    post:
+      operationId: publishMarketplaceListing
+      summary: Publish an agent as a marketplace listing
+      description: |
+        Creates a listing from an existing agent in the caller's organization,
+        snapshotting the agent's current configuration (config only — never
+        secrets). Requires OWNER/ADMIN of the publishing organization.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MktPublishRequest'
+      responses:
+        '201':
+          description: Listing created (status published)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktListingEnvelope'
+        '401':
+          $ref: '#/components/responses/MktUnauthorized'
+        '403':
+          $ref: '#/components/responses/MktForbidden'
+        '409':
+          description: Slug already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktError'
+        '422':
+          description: Validation error (unknown agent, empty name, ...)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktError'
+    get:
+      operationId: browseMarketplaceListings
+      summary: Browse / search published listings
+      description: |
+        Global read across organizations. Supports text search over name and
+        description (`q`), tag filtering (`tag`, repeatable) and keyset
+        pagination (`limit` + `cursor` from `next_cursor`).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: authenticated
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+          description: Text match over listing name and description.
+        - name: tag
+          in: query
+          schema: { type: string }
+          description: Filter by tag (repeatable; OR semantics).
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: Keyset cursor from a previous response's next_cursor.
+      responses:
+        '200':
+          description: Paginated listings page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktListingPage'
+        '401':
+          $ref: '#/components/responses/MktUnauthorized'
+  /marketplace/listings/{slug}:
+    get:
+      operationId: getMarketplaceListing
+      summary: Get a single listing by slug
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: authenticated
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The listing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktListingEnvelope'
+        '404':
+          $ref: '#/components/responses/MktNotFound'
+    delete:
+      operationId: unlistMarketplaceListing
+      summary: Unlist a listing (publisher org OWNER/ADMIN only)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (publisher OWNER/ADMIN)
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Listing unlisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktListingEnvelope'
+        '403':
+          $ref: '#/components/responses/MktForbidden'
+        '404':
+          $ref: '#/components/responses/MktNotFound'
+  /marketplace/listings/{slug}/install:
+    post:
+      operationId: installMarketplaceListing
+      summary: Install a listing as a new agent in the caller's organization
+      description: |
+        Creates a NEW agent in the caller's organization from the listing's
+        version snapshot. Name collisions get a deterministic `-2`/`-3`/...
+        suffix. Increments the listing's download counter and writes an
+        audit entry.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '201':
+          description: Agent created from the snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktInstallResponse'
+        '404':
+          $ref: '#/components/responses/MktNotFound'
+        '422':
+          description: Snapshot no longer installable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktError'
+components:
+  schemas:
+    MktPublishRequest:
+      type: object
+      required: [agent_id, name]
+      properties:
+        agent_id:
+          type: string
+          description: Agent (in the caller's org) to snapshot into the listing.
+        name:
+          type: string
+          description: Display name of the listing.
+        description:
+          type: string
+        tags:
+          type: array
+          items: { type: string }
+    MktListing:
+      type: object
+      properties:
+        id: { type: string }
+        publisher_org_id: { type: string }
+        publisher_user_id: { type: string }
+        source_agent_id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        status:
+          type: string
+          enum: [draft, published, unlisted]
+        download_count: { type: integer }
+        version_snapshot:
+          description: Snapshot of the agent configuration at publish time.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MktListingEnvelope:
+      type: object
+      required: [listing]
+      properties:
+        listing:
+          $ref: '#/components/schemas/MktListing'
+    MktListingPage:
+      type: object
+      required: [listings]
+      properties:
+        listings:
+          type: array
+          items:
+            $ref: '#/components/schemas/MktListing'
+        next_cursor:
+          type: string
+          description: Empty string when the page is the last one.
+    MktInstallResponse:
+      type: object
+      required: [listing, agent]
+      properties:
+        listing:
+          $ref: '#/components/schemas/MktListing'
+        agent:
+          type: object
+          properties:
+            id: { type: string }
+            organization_id: { type: string }
+            name: { type: string }
+            description: { type: string }
+            instructions: { type: string }
+            model: { type: string }
+            status: { type: string }
+            created_at: { type: string, format: date-time }
+    MktError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+  responses:
+    MktUnauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MktError'
+    MktForbidden:
+      description: Authenticated but not permitted for this operation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MktError'
+    MktNotFound:
+      description: Listing not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MktError'
