@@ -21,6 +21,8 @@ Current migration structure:
 - 015_canary_deployments.sql
 - 016_billing.sql
 - 017_secrets.sql
+- 018_marketplace.sql
+- 020_connectors.sql
 
 Migration conventions:
 
