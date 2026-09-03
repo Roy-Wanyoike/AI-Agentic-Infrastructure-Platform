@@ -13,14 +13,12 @@ export const navItems = [
   'Evaluations',
   'Versions',
   'Usage',
+  'Knowledge',
+  'Memory',
+  'Analytics',
   'Policies',
   'Schedules',
   'Webhooks',
-  'Tools',
-  'Knowledge',
-  'Analytics',
-  'Security',
-  'Infrastructure',
   'Settings',
 ] as const
 

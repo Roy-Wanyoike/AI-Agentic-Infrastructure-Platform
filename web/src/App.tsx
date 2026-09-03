@@ -11,7 +11,6 @@ import {
 } from './lib/api/auth'
 import { API_BASE, APP_NAME } from './lib/api/client'
 import { isTerminalRunStatus, type Agent, type Run } from './lib/api/types'
-import { isDemoView } from './lib/demo'
 import { formatDateTime, formatNumber, formatRelativeTime, shortenId } from './lib/format'
 import {
   useAgent,
@@ -25,8 +24,6 @@ import {
   useRunEvents,
 } from './lib/hooks'
 import {
-  DemoBadge,
-  DemoStrip,
   EmptyState,
   ErrorBanner,
   PageHeader,
@@ -49,6 +46,9 @@ import { WorkflowsView } from './views/workflows'
 import { ApprovalsView } from './views/approvals'
 import { EvaluationsView } from './views/evaluations'
 import { UsageView } from './views/usage'
+import { KnowledgeView } from './views/knowledge'
+import { MemoryView } from './views/memory'
+import { AnalyticsView } from './views/analytics'
 import { VersionsView } from './views/versions'
 import { PoliciesView } from './views/policies'
 import { SchedulesView } from './views/schedules'
@@ -1211,201 +1211,6 @@ function RunDetailView({
 }
 
 // ---------------------------------------------------------------------------
-// Demo views (no live endpoints yet) — content kept, honestly badged
-// ---------------------------------------------------------------------------
-
-const toolCards = [
-  { name: 'Slack notifier', category: 'Communication', status: 'Healthy', latency: '180ms', permissions: 'write:messages' },
-  { name: 'Postgres query', category: 'Data access', status: 'Running', latency: '590ms', permissions: 'read:analytics' },
-  { name: 'Kubernetes deploy', category: 'Infrastructure', status: 'Review', latency: '1.2s', permissions: 'deploy:staging' },
-  { name: 'CRM sync', category: 'Sales ops', status: 'Healthy', latency: '240ms', permissions: 'write:records' },
-]
-
-const securityRows = [
-  { name: 'MFA enforcement', status: 'Healthy', coverage: '96%' },
-  { name: 'Secret rotation', status: 'Review', coverage: '71%' },
-  { name: 'IAM drift', status: 'Running', coverage: '84%' },
-  { name: 'Audit trail', status: 'Healthy', coverage: '99%' },
-]
-
-const infrastructureRows = [
-  { name: 'Core API', region: 'us-east-1', replicas: '8', status: 'Healthy' },
-  { name: 'Workers', region: 'eu-west-1', replicas: '6', status: 'Running' },
-  { name: 'Queue broker', region: 'us-west-2', replicas: '3', status: 'Review' },
-  { name: 'Storage', region: 'global', replicas: '4', status: 'Healthy' },
-]
-
-function ToolsView() {
-  return (
-    <>
-      <PageHeader
-        eyebrow="Tooling"
-        title="Tools"
-        badge={<DemoBadge />}
-        actions={
-          <>
-            <button type="button" className="ghost-button">Marketplace</button>
-            <button type="button" className="primary-button">Add tool</button>
-          </>
-        }
-      />
-
-      <section className="summary-grid">
-        <SummaryStat label="Total tools" value="36" accent="default" />
-        <SummaryStat label="Secure" value="31" accent="info" />
-        <SummaryStat label="Needs review" value="3" accent="warning" />
-        <SummaryStat label="Calls / hr" value="24.8k" accent="success" />
-      </section>
-
-      <section className="tool-grid">
-        {toolCards.map((tool) => (
-          <article key={tool.name} className="tool-card">
-            <div className="tool-card-header">
-              <div>
-                <p className="eyebrow small">{tool.category}</p>
-                <h3>{tool.name}</h3>
-              </div>
-              <StatusPill status={tool.status} />
-            </div>
-
-            <div className="tool-meta">
-              <div>
-                <label>Latency</label>
-                <strong>{tool.latency}</strong>
-              </div>
-              <div>
-                <label>Permission</label>
-                <strong>{tool.permissions}</strong>
-              </div>
-            </div>
-
-            <div className="card-actions">
-              <button type="button" className="ghost-button">Permissions</button>
-              <button type="button" className="primary-button small">Enable</button>
-            </div>
-          </article>
-        ))}
-      </section>
-    </>
-  )
-}
-
-function SecurityView() {
-  return (
-    <>
-      <PageHeader
-        eyebrow="Governance"
-        title="Security"
-        badge={<DemoBadge />}
-        actions={
-          <>
-            <button type="button" className="ghost-button">Policies</button>
-            <button type="button" className="primary-button">Run audit</button>
-          </>
-        }
-      />
-
-      <section className="summary-grid">
-        <article className="mini-stat">
-          <span>Controls</span>
-          <strong>41</strong>
-        </article>
-        <article className="mini-stat">
-          <span>Protected</span>
-          <strong>98%</strong>
-        </article>
-        <article className="mini-stat">
-          <span>Incidents</span>
-          <strong>2</strong>
-        </article>
-        <article className="mini-stat">
-          <span>MTTR</span>
-          <strong>14m</strong>
-        </article>
-      </section>
-
-      <section className="security-grid">
-        {securityRows.map((control) => (
-          <article key={control.name} className="security-card">
-            <div className="security-card-header">
-              <h3>{control.name}</h3>
-              <StatusPill status={control.status} />
-            </div>
-            <div className="security-row">
-              <label>Coverage</label>
-              <strong>{control.coverage}</strong>
-            </div>
-            <div className="meter"><span style={{ width: control.coverage }} /></div>
-          </article>
-        ))}
-      </section>
-    </>
-  )
-}
-
-function InfrastructureView() {
-  return (
-    <>
-      <PageHeader
-        eyebrow="Operations"
-        title="Infrastructure"
-        badge={<DemoBadge />}
-        actions={
-          <>
-            <button type="button" className="ghost-button">Scale plan</button>
-            <button type="button" className="primary-button">Deploy update</button>
-          </>
-        }
-      />
-
-      <section className="summary-grid">
-        <article className="mini-stat">
-          <span>Clusters</span>
-          <strong>7</strong>
-        </article>
-        <article className="mini-stat">
-          <span>Replicas</span>
-          <strong>26</strong>
-        </article>
-        <article className="mini-stat">
-          <span>Uptime</span>
-          <strong>99.97%</strong>
-        </article>
-        <article className="mini-stat">
-          <span>Alerts</span>
-          <strong>3</strong>
-        </article>
-      </section>
-
-      <section className="infra-grid">
-        {infrastructureRows.map((service) => (
-          <article key={service.name} className="infra-card">
-            <div className="infra-card-header">
-              <div>
-                <p className="eyebrow small">{service.region}</p>
-                <h3>{service.name}</h3>
-              </div>
-              <StatusPill status={service.status} />
-            </div>
-
-            <div className="tool-meta">
-              <div>
-                <label>Replicas</label>
-                <strong>{service.replicas}</strong>
-              </div>
-              <div>
-                <label>Region</label>
-                <strong>{service.region}</strong>
-              </div>
-            </div>
-          </article>
-        ))}
-      </section>
-    </>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // App shell
 // ---------------------------------------------------------------------------
 
@@ -1447,6 +1252,9 @@ export default function App() {
         ['Evaluations', 'evals evaluations datasets quality pass rate'],
         ['Versions', 'versions deployments releases diff environments promote rollback'],
         ['Usage', 'usage metrics tokens cost'],
+        ['Knowledge', 'knowledge documents rag retrieval search embeddings'],
+        ['Memory', 'memory snippets short term long term agent recall'],
+        ['Analytics', 'analytics latency percentiles p50 p95 p99 counters queue costs'],
         ['Policies', 'policies governance allow deny evaluate rbac'],
         ['Schedules', 'schedules cron automation recurring triggers'],
         ['Webhooks', 'webhooks events integrations deliveries secrets'],
@@ -1518,28 +1326,18 @@ export default function App() {
         return <SchedulesView canWrite={canWriteRole} />
       case 'Webhooks':
         return <WebhooksView canWrite={canWriteRole} />
-      case 'Tools':
-        return <ToolsView />
+      // Removed with the demo system: Tools / Security / Infrastructure had no
+      // backing endpoints, so their fake dashboards were deleted per the
+      // no-silent-mock rule. They return as real views once the API exposes
+      // /v1/tools and /v1/audit-events.
       case 'Knowledge':
-        return (
-          <>
-            <DemoStrip note="No Knowledge API endpoint yet — the live platform feed is shown below." />
-            <OverviewView onNavigate={setActiveView} onOpenRun={openRun} />
-          </>
-        )
+        return <KnowledgeView canWrite={canWriteRole} />
+      case 'Memory':
+        return <MemoryView canWrite={canWriteRole} />
       case 'Analytics':
-        return (
-          <>
-            <DemoStrip note="No Analytics API endpoint yet — the live platform feed is shown below." />
-            <OverviewView onNavigate={setActiveView} onOpenRun={openRun} />
-          </>
-        )
+        return <AnalyticsView />
       case 'Usage':
         return <UsageView />
-      case 'Security':
-        return <SecurityView />
-      case 'Infrastructure':
-        return <InfrastructureView />
       default:
         return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} />
     }
@@ -1565,7 +1363,6 @@ export default function App() {
               onClick={() => setActiveView(item)}
             >
               {item}
-              {isDemoView(item) ? <span className="nav-demo-dot" title="Demo data" /> : null}
             </button>
           ))}
         </nav>
