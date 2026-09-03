@@ -68,6 +68,16 @@ func (s *Service) ExecuteWorkflow(ctx context.Context, orgID, workflowID, input,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
+	// Durability bookkeeping: the run is born with a fresh heartbeat (the
+	// recovery pass measures staleness against it) and, when the
+	// WithDefaultRunDeadline option is set, a wall-clock budget the
+	// watchdog enforces (status timeout + WORKFLOW_RUN_TIMEOUT).
+	heartbeat := now
+	wr.HeartbeatAt = &heartbeat
+	if deadline := s.defaultDeadlineValue(); deadline > 0 {
+		d := now.Add(deadline)
+		wr.DeadlineAt = &d
+	}
 	if err := s.createWorkflowRun(ctx, orgID, wr); err != nil {
 		return nil, err
 	}
@@ -208,8 +218,12 @@ func (s *Service) createWorkflowRun(ctx context.Context, orgID string, wr *Workf
 }
 
 // recordNodeRun persists one node run through the store (when wired) and the
-// in-memory cache.
+// in-memory cache. The tenant scope is stamped here so cache lookups
+// (latestNodeRun, parentOfNodeRun, ...) see the same org guard as the store.
 func (s *Service) recordNodeRun(ctx context.Context, orgID string, nr *NodeRun) {
+	if nr.OrganizationID == "" {
+		nr.OrganizationID = orgID
+	}
 	if s.store != nil {
 		if err := s.store.CreateNodeRun(ctx, orgID, nr); err != nil {
 			return
@@ -217,6 +231,7 @@ func (s *Service) recordNodeRun(ctx context.Context, orgID string, nr *NodeRun) 
 	}
 	s.mu.Lock()
 	s.nodeRuns[nr.WorkflowRunID] = append(s.nodeRuns[nr.WorkflowRunID], nr)
+	s.nodeRunIndex[nr.ID] = nr
 	s.mu.Unlock()
 }
 
