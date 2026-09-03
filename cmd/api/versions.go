@@ -16,6 +16,9 @@ package main
 //      GET    /deployments/{id}                       -> deployments.read
 //      POST   /deployments/{id}/promote               -> deployments.deploy
 //      POST   /deployments/{id}/rollback              -> deployments.deploy
+//      POST   /deployments/{id}/canary                -> deployments.deploy   (canary)
+//      POST   /deployments/{id}/canary/promote        -> deployments.deploy   (canary)
+//      POST   /deployments/{id}/canary/abort          -> deployments.deploy   (canary)
 //
 // The tenant is taken from the auth claims only; client-supplied organization
 // ids are never trusted. Error bodies use the shared
@@ -230,31 +233,37 @@ func rollbackAgentHandler(versionsSvc *agents.VersionsService) http.HandlerFunc 
 	}
 }
 
-// deploymentView is the wire shape pinned by the wave-2 contract:
+// deploymentView is the wire shape pinned by the wave-2 contract, extended by
+// the canary fields (issue #13):
 // {"id","agent_id","version","environment","status","health","created_at",
-// "updated_at"} (created_by/superseded_at stay server-side; health carries the
-// contract's error_rate/last_check_at plus omitempty failure markers).
+// "updated_at","canary_version","canary_weight"} (created_by/superseded_at
+// stay server-side; health carries the contract's error_rate/last_check_at
+// plus omitempty failure markers). canary_version 0 = no canary configured.
 type deploymentView struct {
-	ID          string              `json:"id"`
-	AgentID     string              `json:"agent_id"`
-	Version     int                 `json:"version"`
-	Environment string              `json:"environment"`
-	Status      string              `json:"status"`
-	Health      *deployments.Health `json:"health"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	ID            string              `json:"id"`
+	AgentID       string              `json:"agent_id"`
+	Version       int                 `json:"version"`
+	Environment   string              `json:"environment"`
+	Status        string              `json:"status"`
+	Health        *deployments.Health `json:"health"`
+	CreatedAt     time.Time           `json:"created_at"`
+	UpdatedAt     time.Time           `json:"updated_at"`
+	CanaryVersion int                 `json:"canary_version"`
+	CanaryWeight  int                 `json:"canary_weight"`
 }
 
 func newDeploymentView(deployment *deployments.Deployment) deploymentView {
 	return deploymentView{
-		ID:          deployment.ID,
-		AgentID:     deployment.AgentID,
-		Version:     deployment.Version,
-		Environment: deployment.Environment,
-		Status:      deployment.Status,
-		Health:      deployment.Health,
-		CreatedAt:   deployment.CreatedAt,
-		UpdatedAt:   deployment.UpdatedAt,
+		ID:            deployment.ID,
+		AgentID:       deployment.AgentID,
+		Version:       deployment.Version,
+		Environment:   deployment.Environment,
+		Status:        deployment.Status,
+		Health:        deployment.Health,
+		CreatedAt:     deployment.CreatedAt,
+		UpdatedAt:     deployment.UpdatedAt,
+		CanaryVersion: deployment.CanaryVersion,
+		CanaryWeight:  deployment.CanaryWeight,
 	}
 }
 
@@ -272,6 +281,13 @@ func writeDeploymentsError(w http.ResponseWriter, err error) bool {
 		writeErrorVD(w, http.StatusUnprocessableEntity, "VERSION_NOT_PUBLISHED", "agent version must exist and be published to create a deployment")
 	case errors.Is(err, deployments.ErrInvalidEnvironment):
 		writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "environment must be one of development|staging|production")
+	case errors.Is(err, deployments.ErrNoCanary):
+		// Canary ops on a row without a canary config (409, a state conflict).
+		writeErrorVD(w, http.StatusConflict, "INVALID_STATE", err.Error())
+	case errors.Is(err, deployments.ErrInvalidCanaryWeight):
+		writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
+	case errors.Is(err, deployments.ErrInvalidCanaryVersion):
+		writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
 	default:
 		return false
 	}
@@ -302,8 +318,13 @@ func listDeploymentsHandler(depSvc *deployments.Service) http.HandlerFunc {
 }
 
 // createDeploymentHandler serves POST /deployments/create with body
-// {"agent_id","version","environment"}: validates the target version exists and
-// is published, then creates a deployment in status requested.
+// {"agent_id","version","environment","canary_version"?,"canary_weight"?}:
+// validates the target version exists and is published, then creates a
+// deployment in status requested. The optional canary fields stage a canary
+// config (must be an existing version of the same agent, any publication
+// status, because only one version can be published at a time; weight 0-100);
+// the split only serves traffic once the row is the environment's healthy
+// deployment.
 func createDeploymentHandler(depSvc *deployments.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orgID, ok := claimsOrgIDVD(w, r)
@@ -311,9 +332,11 @@ func createDeploymentHandler(depSvc *deployments.Service) http.HandlerFunc {
 			return
 		}
 		var req struct {
-			AgentID     string `json:"agent_id"`
-			Version     int    `json:"version"`
-			Environment string `json:"environment"`
+			AgentID       string `json:"agent_id"`
+			Version       int    `json:"version"`
+			Environment   string `json:"environment"`
+			CanaryVersion int    `json:"canary_version"`
+			CanaryWeight  int    `json:"canary_weight"`
 		}
 		if !readJSONVD(w, r, &req) {
 			return
@@ -330,9 +353,22 @@ func createDeploymentHandler(depSvc *deployments.Service) http.HandlerFunc {
 			writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "environment is required")
 			return
 		}
+		if req.CanaryVersion == 0 && req.CanaryWeight != 0 {
+			writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "canary_weight requires canary_version")
+			return
+		}
 		claims, _ := auth.ExtractClaims(r.Context())
 		// Tenant guard: the deployment row is created with the caller's org.
-		deployment, err := depSvc.CreateDeploymentCtx(r.Context(), orgID, req.AgentID, req.Version, req.Environment, claims.UserID)
+		// canary_version == 0 means "no canary" (plain create path).
+		var (
+			deployment *deployments.Deployment
+			err        error
+		)
+		if req.CanaryVersion > 0 {
+			deployment, err = depSvc.CreateCanaryDeploymentCtx(r.Context(), orgID, req.AgentID, req.Version, req.CanaryVersion, req.CanaryWeight, req.Environment, claims.UserID)
+		} else {
+			deployment, err = depSvc.CreateDeploymentCtx(r.Context(), orgID, req.AgentID, req.Version, req.Environment, claims.UserID)
+		}
 		if err != nil {
 			if !writeDeploymentsError(w, err) {
 				writeErrorVD(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
@@ -477,7 +513,7 @@ func registerVersionsRoutes(apiMux *http.ServeMux, versionsSvc *agents.VersionsS
 // Permission mapping (contract RBAC table):
 //   - deployments.read   -> GET /deployments, GET /deployments/{id} (all roles)
 //   - deployments.write  -> POST /deployments/create (OWNER/ADMIN/MEMBER: request a deployment)
-//   - deployments.deploy -> promote + rollback (OWNER/ADMIN: change what serves traffic)
+//   - deployments.deploy -> promote + rollback + canary ops (OWNER/ADMIN: change what serves traffic)
 func registerDeploymentsRoutes(apiMux *http.ServeMux, depSvc *deployments.Service, authSvc *auth.Service, apiKeysSvc *apikeys.Service) {
 	wrap := func(perm auth.Permission, h http.HandlerFunc) http.Handler {
 		return auth.RequireAuthOrAPIKey(authSvc, apiKeysSvc)(auth.RequirePermission(authSvc, perm)(h))
@@ -487,4 +523,6 @@ func registerDeploymentsRoutes(apiMux *http.ServeMux, depSvc *deployments.Servic
 	apiMux.Handle("GET /deployments/{id}", wrap(auth.PermissionDeploymentsRead, getDeploymentHandler(depSvc)))
 	apiMux.Handle("POST /deployments/{id}/promote", wrap(auth.PermissionDeploymentsDeploy, promoteDeploymentHandler(depSvc)))
 	apiMux.Handle("POST /deployments/{id}/rollback", wrap(auth.PermissionDeploymentsDeploy, rollbackDeploymentHandler(depSvc)))
+	// Canary traffic-split routes (issue #13) - see cmd/api/canary.go.
+	registerCanaryRoutes(apiMux, depSvc, authSvc, apiKeysSvc)
 }
