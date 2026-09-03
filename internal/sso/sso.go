@@ -193,6 +193,12 @@ func (s *Service) BeginLogin(ctx context.Context, orgSlug, redirectURI string) (
 		CreatedAt:   s.now(),
 	})
 
+	// A config-pinned redirect_uri wins over the derived callback URL
+	// (deployments behind proxies that cannot reconstruct the public URL).
+	if pinned := strings.TrimSpace(cfg.RedirectURI); pinned != "" {
+		redirectURI = pinned
+	}
+
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
 		scopes = []string{"openid", "email", "profile"}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,10 @@ type ProvisioningStore interface {
 	// password login). Org-guarded; unknown/foreign user returns
 	// ErrUserNotFound.
 	SetUserActive(ctx context.Context, orgID, userID string, active bool) error
+	// ListUsersByOrg returns every identity of exactly one tenant
+	// (organization_id guard) for the SCIM 2.0 ListResponse (issue #29).
+	// Ordering is stable (created_at, id) so listings are deterministic.
+	ListUsersByOrg(ctx context.Context, orgID string) ([]*User, error)
 }
 
 // Compile-time guarantee: the Postgres store satisfies the full provisioning
@@ -46,7 +51,17 @@ const (
 	sqlSetUserActive = `UPDATE users SET active = $1 WHERE id = $2 AND organization_id = $3 AND active IS DISTINCT FROM $1`
 	// Primary-key lookup used by SCIM point reads and the SSO callback.
 	sqlSelectAuthUserByID = `SELECT id, organization_id, email, password_hash, role, created_at, COALESCE(sso_subject, ''), active FROM users WHERE id = $1`
+	// Tenant-scoped identity listing for the SCIM 2.0 ListResponse.
+	sqlSelectAuthUsersByOrg = `SELECT id, organization_id, email, password_hash, role, created_at, COALESCE(sso_subject, ''), active FROM users WHERE organization_id = $1 ORDER BY created_at, id`
 )
+
+// NewProvisioningStore returns the full Store + ProvisioningStore surface
+// backed by *sql.DB. The legacy NewPostgresStore keeps returning the narrower
+// Store interface; SSO/SCIM wiring uses this constructor to hand ONE identity
+// store to internal/sso and internal/scim without type assertions.
+func NewProvisioningStore(db *sql.DB) ProvisioningStore {
+	return &pgStore{db: db}
+}
 
 // GetUserByID implements ProvisioningStore against Postgres.
 func (s *pgStore) GetUserByID(ctx context.Context, userID string) (*User, error) {
@@ -115,6 +130,29 @@ func (s *pgStore) SetUserActive(ctx context.Context, orgID, userID string, activ
 		}
 	}
 	return nil
+}
+
+// ListUsersByOrg implements ProvisioningStore against Postgres: every
+// identity of one tenant, stable (created_at, id) order. Empty orgs yield a
+// nil slice with no error.
+func (s *pgStore) ListUsersByOrg(ctx context.Context, orgID string) ([]*User, error) {
+	if err := s.guard(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, sqlSelectAuthUsersByOrg, strings.TrimSpace(orgID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []*User
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(&user.ID, &user.Organization, &user.Email, &user.PasswordHash, &user.Role, &user.CreatedAt, &user.SSOSubject, &user.Active); err != nil {
+			return nil, err
+		}
+		users = append(users, &user)
+	}
+	return users, rows.Err()
 }
 
 // MemoryStore is the zero-infrastructure Store + ProvisioningStore used by
@@ -241,4 +279,25 @@ func (m *MemoryStore) SetUserActive(_ context.Context, orgID, userID string, act
 	}
 	user.Active = active
 	return nil
+}
+
+// ListUsersByOrg implements ProvisioningStore against the in-memory table:
+// every identity of one tenant in stable (CreatedAt, ID) order.
+func (m *MemoryStore) ListUsersByOrg(_ context.Context, orgID string) ([]*User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	users := make([]*User, 0, len(m.users))
+	for _, user := range m.users {
+		if user.Organization == orgID {
+			clone := *user
+			users = append(users, &clone)
+		}
+	}
+	sort.Slice(users, func(i, j int) bool {
+		if !users[i].CreatedAt.Equal(users[j].CreatedAt) {
+			return users[i].CreatedAt.Before(users[j].CreatedAt)
+		}
+		return users[i].ID < users[j].ID
+	})
+	return users, nil
 }
