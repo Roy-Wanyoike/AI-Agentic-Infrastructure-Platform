@@ -18,6 +18,7 @@ import (
 	"agentos/internal/database"
 	"agentos/internal/logger"
 	"agentos/internal/models"
+	"agentos/internal/observability"
 	"agentos/internal/queue"
 	"agentos/internal/runs"
 	"agentos/internal/runtime"
@@ -163,9 +164,19 @@ func main() {
 	}
 	defer func() { _ = workQueue.Close() }()
 	runsService := runs.NewService()
+	// Issue #12: the worker owns the point of truth for worker-executed
+	// runs. Its own Metrics registry counts terminal run transitions
+	// (agentos_runs_total, via runs.Service.SetMetrics) and every executed
+	// tool step (agentos_tools_total, via runtime.WithMetrics). The API's
+	// /metrics endpoint additionally mirrors terminal outcomes through the
+	// worker status callback (cmd/api/handlers.go); this registry stays
+	// process-local and is unit-tested, not exposed over HTTP today.
+	metricsSvc := observability.NewMetrics()
+	runsService.SetMetrics(metricsSvc)
 	runner := runtime.NewRunnerWithOptions(agentsvc, registry,
 		runtime.WithProvider(provider),
 		runtime.WithStepRecorder(stepRecorderAdapter(runsService, agentsvc)),
+		runtime.WithMetrics(metricsSvc),
 	)
 	// wave-3 3-c: durable workflow recovery. One startup pass, then a sweep
 	// every DefaultRecoveryInterval (1m). The pass times out runs past their
@@ -240,7 +251,11 @@ func main() {
 				payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusFailed), "ts": time.Now().UTC().Format(time.RFC3339)}}
 				_ = postEventWithRetries(apiBase, runID, payload)
 			}()
-			return err
+			// Fix (found while wiring issue #12 metrics): this branch
+			// used to return the stale outer `err` (nil after the
+			// successful seed), so failed runs looked successful to
+			// the queue loop. Return the real runner error.
+			return rerr
 		}
 		task.Payload["result"] = run.Output
 		task.Payload["status"] = string(run.Status)

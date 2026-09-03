@@ -194,6 +194,8 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 
 	// wire runs service to streaming service so run status updates are published
 	a.runsSvc.SetStreamer(a.streamSvc)
+	// issue #12: feed agentos_runs_total from API-side run transitions
+	a.runsSvc.SetMetrics(a.metricsSvc)
 	// expose to handlers for backwards-compatible wiring in tests
 	runsServiceVar = a.runsSvc
 	return a

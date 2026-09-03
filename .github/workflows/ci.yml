@@ -1,12 +1,27 @@
 name: CI
 
+# Issue #11: valid triggers — pushes to the primary branches plus every pull
+# request. The Go job runs the full gate set (gofmt, vet, build, test) with Go
+# module + build caching. The frontend job lives in web.yml because GitHub
+# Actions path filters are workflow-level; a job-level "only when web/**
+# changed" filter inside this file would need a third-party action.
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  go:
+    name: Go (gofmt, vet, build, test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,12 +30,47 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # Go module + build cache keyed on go.sum (issue #11).
+          cache: true
+          cache-dependency-path: go.sum
 
-      - name: Install dependencies
+      - name: Download Go modules
         run: go mod download
 
-      - name: Run tests
-        run: go test ./...
+      - name: Check formatting (gofmt)
+        run: |
+          unformatted="$(gofmt -l ./cmd ./internal)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt violations — run 'gofmt -w ./cmd ./internal':"
+            echo "$unformatted"
+            exit 1
+          fi
 
-      - name: Run build
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
         run: go build ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+  apispec:
+    name: OpenAPI integrity (dangling $refs, duplicate operationIds)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      # Issue #17: fail CI on dangling $refs, duplicate operationIds, path
+      # items without operations and operations without responses.
+      # (Also covered by `go test ./...` in the go job; this dedicated job
+      # surfaces the contract check as a first-class PR check.)
+      - name: OpenAPI integrity tests
+        run: go test -count=1 ./internal/apispec/
