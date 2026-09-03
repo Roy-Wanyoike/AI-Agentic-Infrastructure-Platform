@@ -11,11 +11,11 @@ import (
 // Deployment SQL. Tenant guard: every statement filters on organization_id.
 const (
 	sqlInsertDeployment = `INSERT INTO deployments
-		(id, organization_id, agent_id, version, environment, status, health, created_by, created_at, updated_at, superseded_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+		(id, organization_id, agent_id, version, environment, status, health, created_by, created_at, updated_at, superseded_at, canary_version, canary_weight)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 
 	sqlSelectDeploymentColumns = `id, organization_id, agent_id, version, environment, status,
-		health, created_by, created_at, updated_at, superseded_at`
+		health, created_by, created_at, updated_at, superseded_at, canary_version, canary_weight`
 
 	// Tenant guard: single-deployment reads are scoped to one organization_id.
 	sqlSelectDeployment = `SELECT ` + sqlSelectDeploymentColumns + `
@@ -28,9 +28,11 @@ const (
 		ORDER BY created_at DESC, id`
 
 	// Tenant guard: lifecycle updates require a matching organization_id.
+	// canary_version/canary_weight are mutable too (configure/promote/abort
+	// transitions) and always written together with the lifecycle fields.
 	sqlUpdateDeployment = `UPDATE deployments
-		SET status = $1, health = $2, updated_at = $3, superseded_at = $4
-		WHERE id = $5 AND organization_id = $6`
+		SET status = $1, health = $2, updated_at = $3, superseded_at = $4, canary_version = $5, canary_weight = $6
+		WHERE id = $7 AND organization_id = $8`
 
 	// The environment's current deployment: the single healthy row.
 	sqlSelectHealthyDeployment = `SELECT ` + sqlSelectDeploymentColumns + `
@@ -84,7 +86,8 @@ func (s *pgStore) CreateDeployment(ctx context.Context, orgID string, deployment
 	_, err := s.db.ExecContext(ctx, sqlInsertDeployment,
 		deployment.ID, orgID, deployment.AgentID, deployment.Version,
 		deployment.Environment, deployment.Status, healthJSON(deployment.Health),
-		deployment.CreatedBy, createdAt, updatedAt, nullTime(deployment.SupersededAt))
+		deployment.CreatedBy, createdAt, updatedAt, nullTime(deployment.SupersededAt),
+		deployment.CanaryVersion, deployment.CanaryWeight)
 	return err
 }
 
@@ -128,7 +131,8 @@ func (s *pgStore) UpdateDeployment(ctx context.Context, orgID string, deployment
 	}
 	res, err := s.db.ExecContext(ctx, sqlUpdateDeployment,
 		deployment.Status, healthJSON(deployment.Health), updatedAt,
-		nullTime(deployment.SupersededAt), deployment.ID, orgID)
+		nullTime(deployment.SupersededAt), deployment.CanaryVersion, deployment.CanaryWeight,
+		deployment.ID, orgID)
 	if err != nil {
 		return err
 	}
@@ -178,7 +182,8 @@ func scanDeployment(scanner interface{ Scan(dest ...any) error }) (*Deployment, 
 	// health scans into []byte + bool via COALESCE-free NULL handling below.
 	if err := scanner.Scan(&deployment.ID, &deployment.OrganizationID, &deployment.AgentID,
 		&deployment.Version, &deployment.Environment, &deployment.Status,
-		&healthBytes, &deployment.CreatedBy, &deployment.CreatedAt, &deployment.UpdatedAt, &superseded); err != nil {
+		&healthBytes, &deployment.CreatedBy, &deployment.CreatedAt, &deployment.UpdatedAt, &superseded,
+		&deployment.CanaryVersion, &deployment.CanaryWeight); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrDeploymentNotFound
 		}
