@@ -1,0 +1,239 @@
+# AgentOS API — OpenAPI 3.1 fragment for billing quota enforcement on run
+# creation (issue #47).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). The fragment RESTATES the existing `POST /runs` operation (base
+# operationId createRun) so the merge can fold the NEW 402/503 response codes
+# into the base operation — the path key and operationId deliberately match the
+# base spec. Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/secrets.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/quota-enforcement.yaml`
+# passes. Components carry the track-unique `Quota*` prefix to avoid
+# collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation;
+#     no new permission enum was introduced (runs.execute, the existing
+#     metered-action grant: OWNER/ADMIN/MEMBER — exactly the set whose runs
+#     are subject to the org's quota)
+#   * structured error model {"error":{"code","message"}}
+#
+# Semantics (mirrored in cmd/api/runs.go enforceQuota and the cmd/worker
+# pre-execution gate, issue #47):
+#   * the gate is controlled by AGENTOS_BILLING_ENFORCEMENT
+#     (strconv.ParseBool; default OFF — 402 never fires with the flag unset,
+#     preserving the pre-#47 behavior where quota state was display-only)
+#   * enforcement ON: the caller's organization quota is consulted BEFORE the
+#     run row is created and BEFORE the agent.run task is enqueued; an
+#     exceeded monthly run budget (plan.included_quota > 0 and consumed >
+#     included; plan.included_quota == 0 means UNLIMITED and is never denied)
+#     yields 402 {"error":{"code":"quota_exceeded",...}}, an audit entry
+#     (action run.quota_denied), and NO run/task creation
+#   * enforcement ON with billing not wired -> 503 billing_unavailable
+#     (fail-closed: a half-wired rollout must surface, not silently pass)
+#   * an org with NO subscription is never denied (no plan -> no quota to
+#     exceed; metering starts with POST /billing/subscriptions)
+#   * a failed quota/metering read answers 500 rather than faking availability
+#   * the workflow execute path does NOT share this handler (it expands the
+#     DAG server-side), but every node's agent.run task flows through the same
+#     worker consumer, where the pre-execution gate marks over-quota runs
+#     FAILED with reason quota_exceeded (node error code QUOTA_EXCEEDED)
+#     instead of executing them; denial audit action run.quota_denied
+openapi: 3.1.0
+info:
+  title: AgentOS — billing quota enforcement (issue #47 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the quota enforcement behavior added by issue #47:
+  POST /runs consults the caller's organization monthly run budget before
+  creating a run or enqueueing its agent.run task, and answers 402
+  quota_exceeded (plus an audit entry) when the budget is exceeded and
+  enforcement is enabled via AGENTOS_BILLING_ENFORCEMENT. The quota state
+  itself is served by GET /billing/subscription (see api/fragments/billing.yaml)
+  and counts RUNS (not tokens) inside the live subscription period.
+paths:
+  /runs:
+    post:
+      operationId: createRun
+      tags:
+      - runs
+      summary: Create and enqueue a run (quota-gated)
+      description: |
+        Creates a run (status `QUEUED`) and enqueues an `agent.run` task.
+        Responds 201 with the run ID and `status: "queued"`. Actual execution
+        happens in the worker; watch `GET /runs/{id}/events` (SSE) for
+        `status.changed` events.
+
+        Quota enforcement (issue #47): when AGENTOS_BILLING_ENFORCEMENT is
+        enabled, the organization's monthly run budget is checked BEFORE the
+        run row is created and before the task is enqueued. An exceeded,
+        non-unlimited budget answers 402 `quota_exceeded` with the structured
+        error envelope, writes an audit entry (action `run.quota_denied`) and
+        creates nothing. Unlimited plans (`included_quota == 0`) and
+        organizations without a subscription are never denied; the flag
+        defaults to OFF, which preserves the legacy always-accept behavior.
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuotaCreateRunRequest'
+            example:
+              organization_id: org-1
+              agent_id: agent-1
+              input: What is 2+2?
+      responses:
+        '201':
+          description: Run created and task queued (quota available or enforcement off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaCreateRunResponse'
+              example:
+                run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                status: queued
+        '400':
+          description: Invalid body or missing agent_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/QuotaUnauthorized'
+        '402':
+          $ref: '#/components/responses/QuotaPaymentRequired'
+        '403':
+          $ref: '#/components/responses/QuotaForbidden'
+        '405':
+          description: Method not allowed (the endpoint is POST-only).
+        '500':
+          description: |
+            The quota/metering read failed (usage-source or store error).
+            Returned instead of silently treating the quota as available;
+            nothing is enqueued (error.code INTERNAL_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/QuotaBillingUnavailable'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    QuotaCreateRunRequest:
+      type: object
+      properties:
+        organization_id:
+          type: string
+          description: Optional; defaults to the authenticated principal's organization.
+          examples:
+          - org-1
+        agent_id:
+          type: string
+          examples:
+          - agent-1
+        input:
+          type: string
+          description: Prompt/task input handed to the agent.
+          examples:
+          - What is 2+2?
+      required:
+      - agent_id
+      - input
+    QuotaCreateRunResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+          description: Created run ID (fallback queue task ID is never issued when the request was quota-denied).
+          examples:
+          - 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+        status:
+          type: string
+          const: queued
+      required:
+      - run_id
+      - status
+    QuotaErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                Machine code: quota_exceeded (402 — monthly run budget
+                exceeded while AGENTOS_BILLING_ENFORCEMENT is on),
+                billing_unavailable (503 — enforcement on but the billing
+                service is not wired), INTERNAL_ERROR (500 — the quota or
+                metering read failed; availability is never faked).
+            message:
+              type: string
+              description: |
+                Human-readable detail. For quota_exceeded it carries the
+                deterministic summary "monthly run quota exceeded: included N
+                runs, consumed M runs ..." so clients can render the budget
+                state without a second call.
+  responses:
+    QuotaUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QuotaErrorEnvelope'
+    QuotaPaymentRequired:
+      description: |
+        The organization's monthly run budget is exceeded and enforcement is
+        enabled (AGENTOS_BILLING_ENFORCEMENT). NO run row was created and NO
+        agent.run task was enqueued; the denial is audit-logged as
+        run.quota_denied. Upgrade the plan, wait for the period reset, or
+        disable enforcement.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QuotaErrorEnvelope'
+          example:
+            error:
+              code: quota_exceeded
+              message: 'monthly run quota exceeded: included 10 runs, consumed 11 runs for the current billing period; upgrade the plan or wait for the period to reset'
+    QuotaForbidden:
+      description: |
+        Authenticated but not allowed to act for the requested organization
+        (cross-tenant organization_id is rejected).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QuotaErrorEnvelope'
+    QuotaBillingUnavailable:
+      description: |
+        Enforcement is enabled (AGENTOS_BILLING_ENFORCEMENT) but the billing
+        service is not wired into the API process. Fail-closed on purpose:
+        the misconfiguration must surface rather than silently bypass the
+        quota (error.code billing_unavailable).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QuotaErrorEnvelope'

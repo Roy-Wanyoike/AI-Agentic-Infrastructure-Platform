@@ -8,11 +8,87 @@ import (
 
 	"agentos/internal/audit"
 	"agentos/internal/auth"
+	"agentos/internal/billing"
 	"agentos/internal/queue"
 	"agentos/internal/runs"
 )
 
 var runsServiceVar *runs.Service
+
+// billingServiceVar exposes the billing service to the create-run handler for
+// quota enforcement (issue #47). It mirrors the runsServiceVar precedent: the
+// app wiring (cmd/api/main.go newApp) assigns it after construction — see the
+// reported wiring diff. When nil, enforcement degrades to an explicit 503
+// BILLING_UNAVAILABLE whenever AGENTOS_BILLING_ENFORCEMENT is on, so a
+// half-wired rollout fails loudly instead of silently bypassing the quota.
+var billingServiceVar *billing.Service
+
+// writeRunError emits the structured {"error":{"code","message"}} envelope
+// used by the quota enforcement paths (issue #47). The legacy handlers below
+// keep their historical http.Error plain-text responses; only the new
+// contract-shaped denials use this envelope.
+func writeRunError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+
+// enforceQuota is the create-run quota gate (issue #47). It runs when
+// AGENTOS_BILLING_ENFORCEMENT is on, BEFORE the run row is created or the
+// agent.run task is enqueued. Documented decision matrix:
+//
+//   - enforcement OFF            -> allow (today's behavior; the display
+//     endpoint GET /billing/subscription keeps reporting quota state)
+//   - enforcement ON, billing not wired -> deny with 503 BILLING_UNAVAILABLE
+//     (fail-closed: an operator asked for enforcement, a nil service is a
+//     wiring bug that must surface, not silently pass)
+//   - enforcement ON, no subscription   -> allow (no subscription = no plan =
+//     no quota to exceed; metering starts with POST /billing/subscriptions)
+//   - enforcement ON, quota check fails -> deny with 500 INTERNAL_ERROR
+//     (billing propagates usage-source failures precisely because a silent
+//     consumed=0 fallback would fake availability; see internal/billing)
+//   - enforcement ON, exceeded && !unlimited -> 402 quota_exceeded, the denial
+//     is audit-logged, and NO run row / queue task is created
+func enforceQuota(w http.ResponseWriter, r *http.Request, orgID, agentID string, auditSvc *audit.Service) bool {
+	if !billing.EnforcementFromEnv() {
+		return true
+	}
+	if billingServiceVar == nil {
+		writeRunError(w, http.StatusServiceUnavailable, "billing_unavailable", "billing service not available")
+		return false
+	}
+	quota, err := billingServiceVar.CheckQuotaCtx(r.Context(), orgID)
+	switch {
+	case errors.Is(err, billing.ErrNoSubscription):
+		return true // no plan, no quota to exceed (documented above)
+	case err != nil:
+		// Never fake quota availability when the metering source fails.
+		writeRunError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return false
+	}
+	if quota.Unlimited || !quota.Exceeded {
+		return true
+	}
+	message := billing.QuotaExceededMessage(quota)
+	if auditSvc != nil {
+		// Best-effort denial audit (same claims-scoped pattern as
+		// run.created below). Resource is "runs/-": the denial happens
+		// before any run row exists, so there is no run id to
+		// reference; metadata carries the machine reason and the
+		// quota numbers that triggered the decision.
+		metadata := map[string]any{
+			"reason":        billing.ReasonQuotaExceeded,
+			"agent_id":      agentID,
+			"included_runs": quota.IncludedRuns,
+			"consumed_runs": quota.ConsumedRuns,
+		}
+		if claims, claimsErr := auth.ExtractClaims(r.Context()); claimsErr == nil {
+			_, _ = auditSvc.LogCtx(r.Context(), claims.UserID, "run.quota_denied", orgID, "runs/-", metadata)
+		}
+	}
+	writeRunError(w, http.StatusPaymentRequired, billing.ReasonQuotaExceeded, message)
+	return false
+}
 
 func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +118,12 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.Hand
 		}
 		if strings.TrimSpace(req.AgentID) == "" {
 			http.Error(w, "agent id is required", http.StatusBadRequest)
+			return
+		}
+		// issue #47: quota gate BEFORE the run row is created and BEFORE the
+		// task is enqueued — an over-quota denial leaves no trace except the
+		// 402 response and its audit entry.
+		if !enforceQuota(w, r, req.OrganizationID, req.AgentID, auditSvc) {
 			return
 		}
 		var runID string

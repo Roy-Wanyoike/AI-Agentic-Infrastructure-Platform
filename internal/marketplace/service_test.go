@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -304,14 +305,27 @@ func TestInstallNameCollisionDeterministicSuffix(t *testing.T) {
 		t.Fatalf("expected deterministic suffix Copilot-3, got %q", second.Agent.Name)
 	}
 	// The originals are untouched and the installs are separate agents.
+	// The in-memory agents service lists in map iteration order, so the
+	// assertion must be order-independent (a bare orgBAgents[0] check
+	// flakes across runs).
 	orgBAgents, _ := agentsSvc.ListAgentsCtx(ctx, "org-b")
-	if len(orgBAgents) != 3 || orgBAgents[0].Name != "Copilot" {
-		names := make([]string, 0, len(orgBAgents))
-		for _, a := range orgBAgents {
-			names = append(names, a.Name)
-		}
-		t.Fatalf("unexpected org-b agent names: %v", names)
+	names := make(map[string]int, len(orgBAgents))
+	for _, a := range orgBAgents {
+		names[a.Name]++
 	}
+	if len(orgBAgents) != 3 || names["Copilot"] != 1 || names["Copilot-2"] != 1 || names["Copilot-3"] != 1 {
+		t.Fatalf("unexpected org-b agent names: %v (counts=%v)", keysOf(names), names)
+	}
+}
+
+// keysOf renders a name-count map in sorted order for stable failure output.
+func keysOf(counts map[string]int) []string {
+	out := make([]string, 0, len(counts))
+	for name := range counts {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func TestInstallCollisionExhaustion(t *testing.T) {
