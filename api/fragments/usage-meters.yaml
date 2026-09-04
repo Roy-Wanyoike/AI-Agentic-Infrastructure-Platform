@@ -1,0 +1,340 @@
+# AgentOS API — OpenAPI 3.1 fragment for usage meters, per-tenant margin and
+# the optional Stripe usage-record sync (issue #57).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/billing.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/usage-meters.yaml`
+# passes. Components carry the track-unique `Sm*` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation. Both
+#     are EXISTING permissions (no new permission enum was introduced —
+#     internal/auth was read-only for this track), mirroring the billing
+#     fragment's RBAC reuse:
+#       - GET /usage/meters uses runs.execute: the OWNER/ADMIN/MEMBER grant
+#         set, i.e. MEMBER+ (those who can trigger metered runs can read the
+#         meters they generate)
+#       - GET /billing/margin uses organization.manage (OWNER only — margin
+#         is the organization's financial data)
+#   * structured error model {"error":{"code","message"}}
+#
+# Semantics (documented choices, mirrored in internal/billing):
+#   * meter windows are half-open [from, to) (RFC3339 timestamps or bare UTC
+#     dates; default the last 30 days; max 366 days) — identical to
+#     GET /usage/costs
+#   * meters contract: runs_count and tool_calls_count only.
+#     SANDBOX SECONDS ARE INTENTIONALLY ABSENT: the platform records no
+#     durable sandbox execution duration today (internal/sandbox meters
+#     nothing, run_steps carries no aggregate duration, the usage_records
+#     table has no production writer), so no honest meter can be derived.
+#     Never-invented data is a hard rule; the meter will be added when a
+#     durable source exists.
+#   * the sync trigger is ENV-DRIVEN and async: when STRIPE_API_KEY is set,
+#     a successful meters read fires a fire-and-forget POST of one usage
+#     record per meter to Stripe /v1/usage_records (Idempotency-Key
+#     "agentos-<org>-<fromUnix>-<toUnix>-<meter>", action=increment,
+#     timestamp = window end clamped to now; retries with backoff on 5xx /
+#     429 / network errors; permanent failure on other 4xx). Without
+#     STRIPE_API_KEY the syncer is a zero-network no-op. There is NO manual
+#     POST trigger: v1 stays read-only for meters/margin.
+#   * margin formula (GET /billing/margin), computed over the subscription's
+#     CURRENT period [period_start, period_end) — the same window the quota
+#     check re-counts:
+#         revenue        = plan.price_cents (the recurring monthly catalog
+#                          price; intentionally NOT an invoice line — see the
+#                          billing fragment)
+#         cost basis     = Σ usage cost over the period from the SAME ledger
+#                          that prices invoice run lines and GET /usage/costs
+#                          (runs.cost_cents aggregates)
+#         margin_cents   = price_cents − round(cost_cents)
+#         margin_percent = (1 − cost/price) × 100, omitted when price_cents
+#                          is 0 (undefined)
+#     Edge cases: no subscription -> 404 NO_SUBSCRIPTION; unlimited plans
+#     (included_quota 0) compute identically (quota never changes the math);
+#     zero usage -> full price margin (100%); cost above price yields a
+#     NEGATIVE margin, never clamped; overage pricing is NOT folded into
+#     revenue (contingent billing, not committed revenue).
+openapi: 3.1.0
+info:
+  title: AgentOS — usage meters & margin (issue #57 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the metering reads added by issue #57: aggregated
+  org-scoped usage meters over a half-open window, the owner-only margin
+  report for the current subscription period, and the env-driven async Stripe
+  usage-record sync triggered by meter reads.
+paths:
+  /usage/meters:
+    get:
+      operationId: listUsageMeters
+      summary: Aggregated usage meters for the caller's organization
+      description: |
+        Read (runs.execute, MEMBER+). Aggregates the caller's organization's
+        metered activity over the half-open [from, to) window:
+        runs_count (metered runs — the same runs.cost_cents aggregation that
+        powers GET /usage/costs; only the counts are taken) and
+        tool_calls_count (executed tool steps, step_type='tool').
+        sandbox_seconds is intentionally absent: no durable sandbox-duration
+        record exists today, and data is never invented.
+        When STRIPE_API_KEY is configured, a successful read additionally
+        triggers an async, idempotent sync of these meters to Stripe's
+        /v1/usage_records (see the fragment description); without the env key
+        nothing leaves the process.
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: from
+        in: query
+        required: false
+        description: Window start (RFC3339 timestamp or YYYY-MM-DD date). Defaults to `to` minus 30 days.
+        schema:
+          type: string
+      - name: to
+        in: query
+        required: false
+        description: Window end, exclusive (RFC3339 timestamp or YYYY-MM-DD date). Defaults to now.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The aggregated meters with the effective window echo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmMetersResponse'
+        '400':
+          description: |
+            Unparsable or inverted window, or a window exceeding 366 days
+            (error.code INVALID_TIME_RANGE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/SmUnauthorized'
+        '403':
+          $ref: '#/components/responses/SmForbidden'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/SmInternal'
+        '503':
+          description: |
+            The meter source is not wired in this deployment
+            (error.code METER_SOURCE_UNAVAILABLE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmErrorEnvelope'
+  /billing/margin:
+    get:
+      operationId: getBillingMargin
+      summary: Cost basis vs plan price for the current subscription period
+      description: |
+        Owner-only read (organization.manage). Computes the margin of the
+        org's CURRENT subscription period: margin_cents = plan.price_cents −
+        round(Σ usage cost over [period_start, period_end)), with the cost
+        basis taken from the same ledger that prices invoice run lines
+        (runs.cost_cents aggregates — it always reconciles with
+        GET /usage/costs and the invoice of the same window). margin_percent
+        = (1 − cost/price) × 100 and is OMITTED when price_cents is 0.
+        Overage pricing is not folded into revenue; unlimited plans
+        (included_quota 0) compute identically; a cost above the price yields
+        a negative (unclamped) margin; zero usage yields the full price
+        (100%). For a canceled subscription the latest row's last period is
+        reported.
+      x-required-permission: organization.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The margin report for the current subscription period.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmMarginResponse'
+        '401':
+          $ref: '#/components/responses/SmUnauthorized'
+        '403':
+          $ref: '#/components/responses/SmForbidden'
+        '404':
+          description: |
+            The organization never subscribed (error.code NO_SUBSCRIPTION) or
+            the subscription's plan no longer resolves (error.code
+            PLAN_NOT_FOUND — margin cannot exist without a price).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '500':
+          $ref: '#/components/responses/SmInternal'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  responses:
+    SmUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SmErrorEnvelope'
+    SmForbidden:
+      description: |
+        Authenticated but the role lacks the required permission (meters need
+        MEMBER+ via runs.execute; margin is OWNER-only via
+        organization.manage).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SmErrorEnvelope'
+    SmInternal:
+      description: Unexpected server failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SmErrorEnvelope'
+  schemas:
+    SmMeters:
+      type: object
+      required: [runs_count, tool_calls_count]
+      properties:
+        runs_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Metered runs of the organization inside the window (the run-count
+            side of the GET /usage/costs aggregation).
+        tool_calls_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Executed tool steps (run_steps with step_type='tool') of the
+            organization inside the window.
+      additionalProperties: false
+      description: |
+        The meters contract is closed on purpose: sandbox_seconds is absent
+        because the platform records no durable sandbox execution duration
+        (never-invented-data rule). It will be added when a meter exists.
+    SmMetersResponse:
+      type: object
+      required: [from, to, meters]
+      properties:
+        from:
+          type: string
+          format: date-time
+          description: Effective half-open window start (inclusive).
+        to:
+          type: string
+          format: date-time
+          description: Effective half-open window end (exclusive).
+        meters:
+          $ref: '#/components/schemas/SmMeters'
+    SmMarginPlan:
+      type: object
+      required: [id, name, price_cents, currency, included_quota, unlimited]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        price_cents:
+          type: integer
+          minimum: 0
+          description: Recurring monthly catalog price in cents (the revenue side).
+        currency:
+          type: string
+        included_quota:
+          type: integer
+          minimum: 0
+          description: Included monthly run budget; 0 = unlimited (context only — never changes the margin math).
+        unlimited:
+          type: boolean
+          description: True when included_quota is 0 (the unlimited sentinel).
+    SmMarginReport:
+      type: object
+      required:
+      - subscription_id
+      - status
+      - period_start
+      - period_end
+      - currency
+      - price_cents
+      - usage_cost_cents
+      - margin_cents
+      - plan
+      properties:
+        subscription_id:
+          type: string
+        status:
+          type: string
+          enum: [trial, active, past_due, canceled]
+          description: Status of the subscription row whose period is reported.
+        period_start:
+          type: string
+          format: date-time
+          description: Half-open window start [period_start, period_end) — the subscription's current period.
+        period_end:
+          type: string
+          format: date-time
+        currency:
+          type: string
+        price_cents:
+          type: integer
+          description: Revenue side (plan.price_cents).
+        usage_cost_cents:
+          type: number
+          format: double
+          description: Exact (unrounded) cost basis summed over the period from the usage ledger.
+        margin_cents:
+          type: integer
+          description: price_cents − round(usage_cost_cents); may be NEGATIVE (honest loss, never clamped).
+        margin_percent:
+          type: number
+          format: double
+          description: |
+            (1 − cost/price) × 100. OMITTED when price_cents is 0 — a
+            percentage of zero revenue is undefined, never fabricated.
+        plan:
+          $ref: '#/components/schemas/SmMarginPlan'
+    SmMarginResponse:
+      type: object
+      required: [margin]
+      properties:
+        margin:
+          $ref: '#/components/schemas/SmMarginReport'
+    SmErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (INVALID_TIME_RANGE, METER_SOURCE_UNAVAILABLE, NO_SUBSCRIPTION, PLAN_NOT_FOUND, …).
+            message:
+              type: string
