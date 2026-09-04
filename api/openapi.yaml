@@ -3500,6 +3500,143 @@ paths:
           description: Method not allowed (the endpoint is GET-only).
         '500':
           $ref: '#/components/responses/BillInternal'
+  /api-keys:
+    post:
+      operationId: createApiKey
+      summary: Mint a new API key for the caller's organization (value returned exactly once)
+      description: |
+        Write operation (agents.write, OWNER/ADMIN). Body carries the key
+        `name`; the server generates the secret (`ak_` + 32 random bytes),
+        persists only its SHA-256 hash, and returns the plaintext `value`
+        EXACTLY ONCE as the top-level sibling of the metadata object — this
+        is the only response in the whole API that carries the key. The
+        plaintext cannot be retrieved again afterwards. The key
+        authenticates immediately (X-API-Key header) as an OWNER identity
+        of the caller's organization. The tenant is derived from the auth
+        claims — any client-supplied organization id is ignored. Minting is
+        audit-logged (`api_key.created`, no key material in metadata).
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiKeyCreateRequest'
+      responses:
+        '201':
+          description: |
+            Key minted. The metadata object never contains the value or the
+            hash; `value` (the plaintext credential) is returned exactly once
+            and must be stored by the client now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreatedResponse'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/ApiKeyUnauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyForbidden'
+        '422':
+          description: |
+            Validation error: missing or blank key name (error.code
+            VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyErrorEnvelope'
+    get:
+      operationId: listApiKeys
+      summary: List API key metadata for the caller's organization (never values or hashes)
+      description: |
+        Read operation (runs.execute, MEMBER+ — viewers are excluded because
+        credential inventories are sensitive). Returns metadata only: id,
+        name, the display `prefix` (`ak_` + the first 8 secret characters,
+        kept for identification; the server only ever matches the SHA-256
+        hash of the FULL value, so the prefix authenticates nothing),
+        created_by, created_at and the revoked flag. The response schema has
+        no value field and no full hash, and the server never includes them.
+        Results are ordered newest first. Revoked keys remain listed with
+        "revoked": true. Note: the api_keys table also tracks last_used_at
+        and the revocation timestamp, but the service model does not project
+        them yet — they are therefore absent from this contract until the
+        service exposes them (deliberate omission, not an accident).
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Metadata list (possibly empty; values and hashes are structurally absent).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyListResponse'
+        '401':
+          $ref: '#/components/responses/ApiKeyUnauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyForbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyErrorEnvelope'
+  /api-keys/{id}:
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke one API key (immediate; idempotent on already-revoked keys)
+      description: |
+        Write operation (agents.write, OWNER/ADMIN). Revocation is immediate:
+        the key stops authenticating on the very next request (it is resolved
+        by hash and rejected once revoked). Re-revoking an already-revoked
+        key is idempotent and stays 200; unknown or foreign-organization ids
+        surface as 404 with no existence leak across tenants. Revocation is
+        audit-logged (`api_key.revoked`).
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/ApiKeysID'
+      responses:
+        '200':
+          description: Key revoked (or already revoked — idempotent).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyRevokeResponse'
+        '401':
+          $ref: '#/components/responses/ApiKeyUnauthorized'
+        '403':
+          $ref: '#/components/responses/ApiKeyForbidden'
+        '404':
+          description: Key not found within the caller's organization (error.code API_KEY_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyErrorEnvelope'
+
   /secrets:
     post:
       operationId: createSecret
@@ -4644,6 +4781,16 @@ paths:
                 $ref: '#/components/schemas/ScimError'
 components:
   parameters:
+
+    ApiKeysID:
+      name: id
+      in: path
+      required: true
+      description: API key id (UUID, as returned by the mint operation).
+      schema:
+        type: string
+        minLength: 1
+      example: 3f6c1a5e-8e2b-4c1d-9a7b-2f0d5e6a1b2c
     AgentID:
       name: id
       in: path
@@ -4825,6 +4972,19 @@ components:
 
         '
   responses:
+
+    ApiKeyUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiKeyErrorEnvelope'
+    ApiKeyForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiKeyErrorEnvelope'
     Unauthorized:
       description: Missing/invalid credentials (plain text body today; JSON model is the target).
       content:
@@ -5037,6 +5197,108 @@ components:
           schema:
             $ref: '#/components/schemas/ConErrorEnvelope'
   schemas:
+
+    ApiKeyCreateRequest:
+      type: object
+      description: Mint payload. Only the display name is supplied; the secret itself is generated server-side.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Human-readable key name (e.g. "ci-deploy", "worker-poll").
+          examples:
+          - ci-deploy
+      required:
+      - name
+    ApiKeyMetadata:
+      type: object
+      description: |
+        Credential-free metadata projection. This is the ONLY shape list
+        endpoints return; the plaintext value and the persisted SHA-256 hash
+        are structurally absent (no `value` and no `hash` property exists on
+        this schema).
+      properties:
+        id:
+          type: string
+          description: Key id used for revocation.
+        name:
+          type: string
+        prefix:
+          type: string
+          description: |
+            Display prefix ("ak_" + the first 8 secret characters) for
+            identification in dashboards; authenticates nothing by itself.
+          examples:
+          - ak_1a2b3c4d
+        created_by:
+          type: string
+          description: User id of the minting principal.
+        created_at:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+          description: True once the key has been revoked (revoked keys never authenticate again).
+      required:
+      - id
+      - name
+      - prefix
+      - created_by
+      - created_at
+      - revoked
+    ApiKeyCreatedResponse:
+      type: object
+      description: |
+        Mint response. `api_key` is metadata-only; `value` is the plaintext
+        credential and appears EXACTLY HERE and EXACTLY ONCE — the service
+        stores only the hash and can never return the value again.
+      properties:
+        api_key:
+          $ref: '#/components/schemas/ApiKeyMetadata'
+        value:
+          type: string
+          pattern: '^ak_[0-9a-f]{64}$'
+          description: The plaintext API key. Appears exactly here and exactly once.
+      required:
+      - api_key
+      - value
+    ApiKeyListResponse:
+      type: object
+      properties:
+        api_keys:
+          type: array
+          description: Metadata-only views ordered newest first; empty when the organization has no keys.
+          items:
+            $ref: '#/components/schemas/ApiKeyMetadata'
+      required:
+      - api_keys
+    ApiKeyRevokeResponse:
+      type: object
+      properties:
+        revoked:
+          type: boolean
+          description: Always true on success (including idempotent re-revocation).
+      required:
+      - revoked
+    ApiKeyErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of API_KEY_NOT_FOUND, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - API_KEY_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
     LegacyTextError:
       type: string
       description: Legacy plain-text error body emitted via http.Error during migration.
