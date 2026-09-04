@@ -7,8 +7,8 @@
 [![CI](https://github.com/Roy-Wanyoike/AI-Agentic-Infrastructure-Platform/actions/workflows/ci.yml/badge.svg)](https://github.com/Roy-Wanyoike/AI-Agentic-Infrastructure-Platform/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1%C2%A0%C2%B7%C2%A086%20paths-6BA539)
-![Tests](https://img.shields.io/badge/tests-38%20packages%20%E2%9C%94-3FB950)
+![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1%C2%A0%C2%B7%C2%A096%20paths-6BA539)
+![Tests](https://img.shields.io/badge/tests-40%20packages%20%E2%9C%94-3FB950)
 [![License](https://img.shields.io/badge/license-Apache_2.0-blue)](./LICENSE)
 
 **Author agents → version them → deploy with canary traffic splits → run on a durable queue → evaluate, govern, observe, and bill for every token.**
@@ -17,7 +17,7 @@
 
 ---
 
-AgentOS is the control plane for running AI agents in production: a Go 1.25 modular monolith (39 internal packages, one deployable API process + one worker) with a React 19 dashboard, an 86-path OpenAPI 3.1 contract, and **dual-mode persistence** — the exact same binary runs against Postgres for production or fully in-memory with zero infrastructure for development and CI. Every tenant boundary, permission check, and retry path is enforced in code and exercised by tests, not promised in docs.
+AgentOS is the control plane for running AI agents in production: a Go 1.25 modular monolith (40 internal packages, one deployable API process + one worker) with a React 19 dashboard, a 96-path OpenAPI 3.1 contract, and **dual-mode persistence** — the exact same binary runs against Postgres for production or fully in-memory with zero infrastructure for development and CI. Every tenant boundary, permission check, and retry path is enforced in code and exercised by tests, not promised in docs.
 
 ![AgentOS dashboard — mission control](docs/images/dashboard-overview.png)
 
@@ -25,24 +25,25 @@ AgentOS is the control plane for running AI agents in production: a Go 1.25 modu
 
 | Area | Capabilities |
 |---|---|
-| **Agents & versions** | Agent CRUD, immutable config versions, publish/rollback, per-agent tool attachments |
-| **Deployments** | Promote/rollback **plus canary deployments** — weighted traffic split with deterministic per-agent stickiness (FNV-1a bucketing) |
+| **Agents & versions** | Agent CRUD (update/delete included), immutable config versions, publish/rollback, per-agent tool attachments |
+| **Deployments** | Promote/rollback **plus canary deployments** — weighted traffic split with deterministic per-agent stickiness (FNV-1a bucketing), now **eval-gated auto-promotion/rollback**: set pass-rate/p95/cost thresholds and the canary promotes or rolls itself back with an audited reason — CI/CD for agents |
+| **MCP gateway** | Every tenant's tool registry exposed over the **Model Context Protocol** (JSON-RPC 2.0, `POST /v1/mcp`) — connect Claude, Cursor, or any MCP client to a governed, permission-scoped, audit-logged tool surface in minutes |
 | **Runs & runtime** | Bounded agent loop (max steps, wall-clock + per-tool timeouts, loop detection), OpenAI-compatible **model provider with failover**, offline deterministic mode for zero-infra dev |
 | **Tools & sandbox** | Tool registry with input schemas (`GET /v1/tools`), calculator + HTTP tools, opt-in **process-isolated sandbox execution** (rlimits, output caps, env scrubbing) |
 | **Workflows & approvals** | JSON-DSL multi-agent workflows, durable checkpointed node execution with recovery/watchdog, human-in-the-loop approval gates |
 | **Evaluations** | Datasets, scorers, eval runs with per-case **token usage & cost** via a model-pricing hook |
-| **Governance** | Policy engine (allow/deny with matched-policy reporting), Redis rate limiting, idempotency keys, org-scoped audit trail (`/v1/audit-events`) |
-| **Billing & secrets** | Plans, subscriptions, quota checks, usage-derived invoices reconciled with the runs cost ledger; **AES-256-GCM encrypted secrets** with one-time reveal |
+| **Governance** | Policy engine (allow/deny with matched-policy reporting), Redis rate limiting, idempotency keys, org-scoped audit trail (`/v1/audit-events`), readable event stream (`/v1/events`) with dashboard activity feed, organization & member management (roles, last-owner guards, SCIM-consistent deactivation) |
+| **Billing & secrets** | Plans, subscriptions, **enforced quota gates** (402 `quota_exceeded` at the run path when `AGENTOS_BILLING_ENFORCEMENT=on`), usage-derived invoices reconciled with the runs cost ledger, usage **meters + per-tenant margin**, optional idempotent **Stripe usage-record sync** (zero deps, no-op without a key); **AES-256-GCM encrypted secrets** with one-time reveal; self-service API keys (mint once, hash at rest) |
 | **Marketplace & connectors** | Publish/browse/install agent templates across organizations; external integrations with health checks and secret refs |
 | **SSO & SCIM** | OIDC browser login (manual JOSE, RS256 via stdlib) with JIT provisioning; **SCIM 2.0** user lifecycle with hashed provisioning tokens |
 | **Knowledge & memory** | RAG document store with chunking + semantic search, scoped agent memory snippets |
 | **Events & scheduling** | NATS JetStream event bus, webhook deliveries with retries, cron scheduler with catch-up |
 | **Observability** | Prometheus text `/metrics` (bucketed p50/p95/p99 histograms, run/tool counters), structured logging, health/readiness probes, SSE run-event streaming |
-| **Developer experience** | `agentosctl` CLI + typed Go SDK (`internal/sdk`), seeded demo data, Makefile targets, GitHub Actions CI with gofmt/vet/test/build + web build gates |
+| **Developer experience** | `agentosctl` CLI + typed Go SDK covering every vertical (billing, secrets, marketplace, connectors, SSO, API keys), seeded demo data, Makefile targets, GitHub Actions CI with gofmt/vet/test/build + **race-detector job** + web build gates |
 
 ## Architecture
 
-Dual-mode by design: in Postgres mode every service persists through a tenant-guarded store; in memory mode the same interfaces run on maps — which is why the full test suite (38 packages) runs in seconds with no containers.
+Dual-mode by design: in Postgres mode every service persists through a tenant-guarded store; in memory mode the same interfaces run on maps — which is why the full test suite (40 packages) runs in seconds with no containers.
 
 ![AgentOS architecture](docs/images/architecture.png)
 
@@ -83,6 +84,14 @@ make run-worker     # run execution (second terminal)
 
 Demo login: `demo@agentos.dev` / `demo-password` (override with `AGENTOS_SEED_PASSWORD`).
 
+**Production, one command:**
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build   # api + worker + web + Postgres/Redis/NATS + one-shot migrate
+```
+
+Distroless images, healthchecks, SPA proxy with SSE support — see [docs/self-hosting.md](docs/self-hosting.md) for the full env matrix, backups, and upgrades.
+
 The API mounts every route twice — `/v1/...` (legacy) and `/api/v1/...` (canonical, used by the dashboard) — from one contract: [`api/openapi.yaml`](api/openapi.yaml).
 
 ## Talk to the API
@@ -102,10 +111,17 @@ curl -s -X POST localhost:8080/v1/runs \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"agent_id":"<agent-id>","input":"Ticket #4830: password reset loop"}'
 
-# canary: route 20% of a fleet to the new version
+# canary: route 20% of a fleet to the new version — with an eval gate
+# (auto-promotes or auto-rolls-back once the canary window has enough scored runs)
 curl -s -X POST localhost:8080/v1/deployments/<id>/canary \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"canary_version":"<version-id>","canary_weight":20}'
+  -d '{"canary_version":"<version-id>","canary_weight":20,
+       "canary_policy":{"min_pass_rate":0.9,"min_canary_runs":10}}'
+
+# connect any MCP client (Claude Desktop, Cursor, ...) to your tenant's tools
+curl -s -X POST localhost:8080/v1/mcp \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
 **CLI and SDK:**
@@ -125,11 +141,11 @@ run, _ := client.Runs().Create(ctx, agentID, "classify this ticket")
 
 ## Engineering discipline
 
-- **Contract-first**: the 86-path OpenAPI 3.1 spec is regression-tested by `internal/apispec` — a dangling `$ref`, duplicate `operationId`, or path without operations fails CI (mutation-verified).
+- **Contract-first**: the 96-path OpenAPI 3.1 spec is regression-tested by `internal/apispec` — a dangling `$ref`, duplicate `operationId`, or path without operations fails CI (mutation-verified).
 - **Tenant isolation everywhere**: every Postgres query carries an `organization_id` guard; tenant identity comes from signed claims, never from client payloads.
 - **Security by default**: bcrypt passwords, HMAC-signed session tokens, hashed API keys and SCIM tokens, AES-256-GCM secrets at rest with key-versioned envelopes, OWNER-gated one-time secret reveal (audit-logged).
 - **Honest observability**: metrics are incremented at the point of truth (run terminal transitions, tool executions); the dashboard renders "not exposed by the API" rather than fake numbers — no silent mocking, as a product rule.
-- **Verified before merged**: every feature landed through a PR gated on `gofmt`, `go vet`, `go build`, and the full `go test -count=1 ./...` suite (38 packages, race-clean on the concurrency-sensitive ones).
+- **Verified before merged**: every feature landed through a PR gated on `gofmt`, `go vet`, `go build`, and the full `go test -count=1 ./...` suite (40 packages, race-clean; a dedicated `-race` CI job runs the whole tree).
 
 ```bash
 make lint && make verify    # gofmt + vet + build + test
@@ -138,22 +154,26 @@ make lint && make verify    # gofmt + vet + build + test
 ## Project structure
 
 ```text
-├── api/openapi.yaml          # canonical OpenAPI 3.1 contract (86 paths)
+├── api/openapi.yaml          # canonical OpenAPI 3.1 contract (96 paths)
 ├── api/fragments/            # per-track spec fragments, merged into the main spec
 ├── cmd/
 │   ├── api/                  # HTTP process: routes, handlers, middleware wiring
 │   ├── worker/               # run execution, scheduler loop, webhook delivery
-│   ├── agentosctl/           # CLI
+│   ├── agentosctl/           # CLI (all verticals)
+│   ├── healthcheck/          # static probe for the distroless images
+│   ├── sandbox-exec/         # process-isolated tool sandbox
 │   ├── seed/                 # idempotent demo seeder
-│   └── migrate/              # migration runner
-├── internal/                 # 39 domain packages — agents, deployments, runs,
+│   └── migrate/              # migration runner (env-aware)
+├── internal/                 # 40 domain packages — agents, deployments, runs,
 │   │                         # runtime, workflows, evaluations, policies, billing,
-│   │                         # secrets, marketplace, connectors, sso, scim, sandbox,
-│   │                         # knowledge, memory, events, scheduler, observability …
-├── migrations/               # 20 tenant-guarded SQL migrations
+│   │                         # secrets, marketplace, connectors, mcp, sso, scim,
+│   │                         # sandbox, knowledge, memory, events, scheduler …
+├── migrations/               # 21 tenant-guarded SQL migrations
 ├── web/                      # React 19 + Vite + TypeScript dashboard
 ├── docs/architecture.md      # factual architecture walkthrough
-└── docker-compose.yml        # Postgres + Redis + NATS
+├── docs/self-hosting.md      # production deployment guide
+├── Dockerfile.api/worker/web # distroless + nginx production images
+└── docker-compose*.yml       # dev infra + full production stack
 ```
 
 ## Docs
@@ -170,4 +190,4 @@ Apache-2.0 — see [LICENSE](LICENSE).
 
 ## Built in the open
 
-AgentOS is developed with a multi-agent workflow: a contract is pinned first (endpoints, JSON shapes, RBAC, migration numbers, file ownership), specialized agents implement disjoint tracks in parallel, and every track ships only after the full verification gate — then lands through a PR that references the issue it closes. The repository history reads as the audit log of that process: wave by wave, from persistence to canary deployments to SSO.
+AgentOS is developed with a multi-agent workflow: a contract is pinned first (endpoints, JSON shapes, RBAC, migration numbers, file ownership), specialized agents implement disjoint tracks in parallel, and every track ships only after the full verification gate — then lands through a PR that references the issue it closes. The repository history reads as the audit log of that process: wave by wave, from persistence to canary deployments to SSO to an MCP gateway.
