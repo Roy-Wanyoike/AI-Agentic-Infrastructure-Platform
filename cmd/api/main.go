@@ -268,6 +268,8 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	a.runsSvc.SetMetrics(a.metricsSvc)
 	// expose to handlers for backwards-compatible wiring in tests
 	runsServiceVar = a.runsSvc
+	// issue #47: expose billing to the create-run quota gate
+	billingServiceVar = a.billingSvc
 	return a
 }
 

@@ -1482,16 +1482,12 @@ paths:
       tags:
       - runs
       summary: List runs
-      description: 'Returns an envelope `{"runs":[...]}`. **Today this lists all runs
-
-        across organizations** (handler TODO notes org filtering is future
-
-        work). Unpaginated today.
-
+      description: 'Returns an envelope `{"runs":[...]}` scoped to the caller''s
+        organization (claims-derived tenant guard; cross-org ids are not
+        visible). Unpaginated today.
         '
       x-required-permission: runs.read
       x-unpaginated: true
-      x-note: no organization filter applied yet
       responses:
         '200':
           description: Runs envelope.
@@ -1559,8 +1555,12 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/QuotaPaymentRequired'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/QuotaBillingUnavailable'
   /runs/{id}:
     get:
       operationId: getRun
@@ -5196,7 +5196,57 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ConErrorEnvelope'
+    QuotaPaymentRequired:
+      description: |
+        The organization's monthly run budget is exceeded and enforcement is
+        enabled (AGENTOS_BILLING_ENFORCEMENT). NO run row was created and NO
+        agent.run task was enqueued; the denial is audit-logged as
+        run.quota_denied. Upgrade the plan, wait for the period reset, or
+        disable enforcement.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QuotaErrorEnvelope'
+          example:
+            error:
+              code: quota_exceeded
+              message: 'monthly run quota exceeded: included 10 runs, consumed 11 runs for the current billing period; upgrade the plan or wait for the period to reset'
+    QuotaBillingUnavailable:
+      description: |
+        Enforcement is enabled (AGENTOS_BILLING_ENFORCEMENT) but the billing
+        service is not wired into the API process. Fail-closed on purpose:
+        the misconfiguration must surface rather than silently bypass the
+        quota (error.code billing_unavailable).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QuotaErrorEnvelope'
+
   schemas:
+
+    QuotaErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                Machine code: quota_exceeded (402 — monthly run budget
+                exceeded while AGENTOS_BILLING_ENFORCEMENT is on),
+                billing_unavailable (503 — enforcement on but the billing
+                service is not wired), INTERNAL_ERROR (500 — the quota or
+                metering read failed; availability is never faked).
+            message:
+              type: string
+              description: |
+                Human-readable detail. For quota_exceeded it carries the
+                deterministic summary "monthly run quota exceeded: included N
+                runs, consumed M runs ..." so clients can render the budget
+                state without a second call.
 
     ApiKeyCreateRequest:
       type: object
