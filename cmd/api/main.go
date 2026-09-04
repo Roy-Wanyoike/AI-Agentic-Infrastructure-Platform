@@ -101,6 +101,7 @@ type app struct {
 	connSvc        *connectors.Service
 	whSvc          *webhooks.Service
 	publisher      events.Publisher
+	eventsLister   events.PagedStore
 }
 
 // newApp builds the service graph. When db is non-nil every service is
@@ -256,7 +257,18 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	// reachable; otherwise in-memory/noop fallbacks) + append-only audit trail
 	a.publisher = events.NewFromEnv()
 	if db != nil {
-		a.publisher = events.NewAuditPublisher(events.NewPostgresStore(db), a.publisher)
+		pgEvents := events.NewPostgresStore(db)
+		a.publisher = events.NewAuditPublisher(pgEvents, a.publisher)
+		if paged, ok := pgEvents.(events.PagedStore); ok {
+			a.eventsLister = paged
+		}
+	} else {
+		// issue #56: zero-infrastructure events — appends land in the in-memory
+		// store (same AuditPublisher chain as Postgres mode) so GET /v1/events
+		// works without infrastructure.
+		memEvents := events.NewMemoryStore()
+		a.publisher = events.NewAuditPublisher(memEvents, a.publisher)
+		a.eventsLister = memEvents
 	}
 
 	// wave-2: webhooks service + delivery worker (single process: this API).
@@ -353,6 +365,8 @@ func (a *app) routes() http.Handler {
 	// issue #18: public tool registry + audit trail
 	registerToolsRoutes(apiMux, tools.DefaultRegistry(), a.authSvc, a.apiKeysSvc)
 	registerAuditEventsRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
+	// issue #56: events read API (keyset-paginated, org-scoped)
+	registerEventsRoutes(apiMux, a.eventsLister, a.authSvc, a.apiKeysSvc)
 	// issue #24: billing plans/subscriptions/invoices
 	registerBillingRoutes(apiMux, a.billingSvc, a.authSvc, a.apiKeysSvc)
 	// issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)

@@ -14,6 +14,7 @@
 //   ['secrets']         — secret metadata list (values never cached here)
 //   ['marketplace', …]  — global listing catalog (query/tags/cursor)
 //   ['connectors']      — connector registry
+//   ['events', cursor]  — org event stream page (activity feed, keyset)
 
 import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -73,6 +74,7 @@ import {
 } from './api/billing'
 import { createSecret, deleteSecret, listSecrets, revealSecret } from './api/secrets'
 import { browseListings, installListing, publishListing } from './api/marketplace'
+import { listEvents } from './api/events'
 import { createConnector, deleteConnector, listConnectors, testConnector } from './api/connectors'
 import type { CreateKnowledgeDocumentInput } from './api/knowledge'
 import type { PutMemoryInput } from './api/memory'
@@ -80,6 +82,7 @@ import type { UsageCostWindow } from './api/usage'
 import type { CreateScheduleInput } from './api/schedules'
 import type { CreatePolicyInput } from './api/policies'
 import type { BrowseListingsInput, PublishListingInput } from './api/marketplace'
+import type { ListEventsInput } from './api/events'
 import type { CreateConnectorInput } from './api/connectors'
 import type { CreateSecretInput } from './api/secrets'
 
@@ -766,5 +769,19 @@ export function useTestConnector() {
       // The probe outcome is also persisted (last_check_at/last_check_status).
       void queryClient.invalidateQueries({ queryKey: ['connectors'] })
     },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Events (issue #56: org domain event stream behind the Overview activity
+// feed; keyset-paginated — one cache entry per cursor)
+// ---------------------------------------------------------------------------
+
+export function useEvents(input: ListEventsInput = {}, options: { enabled?: boolean } = {}) {
+  const { cursor = '' } = input
+  return useQuery({
+    queryKey: ['events', cursor],
+    queryFn: () => listEvents(input),
+    enabled: options.enabled ?? true,
   })
 }
