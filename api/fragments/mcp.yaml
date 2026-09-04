@@ -1,0 +1,432 @@
+# AgentOS API — OpenAPI 3.1 fragment for the MCP server endpoint
+# (issue #50, wave 6-e).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). The path is written WITHOUT the /api/v1 prefix, matching the
+# existing spec (the route mounts on apiMux and is served under BOTH /v1/mcp
+# and /api/v1/mcp).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/mcp.yaml` passes.
+# Components carry the track-unique `Mcp` prefix to avoid collisions.
+#
+# CONTRACT SUMMARY
+#   POST /mcp is a single JSON-RPC 2.0 endpoint implementing the Model
+#   Context Protocol (spec protocolVersion "2025-06-18") in a stateless v1
+#   mode:
+#     - initialize            handshake + capabilities {tools:{listChanged:false}}
+#                             + serverInfo {name:"agentos", version}
+#     - tools/list            the platform tool catalog (calculator,
+#                             http_request), permission-scoped
+#     - tools/call            executes through the existing internal/tools
+#                             registry path; results map to MCP text content
+#                             [{type:"text",text:...}]; tool execution
+#                             failures are IN-BAND (isError:true) while
+#                             protocol failures use JSON-RPC error codes
+#     - ping                  liveness probe (empty result)
+#   Batches are rejected with -32600 (stateless v1). Notifications (requests
+#   without id) never produce a response body (HTTP 204).
+#
+# ERROR CODES (JSON-RPC, in-band unless noted):
+#   -32700 parse error (HTTP 400)      -32600 invalid request / batch (HTTP 400)
+#   -32601 method not found (HTTP 200) -32602 invalid params / unknown tool (HTTP 200)
+#   -32603 internal (HTTP 200)         -32000 forbidden: caller's role lacks the
+#                            runs.execute permission for the tool surface
+#                            (server-defined code, reserved implementation
+#                            range; HTTP 200 so MCP clients get an in-band
+#                            error)
+#
+# RBAC (reuses the EXISTING permission enum, mirroring cmd/api/tools.go +
+# cmd/api/secrets.go conventions; x-required-permission names the strictest
+# grant used by the operations on this endpoint):
+#   - tools/list + tools/call -> runs.execute (matrix exactly OWNER/ADMIN/
+#     MEMBER — viewers cannot list or call)
+#   - initialize + ping        -> authentication only (no tool data exposed)
+#   The tenant scope comes exclusively from the auth claims; API keys
+#   authenticate as OWNER. The catalog payload carries no organization
+#   fields (tool registrations are a process-wide runtime surface — there is
+#   nothing to leak across tenants), and every tools/call attempt writes a
+#   best-effort audit row: action "mcp.tool_call", resource
+#   "tools/<tool id>", actor = caller principal, metadata {"channel":"mcp",
+#   "tool":...} + outcome (ok / denied / unknown_tool). Arguments are never
+#   logged.
+openapi: 3.1.0
+info:
+  title: AgentOS — MCP server endpoint (issue #50 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the Model Context Protocol (MCP) endpoint added by
+  issue #50: AgentOS tenant tools exposed over JSON-RPC 2.0 on a single
+  stateless HTTP endpoint (served under both /v1/mcp and /api/v1/mcp; the
+  path below is written WITHOUT the version prefix, matching the base
+  spec's convention). The server negotiates protocolVersion "2025-06-18",
+  advertises tools with listChanged=false, and maps tool results to MCP
+  text content. Tool EXECUTION failures are reported inside a successful
+  tools/call result with isError=true (MCP error-handling contract);
+  protocol-level problems (unknown tool, malformed params, unknown method,
+  batches) use standard JSON-RPC error codes. Every tools/call attempt is
+  audit-logged with the "mcp" channel marker, the tool id and the caller
+  principal — never the arguments.
+paths:
+  /mcp:
+    post:
+      operationId: invokeMcpEndpoint
+      summary: MCP JSON-RPC 2.0 endpoint (initialize / tools/list / tools/call / ping)
+      description: |
+        Single stateless JSON-RPC 2.0 endpoint. Exactly one request object
+        per HTTP request; batches are rejected with -32600. Notifications
+        (requests without an id) answer 204 No Content with no body.
+
+        Method-level authorization is applied inside the endpoint:
+        initialize and ping need only authentication, while tools/list and
+        tools/call additionally require the runs.execute permission
+        (OWNER/ADMIN/MEMBER). Viewers receive the in-band JSON-RPC error
+        -32000 (HTTP 200) instead of an HTTP 403, so MCP clients surface a
+        protocol-level error.
+
+        tools/call executes through the existing internal/tools execution
+        path — the same registry the agent runtime uses, so tool-side
+        validation (e.g. the calculator's expression grammar, the
+        http_request tool's SSRF protection) applies natively. Results are
+        mapped to MCP content blocks: [{"type":"text","text":"<json or
+        error>"}].
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpJSONRPCRequest'
+            examples:
+              initialize:
+                summary: Protocol handshake
+                value:
+                  jsonrpc: "2.0"
+                  id: 1
+                  method: initialize
+                  params:
+                    protocolVersion: "2025-06-18"
+                    capabilities: {}
+                    clientInfo:
+                      name: claude
+                      version: "1.0"
+              toolsList:
+                summary: List the tenant-visible tools
+                value:
+                  jsonrpc: "2.0"
+                  id: 2
+                  method: tools/list
+              toolsCall:
+                summary: Execute the calculator tool
+                value:
+                  jsonrpc: "2.0"
+                  id: 3
+                  method: tools/call
+                  params:
+                    name: calculator
+                    arguments:
+                      expression: 6*7
+              ping:
+                summary: Liveness probe
+                value:
+                  jsonrpc: "2.0"
+                  id: 4
+                  method: ping
+      responses:
+        '200':
+          description: |
+            JSON-RPC response (success result, or an in-band error: -32601
+            method not found, -32602 invalid params / unknown tool, -32603
+            internal, -32000 forbidden for the tool surface).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpJSONRPCResponse'
+        '204':
+          description: |
+            Notification accepted (request without id): no response body by
+            the JSON-RPC spec.
+        '400':
+          description: |
+            Transport-level JSON-RPC rejection: -32700 parse error or
+            -32600 invalid request (including batch bodies). The body is
+            still a JSON-RPC error envelope with id null.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpJSONRPCResponse'
+        '401':
+          description: |
+            Missing or invalid credentials. The platform auth middleware
+            answers a plain-text 401 (no JSON-RPC envelope), consistent
+            with every other authenticated route.
+        '413':
+          description: |
+            Request body exceeds the 1 MiB cap; body is a JSON-RPC error
+            envelope (-32600) with id null.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpJSONRPCResponse'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec); authenticates as OWNER.
+  schemas:
+    McpJSONRPCRequest:
+      type: object
+      description: |
+        One JSON-RPC 2.0 request object. `id` may be a string, number or
+        null; a request WITHOUT `id` is a notification (204, no body).
+        Batches (top-level arrays) are rejected with -32600.
+      properties:
+        jsonrpc:
+          type: string
+          const: "2.0"
+          description: Must be exactly "2.0".
+        id:
+          oneOf:
+          - type: string
+          - type: number
+          - type: 'null'
+          description: Request correlation id; absent for notifications.
+        method:
+          type: string
+          enum:
+          - initialize
+          - tools/list
+          - tools/call
+          - ping
+          description: MCP method name.
+        params:
+          oneOf:
+          - $ref: '#/components/schemas/McpInitializeParams'
+          - $ref: '#/components/schemas/McpCallToolParams'
+          description: |
+            Method parameters (initialize and tools/call take params;
+            tools/list and ping take none in stateless v1).
+      required:
+      - jsonrpc
+      - method
+    McpInitializeParams:
+      type: object
+      description: initialize parameters. Unsupported protocol versions are
+        answered with the server's latest ("2025-06-18").
+      properties:
+        protocolVersion:
+          type: string
+          description: Client's requested MCP spec revision.
+          examples:
+          - "2025-06-18"
+        capabilities:
+          type: object
+          description: Client capabilities (ignored by this server in v1).
+          additionalProperties: true
+        clientInfo:
+          type: object
+          description: Client identification (informational).
+          properties:
+            name:
+              type: string
+            version:
+              type: string
+          additionalProperties: true
+    McpCallToolParams:
+      type: object
+      description: tools/call parameters.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Tool registry name (e.g. "calculator", "http_request").
+        arguments:
+          type: object
+          additionalProperties: true
+          description: |
+            Tool input object. JSON null behaves like an empty object;
+            anything else that is not an object is -32602.
+      required:
+      - name
+    McpJSONRPCResponse:
+      type: object
+      description: |
+        One JSON-RPC 2.0 response object: exactly one of result / error.
+        `id` echoes the request id, or null when the id was undetectable.
+      properties:
+        jsonrpc:
+          type: string
+          const: "2.0"
+        id:
+          oneOf:
+          - type: string
+          - type: number
+          - type: 'null'
+        result:
+          oneOf:
+          - $ref: '#/components/schemas/McpInitializeResult'
+          - $ref: '#/components/schemas/McpToolsListResult'
+          - $ref: '#/components/schemas/McpCallToolResult'
+          - $ref: '#/components/schemas/McpPingResult'
+          description: Present on success (shape depends on the method).
+        error:
+          $ref: '#/components/schemas/McpJSONRPCError'
+    McpJSONRPCError:
+      type: object
+      description: JSON-RPC 2.0 error object.
+      properties:
+        code:
+          type: integer
+          description: |
+            -32700 parse error | -32600 invalid request (incl. batches) |
+            -32601 method not found | -32602 invalid params / unknown tool |
+            -32603 internal | -32000 forbidden (server-defined, reserved
+            implementation range).
+          examples:
+          - -32601
+        message:
+          type: string
+          examples:
+          - method not found: "resources/list"
+        data:
+          description: Optional structured error detail (unused in v1).
+      required:
+      - code
+      - message
+    McpServerInfo:
+      type: object
+      description: MCP serverInfo advertised at initialize.
+      properties:
+        name:
+          type: string
+          const: agentos
+        version:
+          type: string
+          description: Build module version (falls back to a release constant).
+      required:
+      - name
+      - version
+    McpToolsCapability:
+      type: object
+      description: tools feature advertisement. listChanged is false — the
+        stateless v1 endpoint never pushes registry-change notifications.
+      properties:
+        listChanged:
+          type: boolean
+          const: false
+      required:
+      - listChanged
+    McpServerCapabilities:
+      type: object
+      description: Capabilities advertised by this server.
+      properties:
+        tools:
+          $ref: '#/components/schemas/McpToolsCapability'
+      required:
+      - tools
+    McpInitializeResult:
+      type: object
+      description: initialize handshake payload.
+      properties:
+        protocolVersion:
+          type: string
+          description: |
+            The negotiated spec revision: the client's version when the
+            server supports it ("2025-06-18"), otherwise the server's
+            latest.
+          examples:
+          - "2025-06-18"
+        capabilities:
+          $ref: '#/components/schemas/McpServerCapabilities'
+        serverInfo:
+          $ref: '#/components/schemas/McpServerInfo'
+      required:
+      - protocolVersion
+      - capabilities
+      - serverInfo
+    McpToolDescriptor:
+      type: object
+      description: |
+        One tools/list entry. description and inputSchema are omitted for
+        tools that publish no catalog metadata. The catalog is a
+        process-wide runtime surface: it carries no organization fields and
+        is identical for every tenant.
+      properties:
+        name:
+          type: string
+          description: Registry name used by tools/call.
+          examples:
+          - calculator
+        description:
+          type: string
+          description: Human-readable tool description (optional).
+        inputSchema:
+          type: object
+          description: JSON-Schema-style input contract for arguments.
+          additionalProperties: true
+      required:
+      - name
+    McpToolsListResult:
+      type: object
+      description: tools/list payload. nextCursor is deliberately absent
+        (no pagination in stateless v1).
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpToolDescriptor'
+      required:
+      - tools
+    McpTextContent:
+      type: object
+      description: MCP text content block (the only content type in v1).
+      properties:
+        type:
+          type: string
+          const: text
+        text:
+          type: string
+          description: |
+            Tool observation as text: the tool's result map rendered as
+            compact JSON, or "error: <reason>" for in-band execution
+            failures.
+      required:
+      - type
+      - text
+    McpCallToolResult:
+      type: object
+      description: |
+        tools/call payload. Tool EXECUTION failures are reported here with
+        isError=true (MCP contract) — they are never JSON-RPC errors.
+        Protocol failures (unknown tool, malformed params) are JSON-RPC
+        -32602 instead. Every call (executed, denied or unknown tool) also
+        writes an audit row with the "mcp" channel marker; arguments are
+        never logged.
+      properties:
+        content:
+          type: array
+          description: Exactly one text block in v1 (empty never occurs on success).
+          items:
+            $ref: '#/components/schemas/McpTextContent'
+        isError:
+          type: boolean
+          description: True when the tool itself failed; the text carries the reason.
+      required:
+      - content
+      - isError
+    McpPingResult:
+      type: object
+      description: ping payload — the empty object, per the MCP spec.
+      additionalProperties: false

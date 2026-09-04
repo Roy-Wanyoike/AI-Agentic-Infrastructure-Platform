@@ -343,6 +343,8 @@ func (a *app) routes() http.Handler {
 	registerConnectorsRoutes(apiMux, a.connSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #48: API keys management (mint once / metadata list / revoke)
 	registerAPIKeysRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	// issue #50: MCP server endpoint (JSON-RPC 2.0) — tenant tools over MCP
+	registerMcpRoutes(apiMux, a.authSvc, a.apiKeysSvc, a.auditSvc)
 
 	apiMux.HandleFunc("/", serviceInfoHandler)
 
