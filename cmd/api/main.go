@@ -62,6 +62,7 @@ type app struct {
 	authSvc    *auth.Service
 	apiKeysSvc *apikeys.Service
 	orgsSvc    *organizations.Service
+	identities auth.ProvisioningStore
 	auditSvc   *audit.Service
 	usageSvc   *usage.Service
 	agentsSvc  *agents.Service
@@ -151,6 +152,7 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 			os.Exit(1)
 		}
 		identities := auth.NewProvisioningStore(db)
+		a.identities = identities
 		a.ssoSvc = sso.NewService(ssoConfigs, identities, a.authSvc)
 		scimTokens, scmerr := scim.NewPostgresTokenStore(db)
 		if scmerr != nil {
@@ -190,6 +192,7 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		// issue #29: zero-infrastructure SSO + SCIM (shared in-memory identity store
 		// so SCIM-provisioned users can immediately SSO-login)
 		memIdentities := auth.NewMemoryStore()
+		a.identities = memIdentities
 		a.ssoSvc = sso.NewService(sso.NewMemoryConfigStore(), memIdentities, a.authSvc)
 		a.scimSvc = scim.NewService(memIdentities)
 		// issue #28/#30: zero-infrastructure marketplace + connectors
@@ -332,6 +335,8 @@ func (a *app) routes() http.Handler {
 	// issue #29: OIDC SSO browser flow + SCIM 2.0 provisioning
 	registerSsoRoutes(apiMux, a.ssoSvc)
 	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc)
+	// issue #52: organizations & membership management (last-owner guarded)
+	registerOrganizationRoutes(apiMux, a.orgsSvc, a.identities, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks

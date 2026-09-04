@@ -16,8 +16,13 @@ const (
 	sqlSelectOrganizationByName = `SELECT id, name, status, created_at, updated_at FROM organizations WHERE LOWER(name) = LOWER($1) ORDER BY id LIMIT 1`
 	// Tenant guard: membership rows are always written with their organization_id.
 	sqlInsertMembership = `INSERT INTO organization_memberships (organization_id, user_id, role, created_at) VALUES ($1, $2, $3, $4)`
-	// Tenant guard: memberships are listed for exactly one organization_id.
-	sqlSelectMemberships = `SELECT user_id, organization_id, role FROM organization_memberships WHERE organization_id = $1 ORDER BY created_at ASC`
+	// Tenant guard: memberships are listed for exactly one organization_id
+	// (created_at is the joined_at projection for the members API).
+	sqlSelectMemberships = `SELECT user_id, organization_id, role, created_at FROM organization_memberships WHERE organization_id = $1 ORDER BY created_at ASC`
+	// Tenant guard: role updates land on exactly one (organization_id, user_id) row.
+	sqlUpdateMembershipRole = `UPDATE organization_memberships SET role = $1 WHERE organization_id = $2 AND user_id = $3`
+	// Tenant guard: removals delete exactly one (organization_id, user_id) row.
+	sqlDeleteMembership = `DELETE FROM organization_memberships WHERE organization_id = $1 AND user_id = $2`
 )
 
 // pgStore is the Postgres-backed Store implementation.
@@ -101,12 +106,55 @@ func (s *pgStore) ListMemberships(ctx context.Context, orgID string) ([]Membersh
 	out := make([]Membership, 0)
 	for rows.Next() {
 		var m Membership
-		if err := rows.Scan(&m.UserID, &m.OrganizationID, &m.Role); err != nil {
+		if err := rows.Scan(&m.UserID, &m.OrganizationID, &m.Role, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// UpdateMembershipRole implements the role-change path for the members API:
+// the UPDATE is guarded by organization_id, so a tenant can only ever change
+// roles inside itself. RowsAffected == 0 means the (organization_id,
+// user_id) pair does not exist — unknown AND foreign-organization ids
+// surface as ErrMembershipNotFound with no existence leak.
+func (s *pgStore) UpdateMembershipRole(ctx context.Context, orgID, userID, role string) error {
+	if err := s.guard(); err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, sqlUpdateMembershipRole, role, orgID, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrMembershipNotFound
+	}
+	return nil
+}
+
+// DeleteMembership implements the removal path for the members API with the
+// same organization_id guard and RowsAffected semantics as the role update.
+func (s *pgStore) DeleteMembership(ctx context.Context, orgID, userID string) error {
+	if err := s.guard(); err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, sqlDeleteMembership, orgID, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrMembershipNotFound
+	}
+	return nil
 }
 
 func scanOrganization(scanner interface{ Scan(dest ...any) error }) (*Organization, error) {

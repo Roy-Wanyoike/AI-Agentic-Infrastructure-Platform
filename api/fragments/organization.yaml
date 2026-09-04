@@ -1,0 +1,520 @@
+# AgentOS API — OpenAPI 3.1 fragment for the organizations & membership
+# management surface (issue #52, wave 6-h).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/organization.yaml`
+# passes. Components carry the track-unique `Org` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation. No
+#     new permission enum was introduced — the strictest EXISTING grants
+#     whose role matrices match the contract are reused:
+#       - GET  /organization           -> runs.read (all four roles: every
+#         authenticated member may see the tenant it belongs to)
+#       - GET  /organization/members   -> runs.execute (MEMBER+, the api-keys
+#         list convention; viewers do not enumerate people)
+#       - POST /organization/members   -> users.manage (OWNER/ADMIN)
+#       - PATCH /organization/members/{userId} -> organization.manage
+#         (exactly OWNER, the same matrix as POST /scim/tokens — role changes
+#         are owner-level)
+#       - DELETE /organization/members/{userId} -> users.manage (OWNER/ADMIN)
+#   * structured error model {"error":{"code","message"}}
+#
+# TENANT GUARD: the organization scope is derived exclusively from the auth
+# claims (session token or API key). Request bodies carry no organization id
+# and none would be trusted. Membership lookups are organization-guarded, so
+# unknown AND foreign-organization user ids answer 404 with no existence leak
+# across tenants.
+#
+# ACCOUNT LIFECYCLE (SCIM consistency, issue #29): DELETE deactivates the
+# member's login through the SAME org-guarded store path the SCIM service
+# uses on deprovisioning (auth.ProvisioningStore.SetUserActive(org, user,
+# false)); a removed member's next password login fails with
+# auth.ErrAccountDisabled until re-invited. Re-adding a removed member goes
+# through the same org-guarded path with active=true (SCIM re-enable
+# semantics), so an invited member can log in again. For a cross-org invitee
+# the org guard refuses the deactivation (their login belongs to their home
+# tenant) and only the membership row is removed.
+openapi: 3.1.0
+info:
+  title: AgentOS — organizations & membership management (issue #52 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the team-management operations added by issue #52.
+  Every registered user gets a personal organization; these endpoints let
+  OWNER/ADMIN users build a team inside theirs: invite existing platform
+  users by email, manage per-tenant roles (OWNER/ADMIN/MEMBER/VIEWER enum,
+  the same as the platform RBAC roles) and remove members. The last OWNER
+  membership row of a tenant can never be demoted or removed (409 LAST_OWNER)
+  on either mutating path, so a tenant can never lose its owner-level
+  members through this API. Removing a member deactivates their login with
+  the same semantics as SCIM deprovisioning; re-inviting reactivates it.
+  All three mutating operations write audit trail entries
+  (organization.member_added / organization.member_role_updated /
+  organization.member_removed) scoped to the tenant and carrying role
+  metadata but no credential material.
+paths:
+  /organization:
+    get:
+      operationId: getCurrentOrganization
+      summary: Show the caller's current organization and the caller's platform role
+      description: |
+        Read operation (runs.read — all roles). Returns the tenant the
+        caller authenticated into (derived from the auth claims, never from
+        client input) plus the caller's role as embedded in the session/API
+        key context. 404 ORGANIZATION_NOT_FOUND when the organization
+        directory does not know the caller's tenant.
+      x-required-permission: runs.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The caller's organization and role.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgInfoResponse'
+        '401':
+          $ref: '#/components/responses/OrgUnauthorized'
+        '404':
+          description: The organization directory does not know the caller's tenant (error.code ORGANIZATION_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+  /organization/members:
+    get:
+      operationId: listOrganizationMembers
+      summary: List the members of the caller's organization (id, email, name, role, joined_at)
+      description: |
+        Read operation (runs.execute, MEMBER+ — viewers are excluded, same
+        convention as the api-keys list). Returns the membership rows of the
+        caller's tenant joined with the identity directory, ordered oldest
+        member first. `name` is a display fallback derived from the email
+        local part — the platform identity model has no display-name column
+        (the SCIM 2.0 resource omits the attribute for the same reason), so
+        no profile data is invented. `joined_at` is the membership row's
+        creation timestamp. A membership row without a matching identity row
+        projects empty email/name rather than being silently dropped.
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Member list (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgMemberListResponse'
+        '401':
+          $ref: '#/components/responses/OrgUnauthorized'
+        '403':
+          $ref: '#/components/responses/OrgForbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+    post:
+      operationId: addOrganizationMember
+      summary: Add an existing platform user (by email) to the caller's organization
+      description: |
+        Write operation (users.manage, OWNER/ADMIN). Resolves the user by
+        email through the identity directory — only EXISTING users can be
+        invited (unknown emails are 404 USER_NOT_FOUND; the API never
+        creates accounts or sends invitations). The membership is created in
+        the CALLER's tenant with the requested role (case-insensitive,
+        normalized). Duplicates are 409 ALREADY_MEMBER. Roles use the
+        OWNER/ADMIN/MEMBER/VIEWER enum; anything else is 422
+        VALIDATION_ERROR. Adding a user as OWNER creates an additional
+        owner (the last-owner guard then protects the pair). A removed
+        member can be re-invited: re-adding reactivates their login through
+        the same org-guarded store path SCIM uses for re-enabling. The
+        tenant comes from the auth claims; the operation is audit-logged
+        (organization.member_added).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrgMemberAddRequest'
+      responses:
+        '201':
+          description: Membership created; the member projection echoes the stored row (normalized role, real joined_at).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgMemberMutationResponse'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/OrgUnauthorized'
+        '403':
+          $ref: '#/components/responses/OrgForbidden'
+        '404':
+          description: |
+            Unknown email (error.code USER_NOT_FOUND) or the organization
+            directory does not know the caller's tenant (error.code
+            ORGANIZATION_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '409':
+          description: The user already has a membership row in the caller's tenant (error.code ALREADY_MEMBER).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '422':
+          description: Blank email or role outside the OWNER/ADMIN/MEMBER/VIEWER enum (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+  /organization/members/{userId}:
+    patch:
+      operationId: updateOrganizationMemberRole
+      summary: Change a member's role (OWNER only; the last OWNER cannot be demoted)
+      description: |
+        Write operation (organization.manage — exactly OWNER, the same
+        matrix as POST /scim/tokens: role changes are owner-level, which is
+        why ADMINs — who can add and remove members — cannot change roles).
+        The membership row is updated org-guarded: unknown and
+        foreign-organization user ids are 404 MEMBER_NOT_FOUND with no
+        existence leak. Demoting the last OWNER membership row of the tenant
+        is rejected with 409 LAST_OWNER before anything is written.
+        Re-asserting OWNER stays allowed. The operation is audit-logged
+        (organization.member_role_updated, from_role/to_role metadata).
+      x-required-permission: organization.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/OrgMemberUserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrgMemberRoleUpdateRequest'
+      responses:
+        '200':
+          description: Role changed; the member projection echoes the stored row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgMemberMutationResponse'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/OrgUnauthorized'
+        '403':
+          description: Authenticated but not an OWNER (error.code FORBIDDEN).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '404':
+          description: Unknown or foreign-organization user id (error.code MEMBER_NOT_FOUND — no existence leak).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '409':
+          description: The target is the last OWNER membership row of the tenant (error.code LAST_OWNER).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '422':
+          description: Role outside the OWNER/ADMIN/MEMBER/VIEWER enum (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+    delete:
+      operationId: removeOrganizationMember
+      summary: Remove a member (OWNER/ADMIN; the last OWNER cannot be removed; deactivates the member's login)
+      description: |
+        Write operation (users.manage, OWNER/ADMIN). Removes the membership
+        row org-guarded (unknown/foreign ids are 404 MEMBER_NOT_FOUND) and
+        deactivates the member's login through the SAME org-guarded store
+        path the SCIM 2.0 service uses on deprovisioning — the member's next
+        password login fails with auth.ErrAccountDisabled until they are
+        re-invited. Removing the last OWNER membership row is rejected with
+        409 LAST_OWNER. For a cross-org invitee the org guard refuses the
+        account deactivation (their login belongs to their home tenant) and
+        only the membership row is removed. The operation is audit-logged
+        (organization.member_removed, role-at-removal metadata).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/OrgMemberUserId'
+      responses:
+        '200':
+          description: Membership removed and login deactivated (see description).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgMemberRemoveResponse'
+        '401':
+          $ref: '#/components/responses/OrgUnauthorized'
+        '403':
+          $ref: '#/components/responses/OrgForbidden'
+        '404':
+          description: Unknown or foreign-organization user id (error.code MEMBER_NOT_FOUND — no existence leak).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '409':
+          description: The target is the last OWNER membership row of the tenant (error.code LAST_OWNER).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    OrgMemberUserId:
+      name: userId
+      in: path
+      required: true
+      description: User id of the member (as returned by the member list).
+      schema:
+        type: string
+        minLength: 1
+      example: 5f0c1a5e-8e2b-4c1d-9a7b-2f0d5e6a1b2c
+  responses:
+    OrgUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrgErrorEnvelope'
+    OrgForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OrgErrorEnvelope'
+  schemas:
+    OrgSummary:
+      type: object
+      description: The caller's tenant (claims-derived; never client-supplied).
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          description: Tenant lifecycle status (ACTIVE for every registered tenant).
+          enum:
+          - ACTIVE
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - name
+      - status
+      - created_at
+      - updated_at
+    OrgInfoResponse:
+      type: object
+      properties:
+        organization:
+          $ref: '#/components/schemas/OrgSummary'
+        role:
+          type: string
+          description: The caller's platform role (from the authenticated identity).
+          enum:
+          - OWNER
+          - ADMIN
+          - MEMBER
+          - VIEWER
+      required:
+      - organization
+      - role
+    OrgMember:
+      type: object
+      description: |
+        One membership row joined with the identity directory. `name` is a
+        display fallback derived from the email local part (the identity
+        model has no display-name column — same deliberate omission as the
+        SCIM 2.0 resource); a membership row without a matching identity row
+        projects empty email/name.
+      properties:
+        id:
+          type: string
+          description: User id (path parameter of the PATCH/DELETE member operations).
+        email:
+          type: string
+          description: Login email from the identity directory (empty when the identity row is missing).
+        name:
+          type: string
+          description: Display fallback (email local part); never invented profile data.
+        role:
+          type: string
+          description: Membership role for this tenant (same enum as the platform RBAC roles).
+          enum:
+          - OWNER
+          - ADMIN
+          - MEMBER
+          - VIEWER
+        joined_at:
+          type: string
+          format: date-time
+          description: Membership row creation timestamp.
+      required:
+      - id
+      - email
+      - name
+      - role
+      - joined_at
+    OrgMemberListResponse:
+      type: object
+      properties:
+        members:
+          type: array
+          description: Members of the caller's tenant, oldest first.
+          items:
+            $ref: '#/components/schemas/OrgMember'
+      required:
+      - members
+    OrgMemberAddRequest:
+      type: object
+      description: |
+        Invite payload. Only email + role are supplied; the tenant comes
+        from the auth claims and the user must already exist on the
+        platform (unknown emails are 404, never auto-registered).
+      properties:
+        email:
+          type: string
+          minLength: 1
+          description: Login email of an EXISTING platform user (case-insensitive).
+          examples:
+          - new.hire@acme.test
+        role:
+          type: string
+          description: Membership role (case-insensitive, normalized by the server).
+          enum:
+          - OWNER
+          - ADMIN
+          - MEMBER
+          - VIEWER
+      required:
+      - email
+      - role
+    OrgMemberRoleUpdateRequest:
+      type: object
+      properties:
+        role:
+          type: string
+          description: New membership role (case-insensitive).
+          enum:
+          - OWNER
+          - ADMIN
+          - MEMBER
+          - VIEWER
+      required:
+      - role
+    OrgMemberMutationResponse:
+      type: object
+      description: Add/role-change responses echo the stored member row.
+      properties:
+        member:
+          $ref: '#/components/schemas/OrgMember'
+      required:
+      - member
+    OrgMemberRemoveResponse:
+      type: object
+      properties:
+        removed:
+          type: boolean
+          description: Always true on success.
+      required:
+      - removed
+    OrgErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of ORGANIZATION_NOT_FOUND, USER_NOT_FOUND, MEMBER_NOT_FOUND, ALREADY_MEMBER, LAST_OWNER, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - LAST_OWNER
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
