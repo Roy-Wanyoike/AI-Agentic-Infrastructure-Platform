@@ -15,13 +15,16 @@ type ValidationError struct {
 	NodeID  string `json:"node_id,omitempty"`
 }
 
-// APIError is returned for every non-2xx response. It unifies the three
+// APIError is returned for every non-2xx response. It unifies the four
 // body styles the API emits:
 //
 //  1. {"error":{"code":"…","message":"…"}} — the structured envelope used by
 //     the workflows/knowledge/usage/tools/… handlers;
 //  2. {"errors":[{code,message,node_id},…]} — the 422 validation array;
-//  3. a plain-text body from the legacy http.Error handlers (agents, runs).
+//  3. the SCIM 2.0 error document (application/scim+json, RFC 7644 §3.12:
+//     {"schemas":[…Error],"status":"…","detail":"…"}) emitted by the
+//     /scim/v2/* endpoints;
+//  4. a plain-text body from the legacy http.Error handlers (agents, runs).
 //
 // Code and Message are best-effort: plain-text bodies land in Message with an
 // empty Code; unparseable bodies keep the HTTP status line in Message.
@@ -106,6 +109,21 @@ func newAPIError(resp *http.Response, raw []byte) *APIError {
 			e.StatusCode = firstNonZero(resp.StatusCode, 422)
 			e.Message = "validation failed"
 			e.ValidationErrors = env.Errors
+			return e
+		}
+	}
+	// SCIM 2.0 error document (the /scim/v2/* endpoints; RFC 7644 §3.12):
+	// the machine-readable status duplicates the HTTP status, so only the
+	// human detail is carried over.
+	var scimErr struct {
+		Schemas []string `json:"schemas"`
+		Status  string   `json:"status"`
+		Detail  string   `json:"detail"`
+	}
+	if err := json.Unmarshal(raw, &scimErr); err == nil &&
+		len(scimErr.Schemas) == 1 && strings.HasSuffix(scimErr.Schemas[0], ":Error") {
+		if strings.TrimSpace(scimErr.Detail) != "" {
+			e.Message = strings.TrimSpace(scimErr.Detail)
 			return e
 		}
 	}

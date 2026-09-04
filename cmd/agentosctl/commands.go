@@ -46,6 +46,12 @@ var commands = []command{
 	{"knowledge", "list/add documents and search the RAG index", cmdKnowledge},
 	{"usage", "usage cost reports", cmdUsage},
 	{"tools", "list the public tool registry", cmdTools},
+	{"billing", "subscription, plans and invoices", cmdBilling},
+	{"secrets", "store, list, reveal (once) and delete secrets", cmdSecrets},
+	{"marketplace", "search, inspect, install and publish agent listings", cmdMarketplace},
+	{"connectors", "manage and test org connectors", cmdConnectors},
+	{"api-keys", "mint, list and revoke API keys", cmdAPIKeys},
+	{"sso", "SSO login URLs, SCIM tokens and directory identities", cmdSSO},
 }
 
 // newFlagSet builds a FlagSet that reports usage to stderr and stops at the
