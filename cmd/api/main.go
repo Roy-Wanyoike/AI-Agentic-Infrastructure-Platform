@@ -289,6 +289,9 @@ func (a *app) routes() http.Handler {
 	apiMux.Handle("/agents", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(a.agentsSvc)))))
 	apiMux.Handle("/agents/create", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsWrite)(http.HandlerFunc(createAgentHandler(a.agentsSvc, a.auditSvc)))))
 	apiMux.Handle("/agents/", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsRead)(http.HandlerFunc(agentDetailHandler(a.agentsSvc)))))
+	// issue #49: agent update + delete (CRUD completion; method-prefixed
+	// patterns win over the "/agents/" catch-all for PUT/DELETE)
+	registerAgentsLifecycleRoutes(apiMux, a.agentsSvc, a.runsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	apiMux.Handle("/runs", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			// require read permission for listing
