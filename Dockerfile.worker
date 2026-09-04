@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+# AgentOS queue worker image.
+#
+# Same shape as Dockerfile.api: golang:1.25-alpine builds a static
+# CGO_ENABLED=0 binary for cmd/worker, distroless/static-debian12:nonroot runs
+# it. The worker owns run execution: it consumes the shared task queue
+# (AGENTOS_QUEUE=redis in production) and talks back to the API for status
+# callbacks (AGENTOS_API + AGENTOS_API_KEY).
+#
+# There is deliberately NO EXPOSE and no healthcheck: the worker runs no HTTP
+# server (WORKER_PORT is a log label only, cmd/worker/main.go). Liveness is
+# observed via logs / `docker compose ps`; process restarts are handled by the
+# compose restart policy.
+#
+# Build: docker build -f Dockerfile.worker -t agentos/worker:latest .
+
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+ENV CGO_ENABLED=0
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
+
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /app
+COPY --from=build /out/worker /app/worker
+ENTRYPOINT ["/app/worker"]

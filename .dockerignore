@@ -1,0 +1,27 @@
+# Shared build-context exclusions for Dockerfile.api, Dockerfile.worker and
+# Dockerfile.web (all built from the repository root).
+#
+# Keep the context small and secret-free; the images only ever need:
+#   cmd/ internal/ migrations/ go.mod go.sum   (Go builds)
+#   web/ deploy/nginx.conf                     (dashboard build)
+
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Docs, OpenAPI fragments and helper scripts — not needed inside images
+docs
+api
+scripts
+**/*.md
+
+# Local developer state and secrets (never bake these into images)
+worktrees
+.env
+.env.*
+.env.prod
+
+# Frontend artifacts that must be rebuilt inside the image
+web/node_modules
+web/dist

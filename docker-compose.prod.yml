@@ -1,0 +1,197 @@
+# AgentOS production stack (self-hosting).
+#
+# Usage (see docs/self-hosting.md):
+#   docker compose -f docker-compose.prod.yml --profile migrate up -d   # first start: also applies migrations
+#   docker compose -f docker-compose.prod.yml up -d                     # subsequent starts
+#   docker compose -f docker-compose.prod.yml --profile migrate run --rm migrate   # re-run migrations (upgrades)
+#
+# Configuration: every ${VAR} below resolves from the shell or a `.env` file
+# placed next to this compose file; the `:-default` fallbacks are sensible for
+# evaluation, but set POSTGRES_PASSWORD and AGENTOS_SECRETS_MASTER_KEY before
+# any real deployment. AGENTOS_SECRETS_MASTER_KEY is REQUIRED (`:?` guard):
+# the secrets service refuses to start in Postgres mode without it
+# (cmd/api/main.go fails fast, issue #25).
+#
+# Security defaults:
+#   - postgres/redis/nats are NOT published to the host; they are reachable
+#     only on the internal compose network (api/worker/migrate use them by
+#     service name). Publish temporarily via a compose override file if you
+#     need host-side admin access.
+#   - the api image is distroless/nonroot (Dockerfile.api); the web image
+#     serves static files as the unprivileged nginx user.
+#   - the dev stack in docker-compose.yml is untouched: this file is standalone.
+
+name: agentos
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agentos}
+      POSTGRES_USER: ${POSTGRES_USER:-agentos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentos}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentos} -d ${POSTGRES_DB:-agentos}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Persistence ON: with AGENTOS_QUEUE=redis the queue lives in a Redis list
+    # and must survive container restarts (AOF everysec).
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    # -js: JetStream (event publisher + webhook delivery need it)
+    # -m 8222: monitoring endpoint, used by the healthcheck below
+    # -sd /data: JetStream store on the named volume
+    command: ["-js", "-m", "8222", "-sd", "/data"]
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: agentos/api:latest
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      API_PORT: "8080"
+      DATABASE_URL: postgres://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD:-agentos}@postgres:5432/${POSTGRES_DB:-agentos}?sslmode=disable
+      AGENTOS_QUEUE: redis
+      REDIS_ADDR: redis:6379
+      REDIS_QUEUE_KEY: ${REDIS_QUEUE_KEY:-agentos:queue}
+      AGENTOS_NATS_URL: nats://nats:4222
+      AGENTOS_SECRETS_MASTER_KEY: ${AGENTOS_SECRETS_MASTER_KEY:?set AGENTOS_SECRETS_MASTER_KEY in the environment or .env (openssl rand -base64 32)}
+      AGENTOS_WEBHOOK_SIGNING_KEY: ${AGENTOS_WEBHOOK_SIGNING_KEY:-}
+      AGENTOS_RATE_LIMIT_RPM: ${AGENTOS_RATE_LIMIT_RPM:-120}
+      AGENTOS_SCHEDULER_POLL_INTERVAL: ${AGENTOS_SCHEDULER_POLL_INTERVAL:-}
+      AGENTOS_WORKFLOW_STALE_AFTER: ${AGENTOS_WORKFLOW_STALE_AFTER:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      AGENTOS_WORKER_MODEL: ${AGENTOS_WORKER_MODEL:-}
+      AGENTOS_FALLBACK_API_KEY: ${AGENTOS_FALLBACK_API_KEY:-}
+      AGENTOS_FALLBACK_BASE_URL: ${AGENTOS_FALLBACK_BASE_URL:-}
+      AGENTOS_PRICING_JSON: ${AGENTOS_PRICING_JSON:-}
+      AGENTOS_EMBEDDING_BASE_URL: ${AGENTOS_EMBEDDING_BASE_URL:-}
+      AGENTOS_EMBEDDING_MODEL: ${AGENTOS_EMBEDDING_MODEL:-}
+      AGENTOS_EMBEDDING_API_KEY: ${AGENTOS_EMBEDDING_API_KEY:-}
+    ports:
+      - "${AGENTOS_API_PORT:-8081}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      # Distroless image: no shell/curl — the static Go probe from
+      # cmd/healthcheck is baked into the image (Dockerfile.api).
+      test: ["CMD", "/app/healthcheck", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  migrate:
+    # One-shot migration runner (profile "migrate", never kept running):
+    # same image as api (migrations/ baked in at /app/migrations), runs
+    # `/app/migrate --up` — idempotent (schema_migrations ledger, see
+    # internal/database.ApplyMigrations). Exits 0 when the schema is current.
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: agentos/api:latest
+    profiles: ["migrate"]
+    restart: "no"
+    command: ["/app/migrate", "--up"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD:-agentos}@postgres:5432/${POSTGRES_DB:-agentos}?sslmode=disable
+      MIGRATIONS_DIR: /app/migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: agentos/worker:latest
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgres://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD:-agentos}@postgres:5432/${POSTGRES_DB:-agentos}?sslmode=disable
+      AGENTOS_QUEUE: redis
+      REDIS_ADDR: redis:6379
+      REDIS_QUEUE_KEY: ${REDIS_QUEUE_KEY:-agentos:queue}
+      AGENTOS_NATS_URL: nats://nats:4222
+      # Status callbacks back to the API (POST /v1/runs/{id}/events).
+      AGENTOS_API: http://api:8080
+      # Recommended: create an API key in the dashboard and set it here so the
+      # worker's status callbacks authenticate (X-API-Key). Without it the
+      # callbacks 401 and only queued-task state advances.
+      AGENTOS_API_KEY: ${AGENTOS_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      AGENTOS_WORKER_MODEL: ${AGENTOS_WORKER_MODEL:-}
+      AGENTOS_FALLBACK_API_KEY: ${AGENTOS_FALLBACK_API_KEY:-}
+      AGENTOS_FALLBACK_BASE_URL: ${AGENTOS_FALLBACK_BASE_URL:-}
+      # AGENTOS_TOOL_SANDBOX stays off: the sandbox-exec child-process runner is
+      # not available inside the distroless image (no binary, no shell).
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    # No healthcheck: the worker runs no HTTP server (see Dockerfile.worker).
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: agentos/web:latest
+    restart: unless-stopped
+    ports:
+      - "${AGENTOS_WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  pgdata:
+  redisdata:
+  natsdata:

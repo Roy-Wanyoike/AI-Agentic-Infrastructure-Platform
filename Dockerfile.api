@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+# AgentOS API server image (+ migrate runner and healthcheck helper).
+#
+# Multi-stage build:
+#   1. golang:1.25-alpine builds static binaries (CGO_ENABLED=0) for
+#      cmd/api (the HTTP server), cmd/migrate (file-based SQL migration
+#      runner, see internal/database.LoadMigrations) and cmd/healthcheck.
+#   2. gcr.io/distroless/static-debian12:nonroot runs them — no shell, no
+#      libc, no package manager, unprivileged uid 65532.
+#
+# Distroless consequences (deliberate trade-offs):
+#   - NO HEALTHCHECK instruction here: there is no shell to run one with.
+#     docker-compose.prod.yml instead probes /readyz with the static
+#     /app/healthcheck binary (compose-level healthcheck).
+#   - migrations/ is baked into /app/migrations so the SAME image doubles as
+#     the one-shot "migrate" compose service: `command: ["/app/migrate", "--up"]`.
+#   - cmd/api imports time/tzdata, so timezone-aware scheduling works despite
+#     the minimal base.
+#
+# Build:  docker build -f Dockerfile.api -t agentos/api:latest .
+# Run:    docker run -p 8080:8080 -e DATABASE_URL=postgres://... agentos/api:latest
+
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+ENV CGO_ENABLED=0
+# Cache deps first: go.sum changes are rarer than source changes.
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /out/api         ./cmd/api \
+ && go build -trimpath -ldflags="-s -w" -o /out/migrate     ./cmd/migrate \
+ && go build -trimpath -ldflags="-s -w" -o /out/healthcheck ./cmd/healthcheck
+
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /app
+COPY --from=build /out/api         /app/api
+COPY --from=build /out/migrate     /app/migrate
+COPY --from=build /out/healthcheck /app/healthcheck
+COPY --from=build /src/migrations  /app/migrations
+# MIGRATIONS_DIR defaults to ./migrations (cmd/migrate) which resolves to
+# /app/migrations from this WORKDIR when the image runs as the migrate job.
+EXPOSE 8080
+ENTRYPOINT ["/app/api"]
