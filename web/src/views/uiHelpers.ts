@@ -1,7 +1,7 @@
 // Non-component helpers shared across dashboard views (kept separate from
 // shared.tsx so react-refresh stays happy: that file only exports components).
 
-import { ApiError } from '../lib/api/client'
+import { ApiError, extractErrorCode } from '../lib/api/client'
 import type { Run } from '../lib/api/types'
 
 export const navItems = [
@@ -13,16 +13,46 @@ export const navItems = [
   'Evaluations',
   'Versions',
   'Usage',
+  'Billing',
   'Knowledge',
   'Memory',
   'Analytics',
   'Policies',
   'Schedules',
   'Webhooks',
+  'Marketplace',
+  'Connectors',
+  'Secrets',
   'Settings',
 ] as const
 
 export type ViewName = (typeof navItems)[number]
+
+/**
+ * Sidebar glyphs (issue #53 added Billing/Marketplace/Connectors/Secrets).
+ * Monochrome symbols matching the existing text-first design language.
+ */
+export const navIcons: Record<ViewName, string> = {
+  Overview: '◎',
+  Agents: '⬡',
+  Runs: '▷',
+  Workflows: '⑂',
+  Approvals: '✓',
+  Evaluations: '⚗',
+  Versions: '⎌',
+  Usage: '◔',
+  Billing: '¤',
+  Knowledge: '❖',
+  Memory: '≡',
+  Analytics: '◫',
+  Policies: '⛨',
+  Schedules: '⏱',
+  Webhooks: '⇄',
+  Marketplace: '⇪',
+  Connectors: '⇋',
+  Secrets: '✷',
+  Settings: '⚙',
+}
 
 /** Platform-aware shortcut hint for the ⌘K command palette. */
 export function paletteShortcutLabel(): string {
@@ -38,6 +68,14 @@ export function describeError(error: unknown): string {
   }
   if (error instanceof Error) return error.message
   return typeof error === 'string' ? error : 'Unexpected error'
+}
+
+/**
+ * Machine-readable code from the shared {"error":{"code",…}} envelope
+ * (e.g. NO_SUBSCRIPTION), when the error came from an API response.
+ */
+export function apiErrorCode(error: unknown): string | null {
+  return error instanceof ApiError ? extractErrorCode(error.body) : null
 }
 
 export function statusAccent(status: string): 'default' | 'info' | 'success' | 'warning' {

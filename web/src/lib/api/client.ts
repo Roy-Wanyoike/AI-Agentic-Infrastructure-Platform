@@ -179,6 +179,19 @@ export function extractErrorMessage(body: unknown, fallback: string): string {
   return fallback || 'Request failed'
 }
 
+/**
+ * Machine-readable code from the shared {"error":{"code","message"}} error
+ * envelope (e.g. NO_SUBSCRIPTION, VALIDATION_ERROR). Returns null when the
+ * body does not carry the envelope shape.
+ */
+export function extractErrorCode(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
+  const err = (body as Record<string, unknown>)['error']
+  if (!err || typeof err !== 'object' || Array.isArray(err)) return null
+  const code = (err as Record<string, unknown>)['code']
+  return typeof code === 'string' && code.trim() ? code : null
+}
+
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (!headers.has('Accept')) headers.set('Accept', 'application/json')

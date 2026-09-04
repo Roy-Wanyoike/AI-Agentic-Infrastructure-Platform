@@ -34,6 +34,7 @@ import {
 import {
   countByStatus,
   describeError,
+  navIcons,
   navItems,
   paletteShortcutLabel,
   sortRunsDesc,
@@ -53,7 +54,22 @@ import { VersionsView } from './views/versions'
 import { PoliciesView } from './views/policies'
 import { SchedulesView } from './views/schedules'
 import { WebhooksView } from './views/webhooks'
-import { canDecide, canDeploy, canManagePolicies, canManageVersions, canWrite } from './lib/rbac'
+import { BillingView } from './views/billing'
+import { SecretsView } from './views/secrets'
+import { MarketplaceView } from './views/marketplace'
+import { ConnectorsView } from './views/connectors'
+import {
+  canDecide,
+  canDeploy,
+  canManageBilling,
+  canManageConnectors,
+  canManagePolicies,
+  canManageSecrets,
+  canManageVersions,
+  canPublishMarketplace,
+  canRevealSecrets,
+  canWrite,
+} from './lib/rbac'
 
 const COMMON_MODELS = ['gpt-4o-mini', 'gpt-4o', 'claude-3-7-sonnet', 'llama-3.1-70b']
 
@@ -1235,6 +1251,12 @@ export default function App() {
   const canManageVersionsRole = canManageVersions(auth.user?.role)
   const canDeployRole = canDeploy(auth.user?.role)
   const canManagePoliciesRole = canManagePolicies(auth.user?.role)
+  // Issue #53 views (permission reuse mirrors the Go handlers exactly).
+  const canManageSecretsRole = canManageSecrets(auth.user?.role)
+  const canRevealSecretsRole = canRevealSecrets(auth.user?.role)
+  const canPublishMarketplaceRole = canPublishMarketplace(auth.user?.role)
+  const canManageConnectorsRole = canManageConnectors(auth.user?.role)
+  const canManageBillingRole = canManageBilling(auth.user?.role)
 
   const navigateTo = (view: ViewName) => {
     setSelectedAgentId(null)
@@ -1251,13 +1273,17 @@ export default function App() {
         ['Approvals', 'approvals pending review risk'],
         ['Evaluations', 'evals evaluations datasets quality pass rate'],
         ['Versions', 'versions deployments releases diff environments promote rollback'],
-        ['Usage', 'usage metrics tokens cost'],
+        ['Usage', 'usage metrics tokens cost billing invoices'],
+        ['Billing', 'billing subscription plan quota invoices pricing'],
         ['Knowledge', 'knowledge documents rag retrieval search embeddings'],
         ['Memory', 'memory snippets short term long term agent recall'],
         ['Analytics', 'analytics latency percentiles p50 p95 p99 counters queue costs'],
         ['Policies', 'policies governance allow deny evaluate rbac'],
         ['Schedules', 'schedules cron automation recurring triggers'],
         ['Webhooks', 'webhooks events integrations deliveries secrets'],
+        ['Marketplace', 'marketplace catalog listings publish install community agents'],
+        ['Connectors', 'connectors integrations http webhook health check'],
+        ['Secrets', 'secrets vault credentials encrypted reveal api keys'],
       ] as const
     ).map(([view, keywords]) => ({
       id: `nav-${view}`,
@@ -1338,6 +1364,14 @@ export default function App() {
         return <AnalyticsView />
       case 'Usage':
         return <UsageView />
+      case 'Billing':
+        return <BillingView canSubscribe={canManageBillingRole} />
+      case 'Marketplace':
+        return <MarketplaceView canPublish={canPublishMarketplaceRole} onNavigate={setActiveView} />
+      case 'Connectors':
+        return <ConnectorsView canManage={canManageConnectorsRole} />
+      case 'Secrets':
+        return <SecretsView canManage={canManageSecretsRole} canReveal={canRevealSecretsRole} />
       default:
         return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} />
     }
@@ -1362,6 +1396,9 @@ export default function App() {
               type="button"
               onClick={() => setActiveView(item)}
             >
+              <span className="nav-icon" aria-hidden="true">
+                {navIcons[item]}
+              </span>
               {item}
             </button>
           ))}
