@@ -55,6 +55,32 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
+  # Issue #55: dedicated race-detector job. Same Go version (go.mod) and
+  # runner as the "go" job, but the whole tree under -race so data races in
+  # the in-memory service graph (the zero-infrastructure default) and the
+  # concurrent workers (queue, streaming, scheduler, webhooks) fail CI, not
+  # production. NOTE: this repo's GitHub Actions are currently blocked at the
+  # account level (runner allocation), so the workflow cannot execute yet —
+  # the job definition is still correct and runs once Actions are unblocked.
+  go-race:
+    name: Go race detector (go test -race ./...)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Test with -race
+        run: go test -race -count=1 ./...
+
   apispec:
     name: OpenAPI integrity (dangling $refs, duplicate operationIds)
     runs-on: ubuntu-latest
