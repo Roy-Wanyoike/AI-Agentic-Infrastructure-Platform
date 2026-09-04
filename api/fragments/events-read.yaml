@@ -1,0 +1,231 @@
+# AgentOS API — OpenAPI 3.1 fragment for the events read surface (issue #56,
+# wave 6-l): the dashboard activity feed over the append-only event audit
+# (migration 010, internal/events store.go).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/organization.yaml pattern),
+# so `python3 scripts/check_fragment_refs.py api/fragments/events-read.yaml`
+# passes. Components carry the track-unique `Ev` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation.
+#     No new permission enum was introduced — the strictest EXISTING grants
+#     whose role matrices match the contract are reused:
+#       GET /events -> runs.execute (MEMBER+: OWNER/ADMIN/MEMBER).
+#     RATIONALE: the issue contract pins MEMBER+ with VIEWER explicitly
+#     denied. The natural "runs.read" permission ALSO grants VIEWER in the
+#     base role matrix (internal/auth/service.go), so the listing reuses
+#     runs.execute — the established MEMBER+ read grant (the GET /secrets
+#     list convention). A dedicated events.read permission can be split out
+#     later without changing the wire contract.
+#   * structured error model {"error":{"code","message"}}
+#
+# NOT the audit trail: GET /audit-events (issue #18) exposes the security-
+# sensitive actor/action audit log (OWNER/ADMIN only, audit.read). GET /events
+# exposes the run/workflow DOMAIN event stream (run.started, agent.created,
+# webhook.received, ...) that the whole platform publishes through the
+# events.Publisher chain — MEMBER+ reads it; the two feeds are separate.
+#
+# PAGINATION: keyset on (created_at DESC, id DESC) — identical semantics to
+# the audit-events listing so appends between pages can neither duplicate nor
+# skip rows. next_cursor is "" when exhausted. Filters are optional, exact-
+# match (AND-composed) and stable across cursor pages:
+#   - type        contract event type (validated; unknown -> 400 INVALID_REQUEST)
+#   - entity_type resource_type of the domain object (e.g. "run", "agent")
+#   - entity_id   resource_id of the domain object
+#   - since       RFC3339 inclusive lower bound on created_at
+#
+# DUAL MODE: the listing is served from the Postgres `events` table when a
+# database is configured, otherwise from whatever the process retains in
+# memory (the zero-infrastructure MemoryStore behind the AuditPublisher, or
+# the MemoryPublisher ring buffer). A deployment with no event retention
+# wired answers 503 EVENTS_UNAVAILABLE (loud, never a silent fake).
+openapi: 3.1.0
+info:
+  title: AgentOS — events read API (issue #56 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for GET /v1/events, the org-scoped domain event stream
+  (issue #56). Events are the append-only audit of everything published on
+  the platform's event bus: run lifecycle transitions, step progress, agent
+  lifecycle, deployment outcomes, approval decisions and webhook receipts.
+  The endpoint is keyset-paginated (newest first) and filterable so the
+  dashboard activity feed can walk history incrementally. The tenant scope is
+  derived exclusively from the auth claims — client-supplied organization ids
+  are never trusted and never appear in responses.
+paths:
+  /events:
+    get:
+      operationId: listEvents
+      summary: List the org's domain event stream (activity feed)
+      description: |
+        Returns one page of the caller's organization's events, newest first,
+        with an opaque next_cursor for keyset continuation. Use `limit` to
+        size the page (clamped server-side to [1, 200]; default 50) and pass
+        `cursor` back unchanged to fetch the next page. Filters narrow the
+        stream to one event `type` and/or one entity (`entity_type` +
+        `entity_id`) and/or everything after `since` (RFC3339, inclusive).
+        Requires MEMBER+ (runs.execute): VIEWER roles are denied 403.
+      x-required-permission: runs.execute (MEMBER+ — OWNER/ADMIN/MEMBER; VIEWER denied)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: Page size (clamped server-side; values <= 0 are a 400).
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: Opaque keyset cursor from the previous response's next_cursor. Malformed cursors answer 400 INVALID_CURSOR.
+        - name: type
+          in: query
+          schema: { type: string }
+          description: Exact contract event type, e.g. run.failed, agent.created. Unknown types answer 400 INVALID_REQUEST (the vocabulary is pinned).
+        - name: entity_type
+          in: query
+          schema: { type: string }
+          description: Exact resource_type match (the domain object the event is about, e.g. "run", "agent", "webhook").
+        - name: entity_id
+          in: query
+          schema: { type: string }
+          description: Exact resource_id match.
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+          description: RFC3339 inclusive lower bound on the event timestamp.
+      responses:
+        '200':
+          description: One keyset page of events (newest first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvEventListResponse'
+              examples:
+                firstPage:
+                  summary: Latest page (next_cursor empty when exhausted)
+                  value:
+                    events:
+                      - id: 6f1c9e52-1c76-4a2f-9a86-9f6d4d3e8a01
+                        type: run.failed
+                        entity_type: run
+                        entity_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                        payload:
+                          reason: quota_exceeded
+                        timestamp: 2025-06-01T12:03:00Z
+                      - id: 0d3a7c44-9f10-4b6e-9db2-2f8c5a1b7e02
+                        type: agent.created
+                        entity_type: agent
+                        entity_id: a1b2c3d4-0000-4000-8000-000000000000
+                        timestamp: 2025-06-01T12:01:00Z
+                    next_cursor: ''
+        '400':
+          description: Invalid query parameter (error.code INVALID_REQUEST for a non-positive/non-integer limit, unknown event type or malformed since; INVALID_CURSOR for a malformed/stale cursor).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/EvUnauthorized'
+        '403':
+          $ref: '#/components/responses/EvForbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvErrorEnvelope'
+        '503':
+          description: Event retention is not wired in this deployment (error.code EVENTS_UNAVAILABLE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    EvEvent:
+      type: object
+      required: [id, type, timestamp]
+      properties:
+        id:
+          type: string
+          description: Event id (UUID; also the keyset tiebreaker).
+        type:
+          type: string
+          description: Contract event type (run.started, run.completed, run.failed, run.cancelled, step.started, step.completed, agent.created, agent.updated, approval.requested, approval.decided, deployment.completed, deployment.failed, webhook.received).
+        entity_type:
+          type: string
+          description: resource_type of the domain object the event is about (flattened Resource; omitted when absent).
+        entity_id:
+          type: string
+          description: resource_id of the domain object (omitted when absent).
+        project_id:
+          type: string
+        execution_id:
+          type: string
+        trace_id:
+          type: string
+        payload:
+          type: object
+          description: Free-form JSON payload published with the event (e.g. failure reason); omitted when absent.
+          additionalProperties: true
+        timestamp:
+          type: string
+          format: date-time
+          description: Event creation time (RFC3339, UTC); the keyset ordering key.
+    EvEventListResponse:
+      type: object
+      required: [events, next_cursor]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvEvent'
+        next_cursor:
+          type: string
+          description: Opaque keyset cursor for the next page; empty string when the stream is exhausted.
+    EvErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [INVALID_REQUEST, INVALID_CURSOR, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR, EVENTS_UNAVAILABLE]
+            message:
+              type: string
+  responses:
+    EvUnauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EvErrorEnvelope'
+    EvForbidden:
+      description: Authenticated but not permitted (VIEWER has no runs.execute grant)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EvErrorEnvelope'

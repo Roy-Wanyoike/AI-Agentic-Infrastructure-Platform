@@ -42,6 +42,7 @@ import {
   type ViewName,
 } from './views/uiHelpers'
 import { CommandPalette, type PaletteAction } from './views/commandPalette'
+import { ActivityFeedPanel } from './views/activityFeed'
 import { RunTimeline } from './views/runTimeline'
 import { WorkflowsView } from './views/workflows'
 import { ApprovalsView } from './views/approvals'
@@ -67,6 +68,7 @@ import {
   canManageSecrets,
   canManageVersions,
   canPublishMarketplace,
+  canReadEvents,
   canRevealSecrets,
   canWrite,
 } from './lib/rbac'
@@ -223,7 +225,7 @@ function AuthGate() {
 // Overview (live: /metrics + /agents + /runs + /healthz + /readyz)
 // ---------------------------------------------------------------------------
 
-function OverviewView({ onNavigate, onOpenRun }: { onNavigate: (view: ViewName) => void; onOpenRun: (runId: string) => void }) {
+function OverviewView({ onNavigate, onOpenRun, canReadEvents }: { onNavigate: (view: ViewName) => void; onOpenRun: (runId: string) => void; canReadEvents: boolean }) {
   const agentsQuery = useAgents()
   const runsQuery = useRuns()
   const metricsQuery = useMetrics()
@@ -376,6 +378,9 @@ function OverviewView({ onNavigate, onOpenRun }: { onNavigate: (view: ViewName) 
           </div>
         </article>
       </section>
+
+      {/* issue #56: the org domain event stream (GET /events) as a timeline; MEMBER+ only */}
+      <ActivityFeedPanel canRead={canReadEvents} />
 
       <section className="bottom-grid">
         <article className="panel wide">
@@ -1257,6 +1262,8 @@ export default function App() {
   const canPublishMarketplaceRole = canPublishMarketplace(auth.user?.role)
   const canManageConnectorsRole = canManageConnectors(auth.user?.role)
   const canManageBillingRole = canManageBilling(auth.user?.role)
+  // Issue #56: the Overview activity feed reads GET /events (MEMBER+).
+  const canReadEventsRole = canReadEvents(auth.user?.role)
 
   const navigateTo = (view: ViewName) => {
     setSelectedAgentId(null)
@@ -1320,7 +1327,7 @@ export default function App() {
   const renderView = () => {
     switch (activeView) {
       case 'Overview':
-        return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} />
+        return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} canReadEvents={canReadEventsRole} />
       case 'Agents':
         return (
           <AgentsView
@@ -1373,7 +1380,7 @@ export default function App() {
       case 'Secrets':
         return <SecretsView canManage={canManageSecretsRole} canReveal={canRevealSecretsRole} />
       default:
-        return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} />
+        return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} canReadEvents={canReadEventsRole} />
     }
   }
 

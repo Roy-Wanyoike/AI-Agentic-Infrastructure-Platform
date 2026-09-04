@@ -75,3 +75,14 @@ export function canManageConnectors(role?: string | null): boolean {
 export function canManageBilling(role?: string | null): boolean {
   return normalizeRole(role) === 'OWNER'
 }
+
+// --- issue #56 dashboard activity feed ---
+
+/**
+ * runs.execute — GET /events (the activity feed) is MEMBER+: OWNER/ADMIN/
+ * MEMBER, VIEWER denied. The backend deliberately reuses runs.execute (the
+ * established MEMBER+ read grant) because runs.read would also admit VIEWER.
+ */
+export function canReadEvents(role?: string | null): boolean {
+  return canWrite(role)
+}

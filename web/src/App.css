@@ -1953,3 +1953,62 @@ button.searchbox:hover {
   color: #cbd5e1;
 }
 
+
+/* ---------------------------------------------------------------------------
+   Activity feed (issue #56) — Overview panel over GET /v1/events
+   --------------------------------------------------------------------------- */
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.activity-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  font-size: 0.9rem;
+}
+
+.activity-row:last-child {
+  border-bottom: none;
+}
+
+.activity-icon {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  color: #dfe7ff;
+}
+
+.activity-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.activity-type {
+  color: #e8eeff;
+  font-weight: 600;
+}
+
+.activity-entity {
+  color: #94a3b8;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-when {
+  color: #94a3b8;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
