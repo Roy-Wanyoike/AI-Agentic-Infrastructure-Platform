@@ -22,9 +22,55 @@ type Membership struct {
 	UserID         string
 	OrganizationID string
 	Role           string
+	// CreatedAt is the joined_at timestamp of the membership row. The
+	// zero value is only ever observed for rows created before the
+	// column was projected (the durable store always persists it).
+	CreatedAt time.Time
 }
 
-var ErrOrgNotFound = errors.New("organization not found")
+// Platform RBAC roles (mirrors the internal/auth rolePermissions keys).
+// Membership rows carry the same enum so dashboards can render one badge
+// per member regardless of which record a permission check consulted.
+const (
+	RoleOwner  = "OWNER"
+	RoleAdmin  = "ADMIN"
+	RoleMember = "MEMBER"
+	RoleViewer = "VIEWER"
+)
+
+// NormalizeRole canonicalizes a role string (trim + upper). Unknown roles
+// are returned as-is so callers can reject them with IsValidRole.
+func NormalizeRole(role string) string {
+	return strings.ToUpper(strings.TrimSpace(role))
+}
+
+// IsValidRole reports whether the role is one of the four platform roles.
+func IsValidRole(role string) bool {
+	switch NormalizeRole(role) {
+	case RoleOwner, RoleAdmin, RoleMember, RoleViewer:
+		return true
+	}
+	return false
+}
+
+var (
+	ErrOrgNotFound = errors.New("organization not found")
+
+	// ErrMembershipNotFound: the user has no membership row in the
+	// tenant. Unknown AND foreign-organization user ids surface as this
+	// one error so the transport can answer 404 with no existence leak.
+	ErrMembershipNotFound = errors.New("membership not found")
+	// ErrAlreadyMember: the user already has a membership row in the
+	// tenant (POST /organization/members duplicate).
+	ErrAlreadyMember = errors.New("user is already a member")
+	// ErrLastOwner guards role demotions and removals that would leave
+	// the tenant without any OWNER membership row. Registered owners
+	// whose identity predates the members API have no membership row,
+	// so the guard counts explicit OWNER rows only.
+	ErrLastOwner = errors.New("cannot change the last owner of the organization")
+	// ErrInvalidRole: role outside the OWNER/ADMIN/MEMBER/VIEWER enum.
+	ErrInvalidRole = errors.New("role must be one of OWNER, ADMIN, MEMBER, VIEWER")
+)
 
 // Store abstracts durable organization storage. Every method takes a context;
 // membership queries are guarded by organization_id so a tenant can only ever
@@ -40,6 +86,13 @@ type Store interface {
 	CreateMembership(ctx context.Context, membership *Membership) error
 	// ListMemberships returns the members of exactly one tenant (organization_id guard).
 	ListMemberships(ctx context.Context, orgID string) ([]Membership, error)
+	// UpdateMembershipRole changes the role of exactly one (organization_id,
+	// user_id) membership row; RowsAffected == 0 (unknown user or foreign
+	// tenant) returns ErrMembershipNotFound.
+	UpdateMembershipRole(ctx context.Context, orgID, userID, role string) error
+	// DeleteMembership removes exactly one (organization_id, user_id)
+	// membership row with the same RowsAffected semantics.
+	DeleteMembership(ctx context.Context, orgID, userID string) error
 }
 
 type Service struct {
@@ -174,7 +227,11 @@ func (s *Service) AddMemberCtx(ctx context.Context, orgID, userID, role string) 
 	}
 
 	if _, err := s.GetCtx(ctx, orgID); err != nil {
-		return errors.New("organization not found")
+		return ErrOrgNotFound
+	}
+	normalized := NormalizeRole(role)
+	if !IsValidRole(normalized) {
+		return ErrInvalidRole
 	}
 	members, err := s.MembersCtx(ctx, orgID)
 	if err != nil {
@@ -182,10 +239,10 @@ func (s *Service) AddMemberCtx(ctx context.Context, orgID, userID, role string) 
 	}
 	for _, member := range members {
 		if member.UserID == userID {
-			return errors.New("user is already a member")
+			return ErrAlreadyMember
 		}
 	}
-	membership := Membership{UserID: userID, OrganizationID: orgID, Role: role}
+	membership := Membership{UserID: userID, OrganizationID: orgID, Role: normalized, CreatedAt: time.Now().UTC()}
 	if s.store != nil {
 		if err := s.store.CreateMembership(ctx, &membership); err != nil {
 			return err
@@ -195,6 +252,111 @@ func (s *Service) AddMemberCtx(ctx context.Context, orgID, userID, role string) 
 	defer s.mu.Unlock()
 	s.members[orgID] = append(s.members[orgID], membership)
 	return nil
+}
+
+// UpdateMemberRoleCtx changes the role of one membership row inside one
+// tenant. Demoting the last OWNER membership row is rejected with
+// ErrLastOwner BEFORE anything is written, so the tenant can never lose its
+// last owner-level member through this path. Unknown AND foreign-organization
+// user ids surface as ErrMembershipNotFound (no existence leak).
+func (s *Service) UpdateMemberRoleCtx(ctx context.Context, orgID, userID, role string) error {
+	if strings.TrimSpace(orgID) == "" {
+		return errors.New("organization id is required")
+	}
+	if strings.TrimSpace(userID) == "" {
+		return errors.New("user id is required")
+	}
+	normalized := NormalizeRole(role)
+	if !IsValidRole(normalized) {
+		return ErrInvalidRole
+	}
+	members, err := s.MembersCtx(ctx, orgID)
+	if err != nil {
+		return err
+	}
+	target, found := findMembership(members, userID)
+	if !found {
+		return ErrMembershipNotFound
+	}
+	if strings.EqualFold(target.Role, RoleOwner) && normalized != RoleOwner && countOwners(members) <= 1 {
+		return ErrLastOwner
+	}
+	if s.store != nil {
+		if err := s.store.UpdateMembershipRole(ctx, orgID, target.UserID, normalized); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.members[orgID] {
+		if s.members[orgID][i].UserID == target.UserID {
+			s.members[orgID][i].Role = normalized
+			break
+		}
+	}
+	return nil
+}
+
+// RemoveMemberCtx deletes one membership row inside one tenant. Removing
+// the last OWNER membership row is rejected with ErrLastOwner. Callers are
+// responsible for the account-lifecycle half of a removal (deprovisioning):
+// the HTTP layer pairs this with the same org-guarded identity deactivation
+// the SCIM service uses, so a removed member cannot log in afterwards.
+func (s *Service) RemoveMemberCtx(ctx context.Context, orgID, userID string) error {
+	if strings.TrimSpace(orgID) == "" {
+		return errors.New("organization id is required")
+	}
+	if strings.TrimSpace(userID) == "" {
+		return errors.New("user id is required")
+	}
+	members, err := s.MembersCtx(ctx, orgID)
+	if err != nil {
+		return err
+	}
+	target, found := findMembership(members, userID)
+	if !found {
+		return ErrMembershipNotFound
+	}
+	if strings.EqualFold(target.Role, RoleOwner) && countOwners(members) <= 1 {
+		return ErrLastOwner
+	}
+	if s.store != nil {
+		if err := s.store.DeleteMembership(ctx, orgID, target.UserID); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	remaining := make([]Membership, 0, len(s.members[orgID]))
+	for _, member := range s.members[orgID] {
+		if member.UserID != target.UserID {
+			remaining = append(remaining, member)
+		}
+	}
+	s.members[orgID] = remaining
+	return nil
+}
+
+// findMembership resolves one membership by user id (exact match).
+func findMembership(members []Membership, userID string) (Membership, bool) {
+	for _, member := range members {
+		if member.UserID == userID {
+			return member, true
+		}
+	}
+	return Membership{}, false
+}
+
+// countOwners counts OWNER membership rows; the last-owner guard compares
+// case-insensitively so legacy rows never slip past the protection.
+func countOwners(members []Membership) int {
+	owners := 0
+	for _, member := range members {
+		if strings.EqualFold(member.Role, RoleOwner) {
+			owners++
+		}
+	}
+	return owners
 }
 
 // Members is the legacy context-free entry point; see MembersCtx.
