@@ -182,6 +182,9 @@ type Service struct {
 	// usageSrc is the optional pricing collaborator (AttachUsageSource);
 	// guarded by mu.
 	usageSrc UsageSource
+	// completionObserver is the optional eval-run completion seam
+	// (SetCompletionObserver, issue #51); guarded by mu.
+	completionObserver func(ctx context.Context, run *EvalRun)
 }
 
 // NewService returns the in-memory service (zero-infrastructure mode).
@@ -396,6 +399,11 @@ func (s *Service) RunDataset(ctx context.Context, orgID, datasetID, agentID stri
 	s.mu.Lock()
 	s.runs[run.ID] = run
 	s.mu.Unlock()
+
+	// Issue #51 seam: the eval-gated canary promotion engine observes run
+	// completion here (async, detached context; never blocks or fails the
+	// run — see notifyCompletion).
+	s.notifyCompletion(ctx, run)
 	return run, nil
 }
 

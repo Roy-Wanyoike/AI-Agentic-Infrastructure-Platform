@@ -34,6 +34,10 @@ type Store interface {
 	GetRun(ctx context.Context, orgID, id string) (*EvalRun, error)
 	// ListResults returns the ordered results of one run within one tenant.
 	ListResults(ctx context.Context, orgID, runID string) ([]Result, error)
+	// ListCompletedRuns returns the tenant's most recent completed eval
+	// runs for one agent (newest first, capped by limit) — the eval-gated
+	// canary promotion sample query (issue #51).
+	ListCompletedRuns(ctx context.Context, orgID, agentID string, limit int) ([]*EvalRun, error)
 }
 
 const (
@@ -60,6 +64,13 @@ const (
 	// Tenant guard: result listings filter on organization_id and preserve
 	// the execution order via case_index.
 	sqlSelectResults = `SELECT id, case_id, scorer, output, passed, score, latency_ms, cost_cents, error FROM eval_results WHERE run_id = $1 AND organization_id = $2 ORDER BY case_index ASC, case_id ASC`
+	// Tenant guard: the canary-promotion sample query (issue #51) filters
+	// on organization_id + agent_id + completed status, newest first.
+	sqlSelectCompletedRunsByAgent = `SELECT id, organization_id, dataset_id, agent_id, status, created_at, completed_at
+                FROM eval_runs
+                WHERE organization_id = $1 AND agent_id = $2 AND status = 'completed'
+                ORDER BY created_at DESC, id DESC
+                LIMIT $3`
 )
 
 // pgStore is the Postgres-backed Store implementation.
@@ -239,6 +250,29 @@ func (s *pgStore) ListResults(ctx context.Context, orgID, runID string) ([]Resul
 		}
 		r.Scorer = Scorer(scorer)
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListCompletedRuns returns the tenant's most recent completed eval runs for
+// one agent, newest first (canary promotion sample query, issue #51).
+func (s *pgStore) ListCompletedRuns(ctx context.Context, orgID, agentID string, limit int) ([]*EvalRun, error) {
+	if err := s.guard(); err != nil {
+		return nil, err
+	}
+	// Tenant guard: WHERE organization_id = $1 AND agent_id = $2
+	rows, err := s.db.QueryContext(ctx, sqlSelectCompletedRunsByAgent, orgID, agentID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*EvalRun, 0)
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, run)
 	}
 	return out, rows.Err()
 }

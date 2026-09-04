@@ -1,0 +1,29 @@
+-- 021_canary_policy.sql
+--
+-- Issue #51: eval-gated canary promotion with automatic rollback ("CI/CD for
+-- agents") — attaches the promotion policy/state to the canary that already
+-- lives on the deployments table (migration 015).
+--
+--   canary_promotion - JSONB, NULL for legacy rows / "no policy configured".
+--     Shape (internal/deployments.CanaryPromotion):
+--       {
+--         "policy":       {"min_pass_rate":0.8,"min_canary_runs":3,
+--                          "max_p95_latency_ms":0,"max_cost_per_run_cents":0},
+--         "window_start": "2025-01-02T03:04:05Z",   -- canary attach time
+--         "decision":     {"action":"promote|rollback","reason":"pass_rate 0.95 >= 0.80 → promote",
+--                          "decided_at":"...","runs_counted":3,"pass_rate":0.95,
+--                          "p95_latency_ms":10,"avg_cost_cents":2,"policy":{...}}
+--       }
+--     "decision" is absent until the engine records its single automatic
+--     decision for the window (idempotence: recorded exactly once; manual
+--     promote/abort stay authoritative).
+--
+-- A single additive JSONB column keeps the store diff minimal and follows the
+-- health-column precedent (007): the payload evolves with the Go structs, and
+-- the engine logic (pass-rate/p95/cost gates, FNV-1a sticky split) lives in
+-- internal/deployments and needs no schema support. The statement is
+-- idempotent (ADD COLUMN IF NOT EXISTS) and forward-only: every legacy row
+-- reads back as NULL = "no policy", so behavior is unchanged until a policy
+-- is attached through the API.
+
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS canary_promotion JSONB;

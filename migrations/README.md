@@ -24,6 +24,7 @@ Current migration structure:
 - 018_marketplace.sql
 - 019_sso_scim.sql
 - 020_connectors.sql
+- 021_canary_policy.sql
 
 Migration conventions:
 

@@ -269,6 +269,9 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	a.runsSvc.SetStreamer(a.streamSvc)
 	// issue #12: feed agentos_runs_total from API-side run transitions
 	a.runsSvc.SetMetrics(a.metricsSvc)
+	// issue #51: eval-gated canary autopromotion (no-op unless
+	// AGENTOS_CANARY_AUTOPROMOTE is truthy)
+	WireCanaryAutoPromotion(a.evalSvc, a.deploymentsSvc, a.auditSvc, a.logr)
 	// expose to handlers for backwards-compatible wiring in tests
 	runsServiceVar = a.runsSvc
 	// issue #47: expose billing to the create-run quota gate

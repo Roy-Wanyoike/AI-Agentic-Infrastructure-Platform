@@ -114,6 +114,27 @@ func (r *recordingStore) ListResults(_ context.Context, orgID, runID string) ([]
 	return r.results[runID], nil
 }
 
+func (r *recordingStore) ListCompletedRuns(_ context.Context, orgID, agentID string, limit int) ([]*EvalRun, error) {
+	matches := []*EvalRun{}
+	for _, run := range r.runs {
+		if run.OrganizationID == orgID && run.AgentID == agentID && run.Status == StatusCompleted {
+			matches = append(matches, run)
+		}
+	}
+	// Newest first (created_at DESC), like the SQL query.
+	for i := 0; i < len(matches); i++ {
+		for j := i + 1; j < len(matches); j++ {
+			if matches[j].CreatedAt.After(matches[i].CreatedAt) {
+				matches[i], matches[j] = matches[j], matches[i]
+			}
+		}
+	}
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches, nil
+}
+
 func newTestService(fn func(ctx context.Context, agentID, input string) (*runtime.Run, error)) *Service {
 	agentSvc := agents.NewService()
 	if _, err := agentSvc.Create("org-1", "Eval Agent", "d", "be deterministic", "gpt-4o-mini"); err != nil {
