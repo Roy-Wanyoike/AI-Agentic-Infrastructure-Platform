@@ -16,14 +16,30 @@ func main() {
 	down := flag.Bool("down", false, "roll back the last migration")
 	flag.Parse()
 
-	cfg := database.DefaultConfig()
-	db, err := database.Open(cfg)
+	// DSN resolution: DATABASE_URL wins, then POSTGRES_* (both assembled by
+	// database.DSNFromEnv); with neither set the built-in localhost dev default
+	// applies, so `make migrate-up` behavior is unchanged. The env-driven path
+	// is what containerized one-shot jobs use — the docker-compose.prod.yml
+	// "migrate" service points DATABASE_URL at the compose-network Postgres.
+	var db *sql.DB
+	var err error
+	if dsn := database.DSNFromEnv(); dsn != "" {
+		db, err = database.Connect(dsn) // fail fast: bounded ping, no lazy retry
+	} else {
+		db, err = database.Open(database.DefaultConfig())
+	}
 	if err != nil {
 		log.Fatalf("database open failed: %v", err)
 	}
 	defer db.Close()
 
-	migrationsDir := filepath.Join(".", "migrations")
+	// MIGRATIONS_DIR overrides the default ./migrations so container images can
+	// keep the SQL files outside the working directory (Dockerfile.api bakes
+	// them into /app/migrations).
+	migrationsDir := os.Getenv("MIGRATIONS_DIR")
+	if migrationsDir == "" {
+		migrationsDir = filepath.Join(".", "migrations")
+	}
 	migrations, err := database.LoadMigrations(migrationsDir)
 	if err != nil {
 		log.Fatalf("load migrations failed: %v", err)
