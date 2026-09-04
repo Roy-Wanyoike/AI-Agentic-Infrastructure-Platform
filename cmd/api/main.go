@@ -369,6 +369,8 @@ func (a *app) routes() http.Handler {
 	registerEventsRoutes(apiMux, a.eventsLister, a.authSvc, a.apiKeysSvc)
 	// issue #24: billing plans/subscriptions/invoices
 	registerBillingRoutes(apiMux, a.billingSvc, a.authSvc, a.apiKeysSvc)
+	// issue #57: usage meters + margin + optional Stripe usage-record sync
+	registerUsageMetersRoutes(apiMux, a.billingSvc, billing.NewRunsMeterSource(a.runsSvc, a.runsSvc), billing.NewStripeSyncerFromEnv(a.logr), a.authSvc, a.apiKeysSvc, a.logr)
 	// issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)
 	registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #29: OIDC SSO browser flow + SCIM 2.0 provisioning
