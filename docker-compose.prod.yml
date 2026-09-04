@@ -86,6 +86,12 @@ services:
       REDIS_QUEUE_KEY: ${REDIS_QUEUE_KEY:-agentos:queue}
       AGENTOS_NATS_URL: nats://nats:4222
       AGENTOS_SECRETS_MASTER_KEY: ${AGENTOS_SECRETS_MASTER_KEY:?set AGENTOS_SECRETS_MASTER_KEY in the environment or .env (openssl rand -base64 32)}
+      # Issue #55: the API refuses to boot with APP_ENV=production without a
+      # real JWT secret; the :? guard fails at compose time with a clear hint.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in the environment or .env (openssl rand -base64 48)}
+      # Issue #55: comma-separated CORS allowlist; empty keeps the wildcard
+      # dev default (set this to the dashboard origin in real deployments).
+      AGENTOS_CORS_ORIGINS: ${AGENTOS_CORS_ORIGINS:-}
       AGENTOS_WEBHOOK_SIGNING_KEY: ${AGENTOS_WEBHOOK_SIGNING_KEY:-}
       AGENTOS_RATE_LIMIT_RPM: ${AGENTOS_RATE_LIMIT_RPM:-120}
       AGENTOS_SCHEDULER_POLL_INTERVAL: ${AGENTOS_SCHEDULER_POLL_INTERVAL:-}

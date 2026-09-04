@@ -49,9 +49,19 @@ import (
 	"agentos/internal/workflows"
 )
 
-// defaultJWTSecret is used until a JWT_SECRET setting is introduced; the HMAC
-// token scheme itself is unchanged.
+// defaultJWTSecret is the zero-infrastructure development fallback used when
+// JWT_SECRET is unset outside production. Issue #55: the process now honors
+// JWT_SECRET when set, and REFUSES to boot on this fallback when APP_ENV=production
+// (see resolveJWTSecret in prodguard.go); development behavior is unchanged.
 const defaultJWTSecret = "dev-secret"
+
+// jwtSecretVar carries the signing secret resolved by main() into newApp,
+// mirroring the runsServiceVar wiring precedent so the constructor signature
+// stays unchanged. It defaults to defaultJWTSecret, so constructing the app
+// directly (tests, tooling) keeps the exact development behavior. main()
+// overwrites it with os.Getenv("JWT_SECRET") after the issue #55 production
+// guard passes.
+var jwtSecretVar = defaultJWTSecret
 
 // app bundles every service the API handlers need. When db is nil the app runs
 // in zero-infrastructure mode with in-memory services (tests/dev default).
@@ -117,7 +127,7 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		streamSvc:  streaming.NewService(),
 	}
 	if db != nil {
-		a.authSvc = auth.NewServiceWithStore(defaultJWTSecret, auth.NewPostgresStore(db))
+		a.authSvc = auth.NewServiceWithStore(jwtSecretVar, auth.NewPostgresStore(db))
 		a.apiKeysSvc = apikeys.NewServiceWithStore(apikeys.NewPostgresStore(db))
 		a.orgsSvc = organizations.NewServiceWithStore(organizations.NewPostgresStore(db))
 		a.auditSvc = audit.NewServiceWithStore(audit.NewPostgresStore(db))
@@ -171,7 +181,7 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.connSvc = connSvc
 		a.logr.Info("postgres stores enabled")
 	} else {
-		a.authSvc = auth.NewService(defaultJWTSecret)
+		a.authSvc = auth.NewService(jwtSecretVar)
 		a.apiKeysSvc = apikeys.NewService()
 		a.orgsSvc = organizations.NewService()
 		a.auditSvc = audit.NewService()
@@ -287,7 +297,16 @@ func (a *app) routes() http.Handler {
 	apiMux.HandleFunc("/auth/register", registerHandler(a.authSvc))
 	apiMux.HandleFunc("/auth/login", loginHandler(a.authSvc))
 	apiMux.Handle("/agents", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(a.agentsSvc)))))
-	apiMux.Handle("/agents/create", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsWrite)(http.HandlerFunc(createAgentHandler(a.agentsSvc, a.auditSvc)))))
+	// issue #55 e2e blocker fix: this registration used to be methodless,
+	// which CONFLICTED with the issue #49 lifecycle wildcards ("PUT /agents/{id}"
+	// vs "/agents/create" overlap, neither shadows the other) and panicked
+	// ServeMux at routes() build time - the API binary panicked at startup
+	// and no test noticed, because nothing booted the real mux (the new
+	// full-stack e2e does). Scoping to POST - the only method the OpenAPI
+	// contract documents for /agents/create - resolves the conflict;
+	// wrong-method requests now fall through to the more specific patterns
+	// (PUT/DELETE land on the lifecycle handlers' 404s, GET on the catch-all).
+	apiMux.Handle("POST /agents/create", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsWrite)(http.HandlerFunc(createAgentHandler(a.agentsSvc, a.auditSvc)))))
 	apiMux.Handle("/agents/", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsRead)(http.HandlerFunc(agentDetailHandler(a.agentsSvc)))))
 	// issue #49: agent update + delete (CRUD completion; method-prefixed
 	// patterns win over the "/agents/" catch-all for PUT/DELETE)
@@ -380,11 +399,34 @@ func (a *app) routes() http.Handler {
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
-	// wrap with a permissive CORS handler for local development
+	// Issue #55: AGENTOS_CORS_ORIGINS (comma-separated) selects allowlist mode.
+	// Parsed once at middleware construction (routes() build time).
+	allowed := CORSOriginsFromEnv()
+	if len(allowed) == 0 {
+		// Empty/unset keeps the historical permissive wildcard handler for
+		// local development: the zero-infrastructure contract is that the
+		// platform runs (dashboard, curl, the pull worker) with zero
+		// configuration, and flipping a default would break every existing
+		// dev setup. Credentials are never granted next to "*" (no
+		// Access-Control-Allow-Credentials here), so the wildcard stays
+		// credentials-safe by omission. Production deployments set
+		// AGENTOS_CORS_ORIGINS to switch to the allowlist branch below.
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", corsAllowMethods)
+			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	// Allowlist mode (see cors.go): Access-Control-Allow-Origin echoes ONLY
+	// allowlisted origins, Vary: Origin is always set, and credentials can
+	// be granted safely because the echo is never "*".
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-API-Key,api_key,Idempotency-Key")
+		ApplyCORSHeaders(w.Header(), allowed, r.Header.Get("Origin"))
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -396,6 +438,17 @@ func corsMiddleware(next http.Handler) http.Handler {
 func main() {
 	cfg := config.Load()
 	logr := logger.New(cfg.Env)
+
+	// Issue #55: JWT production guard. The API must never boot in production
+	// with the public development signing secret. Dev/zero-infra behavior is
+	// unchanged: without JWT_SECRET outside production the process keeps
+	// defaultJWTSecret (resolveJWTSecret is the pure, tested decision core).
+	jwtSecret, serr := resolveJWTSecret(cfg.Env, os.Getenv(jwtSecretEnvVar))
+	if serr != nil {
+		logr.Error(serr.Error())
+		os.Exit(1)
+	}
+	jwtSecretVar = jwtSecret
 
 	// Attempt a Postgres connection when DATABASE_URL / POSTGRES_* are set.
 	// The platform must keep running with zero infrastructure, so any failure

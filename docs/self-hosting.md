@@ -121,6 +121,7 @@ compose-only knobs.
 | `AGENTOS_PRICING_JSON` | api, worker | No | built-in table | USD-per-1M-token pricing overrides as JSON (`internal/models/pricing.go:33`). |
 | `AGENTOS_EMBEDDING_BASE_URL` / `AGENTOS_EMBEDDING_MODEL` / `AGENTOS_EMBEDDING_API_KEY` | api (knowledge/RAG) | No | offline hash embedder | OpenAI-compatible `/embeddings` for RAG (`internal/knowledge/embedder.go:25-29`). |
 | `AGENTOS_RATE_LIMIT_RPM` | api | No | `120` | Global rate limit, requests/minute; Redis-backed when `REDIS_ADDR` is set (`internal/httpx/ratelimit.go:104`). |
+| `AGENTOS_CORS_ORIGINS` | api | No (recommended in production) | wildcard `*` | Comma-separated CORS allowlist (issue #55, `cmd/api/cors.go`). When set, `Access-Control-Allow-Origin` echoes ONLY listed origins (exact match, plus `Vary: Origin` and credentials-safe grants); unset/empty keeps the wildcard dev default. |
 | `AGENTOS_WEBHOOK_SIGNING_KEY` | api | No | — | HMAC key for signed webhook deliveries (`cmd/api/main.go:255`). |
 | `AGENTOS_SCHEDULER_POLL_INTERVAL` | api | No | code default | Scheduler trigger loop cadence, Go duration (`cmd/api/main.go:410`). |
 | `AGENTOS_WORKFLOW_STALE_AFTER` | api, worker | No | code default | Staleness threshold for durable workflow recovery (`internal/workflows/durable.go:26`). |
@@ -132,7 +133,7 @@ compose-only knobs.
 | `MIGRATIONS_DIR` | migrate | No | `./migrations` | Where the migration runner finds `NNN_name.sql` files (`cmd/migrate/main.go:36-42`); compose sets `/app/migrations`. |
 | `AGENTOS_WEB_PORT` | compose only | No | `8080` | Host port for the dashboard (`80` inside the container). |
 | `AGENTOS_API_PORT` | compose only | No | `8081` | Host port for direct API access (`8080` inside the container). |
-| `JWT_SECRET` | — | — | — | **Not supported by the code yet.** Tokens are signed with a built-in dev secret (`cmd/api/main.go:52-54` — "used until a JWT_SECRET setting is introduced"). Do not expose the API beyond your trust boundary until this lands. |
+| `JWT_SECRET` | api | **Yes in production** (`APP_ENV=production` refuses to boot without it) | built-in dev secret | HMAC signing secret for session tokens (issue #55, `cmd/api/prodguard.go`). When set it is honored in every environment; generate with `openssl rand -base64 48`. compose-prod enforces it with a `:?` guard. |
 | `AGENTOS_BILLING_ENFORCEMENT` | — | — | — | **Not referenced by any code today** (verified by search). Reserved/declarative only; listed here so nobody wires it expecting behavior. |
 | `VITE_API_URL` / `VITE_API_PREFIX` | web (build args) | No | `/api` / `v1` | API base + prefix baked into the dashboard bundle (`web/src/lib/api/client.ts:18-22`). Defaults give same-origin calls through the nginx proxy. Override with `--build-arg` for split-domain hosting. |
 | `VITE_APP_NAME` / `VITE_ENV` | web (build args) | No | `AgentOS` / `production` | UI chrome labels. |
