@@ -48,3 +48,30 @@ export function canDeploy(role?: string | null): boolean {
 export function canManagePolicies(role?: string | null): boolean {
   return isOwnerOrAdmin(role)
 }
+
+// --- issue #53 dashboard views (permission reuse mirrors the Go handlers) ---
+
+/** agents.write — secret create/delete (OWNER and ADMIN). */
+export function canManageSecrets(role?: string | null): boolean {
+  return isOwnerOrAdmin(role)
+}
+
+/** agents.write — marketplace publish/install (OWNER and ADMIN). */
+export function canPublishMarketplace(role?: string | null): boolean {
+  return isOwnerOrAdmin(role)
+}
+
+/** organization.manage — the one-time secret reveal is reserved to the OWNER. */
+export function canRevealSecrets(role?: string | null): boolean {
+  return normalizeRole(role) === 'OWNER'
+}
+
+/** connectors.write — connector create/delete/test (OWNER and ADMIN; reads are MEMBER+). */
+export function canManageConnectors(role?: string | null): boolean {
+  return isOwnerOrAdmin(role)
+}
+
+/** organization.manage — POST /billing/subscriptions commits the org to a plan (OWNER only). */
+export function canManageBilling(role?: string | null): boolean {
+  return normalizeRole(role) === 'OWNER'
+}

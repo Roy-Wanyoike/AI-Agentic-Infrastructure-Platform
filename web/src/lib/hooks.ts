@@ -10,6 +10,10 @@
 //   ['knowledge']       — knowledge document list
 //   ['memory', scope]   — memory snippets (scope = agent id or 'all')
 //   ['usageCosts', …]   — usage cost report (from/to/group_by)
+//   ['billing', …]      — subscription snapshot / plan catalog / invoices
+//   ['secrets']         — secret metadata list (values never cached here)
+//   ['marketplace', …]  — global listing catalog (query/tags/cursor)
+//   ['connectors']      — connector registry
 
 import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -61,11 +65,23 @@ import {
 } from './api/knowledge'
 import { listMemorySnippets, putMemorySnippets } from './api/memory'
 import { getUsageCosts } from './api/usage'
+import {
+  getBillingSubscription,
+  listBillingInvoices,
+  listBillingPlans,
+  subscribeBilling,
+} from './api/billing'
+import { createSecret, deleteSecret, listSecrets, revealSecret } from './api/secrets'
+import { browseListings, installListing, publishListing } from './api/marketplace'
+import { createConnector, deleteConnector, listConnectors, testConnector } from './api/connectors'
 import type { CreateKnowledgeDocumentInput } from './api/knowledge'
 import type { PutMemoryInput } from './api/memory'
 import type { UsageCostWindow } from './api/usage'
 import type { CreateScheduleInput } from './api/schedules'
 import type { CreatePolicyInput } from './api/policies'
+import type { BrowseListingsInput, PublishListingInput } from './api/marketplace'
+import type { CreateConnectorInput } from './api/connectors'
+import type { CreateSecretInput } from './api/secrets'
 
 export function useAgents() {
   return useQuery({ queryKey: ['agents'], queryFn: listAgents })
@@ -617,5 +633,138 @@ export function useUsageCosts(window: UsageCostWindow = {}) {
   return useQuery({
     queryKey: ['usageCosts', from, to, groupBy],
     queryFn: () => getUsageCosts(window),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Billing (issue #53: GET /billing/subscription + /plans + /invoices; the
+// subscribe write mirrors POST /billing/subscriptions — OWNER only)
+// ---------------------------------------------------------------------------
+
+export function useBillingSubscription() {
+  return useQuery({ queryKey: ['billing', 'subscription'], queryFn: getBillingSubscription, retry: false })
+}
+
+export function useBillingPlans() {
+  return useQuery({ queryKey: ['billing', 'plans'], queryFn: listBillingPlans })
+}
+
+export function useBillingInvoices() {
+  return useQuery({ queryKey: ['billing', 'invoices'], queryFn: listBillingInvoices })
+}
+
+export function useSubscribeBilling() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (planId: string) => subscribeBilling(planId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['billing'] })
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Secrets (issue #53: metadata list + create + delete + one-time reveal)
+// ---------------------------------------------------------------------------
+
+export function useSecrets() {
+  return useQuery({ queryKey: ['secrets'], queryFn: listSecrets })
+}
+
+export function useCreateSecret() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateSecretInput) => createSecret(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['secrets'] })
+    },
+  })
+}
+
+export function useDeleteSecret() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) => deleteSecret(name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['secrets'] })
+    },
+  })
+}
+
+/** One-time reveal mutation. The caller owns the returned value's lifetime. */
+export function useRevealSecret() {
+  return useMutation({ mutationFn: (name: string) => revealSecret(name) })
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace (issue #53: global browse + install-into-org + publish)
+// ---------------------------------------------------------------------------
+
+export function useMarketplaceListings(input: BrowseListingsInput = {}) {
+  const { query = '', tags = [], cursor = '' } = input
+  return useQuery({
+    queryKey: ['marketplace', query, tags.join(','), cursor],
+    queryFn: () => browseListings(input),
+  })
+}
+
+export function useInstallListing() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (slug: string) => installListing(slug),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['marketplace'] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+}
+
+export function usePublishListing() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: PublishListingInput) => publishListing(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['marketplace'] })
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Connectors (issue #53: CRUD minus Update — the API exposes no PUT/PATCH
+// route — plus the live health-check probe)
+// ---------------------------------------------------------------------------
+
+export function useConnectors() {
+  return useQuery({ queryKey: ['connectors'], queryFn: listConnectors })
+}
+
+export function useCreateConnector() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: CreateConnectorInput) => createConnector(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['connectors'] })
+    },
+  })
+}
+
+export function useDeleteConnector() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => deleteConnector(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['connectors'] })
+    },
+  })
+}
+
+export function useTestConnector() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => testConnector(id),
+    onSuccess: () => {
+      // The probe outcome is also persisted (last_check_at/last_check_status).
+      void queryClient.invalidateQueries({ queryKey: ['connectors'] })
+    },
   })
 }

@@ -1805,3 +1805,151 @@ button.searchbox:hover {
   font-size: 0.72rem;
   color: #cbd5f5;
 }
+
+/* -------------------------------------------------------------------------
+   Issue #53 views: Billing, Secrets, Marketplace, Connectors
+   ------------------------------------------------------------------------- */
+
+/* Sidebar glyphs (nav-icon precedes the label inside .nav-item). */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-icon {
+  width: 20px;
+  flex: none;
+  text-align: center;
+  font-size: 0.92rem;
+  opacity: 0.7;
+}
+
+.nav-item.active .nav-icon,
+.nav-item:hover .nav-icon {
+  opacity: 1;
+}
+
+/* Billing: quota usage bar (consumed vs included; exceeded turns amber/red). */
+.quota-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quota-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #cbd5e1;
+  font-size: 0.85rem;
+}
+
+.meter.exceeded span {
+  background: linear-gradient(90deg, #f87171, #fb923c);
+}
+
+/* Marketplace: listing cards + search row. */
+.listing-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.listing-installs {
+  color: #94a3b8;
+  font-size: 0.8rem;
+}
+
+.listing-search {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.listing-search .field {
+  flex: 1;
+  min-width: 180px;
+  margin: 0;
+}
+
+/* Secrets: one-time reveal dialog (value lives only while the dialog is open). */
+.reveal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(2, 6, 23, 0.66);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.reveal-panel {
+  width: 100%;
+  max-width: 520px;
+  background: rgba(15, 23, 42, 0.98);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 24px 64px rgba(2, 6, 23, 0.6);
+}
+
+/* Connectors: inline probe outcome (row cell + post-Test result). */
+.connector-check {
+  display: inline-block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 8px;
+}
+
+.connector-check.check-ok {
+  color: #6ee7b7;
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+}
+
+.connector-check.check-error {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+/* Status pills for statuses without a dedicated class yet. */
+.status-badge.trial {
+  background: rgba(125, 211, 252, 0.12);
+  color: #93c5fd;
+}
+
+.status-badge.ok {
+  background: rgba(52, 211, 153, 0.12);
+  color: #6ee7b7;
+}
+
+.status-badge.error {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
+
+.status-badge.disabled,
+.status-badge.unlisted {
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+}
+
+.status-badge.paid,
+.status-badge.open {
+  background: rgba(52, 211, 153, 0.12);
+  color: #6ee7b7;
+}
+
+.status-badge.void {
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+}
+
