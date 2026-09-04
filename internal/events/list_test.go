@@ -203,6 +203,7 @@ func TestMemoryStorePaginationStabilityUnderConcurrentInserts(t *testing.T) {
 		close(writersDone)
 	}()
 
+	deadline := time.Now()
 	walks := 0
 loop:
 	for {
@@ -215,8 +216,13 @@ loop:
 			t.Fatalf("unstable walk during concurrent inserts: %v", err)
 		}
 		walks++
-		if walks > 500 {
-			t.Fatal("walk loop did not terminate")
+		// Issue #71: bound the loop by WALL TIME, not iteration count.
+		// Under CPU contention (parallel `go test ./...`) each walk is much
+		// slower than the writers' appends, so a fixed iteration cap
+		// misfires on healthy behavior. A deadline keeps the runaway-loop
+		// protection while being contention-independent.
+		if walks%64 == 0 && time.Since(deadline) > 5*time.Second {
+			t.Fatalf("walk loop did not terminate within 5s (%d walks)", walks)
 		}
 	}
 	if walks < 1 {
