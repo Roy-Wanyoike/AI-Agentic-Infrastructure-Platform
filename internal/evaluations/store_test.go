@@ -261,3 +261,30 @@ func TestPGNilDBGuard(t *testing.T) {
 		t.Fatal("nil db should be rejected")
 	}
 }
+
+// TestPGListCompletedRuns pins the canary-promotion sample SQL (issue #51):
+// tenant + agent + completed-status guards, newest-first ordering, LIMIT
+// passthrough.
+func TestPGListCompletedRuns(t *testing.T) {
+	store, mock, closeDB := newMockDB(t)
+	defer closeDB()
+
+	createdAt := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	completedAt := createdAt.Add(time.Minute)
+	mock.ExpectQuery(regexp.QuoteMeta(sqlSelectCompletedRunsByAgent)).
+		WithArgs("org-1", "agent-1", 2).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "organization_id", "dataset_id", "agent_id", "status", "created_at", "completed_at"}).
+			AddRow("run-new", "org-1", "ds-1", "agent-1", StatusCompleted, createdAt, completedAt).
+			AddRow("run-old", "org-1", "ds-1", "agent-1", StatusCompleted, createdAt.Add(-time.Hour), completedAt))
+
+	runs, err := store.ListCompletedRuns(context.Background(), "org-1", "agent-1", 2)
+	if err != nil {
+		t.Fatalf("ListCompletedRuns returned error: %v", err)
+	}
+	if len(runs) != 2 || runs[0].ID != "run-new" || runs[1].ID != "run-old" {
+		t.Fatalf("expected newest-first completed runs, got %+v", runs)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("pending expectations: %v", err)
+	}
+}

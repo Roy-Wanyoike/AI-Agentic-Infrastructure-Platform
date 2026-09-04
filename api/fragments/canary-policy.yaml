@@ -1,0 +1,542 @@
+# AgentOS API — OpenAPI 3.1 fragment for eval-gated canary promotion with
+# automatic rollback (issue #51).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/canary.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/canary-policy.yaml`
+# passes. Components carry the track-unique `Cnp*` prefix (canary-policy) to
+# avoid collisions with the issue-#13 `Canary*` components.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation; no
+#     new permission enum was introduced:
+#       - POST /deployments/{id}/canary keeps deployments.deploy (OWNER/ADMIN)
+#       - GET /agents/{agentId}/canary/status is a read-only view and uses
+#         runs.read (all roles) — it carries eval-run aggregates, like the
+#         other run reads
+#   * structured error model {"error":{"code","message"}}
+#
+# NOTE for the orchestrator (existing shapes extended by this track):
+#   1. The canary attach body (issue-#13 operation setDeploymentCanary,
+#      schema CanaryConfigRequest) and the base CreateDeploymentRequest gain
+#      one OPTIONAL property — merge:
+#        canary_policy:
+#          $ref to the CnpPromotionPolicy schema below (or inline its shape:
+#          {min_pass_rate number 0-1, min_canary_runs integer >= 0,
+#           max_p95_latency_ms integer >= 0, max_cost_per_run_cents
+#           integer >= 0}; null clears a configured policy). A body with only
+#           canary_policy is valid on /deployments/{id}/canary (the policy
+#           requires an attached canary); at create time it requires
+#           canary_version.
+#   2. The base Deployment response schema may optionally surface
+#      `canary_promotion` (policy/window_start/decision) — the status
+#      endpoint below is the authoritative read model; merging the field is
+#      optional.
+#
+# Semantics (mirrored in internal/deployments/policy.go, issue #51):
+#   * the engine is gated behind AGENTOS_CANARY_AUTOPROMOTE (default OFF =
+#     byte-identical legacy behavior; strconv.ParseBool spellings, garbage is
+#     off — misconfiguration never silently enables traffic-changing decisions)
+#   * every completed eval run re-fires the engine; once >= min_canary_runs
+#     completed eval runs exist inside the canary window (runs started at/after
+#     the window_start stamped at canary attach/replace), the policy decides
+#     from the newest <= 100 runs: PROMOTE when the case-weighted pass rate is
+#     >= min_pass_rate AND p95 latency <= max_p95_latency_ms (0 = disabled)
+#     AND avg cost per run <= max_cost_per_run_cents (0 = disabled), else
+#     ROLLBACK
+#   * PROMOTE = the manual promote semantics (canary becomes the stable
+#     version, config cleared, row stays healthy); ROLLBACK = the manual abort
+#     semantics (canary cleared, stable keeps serving 100%) — the engine only
+#     ever uses the same transitions as the manual endpoints, never the split
+#     function
+#   * the decision (action + reason + sample stats + policy snapshot) is
+#     recorded ONCE per canary window (idempotent, never rewritten); manual
+#     promote/abort are authoritative — once either lands the engine stands
+#     down (no flapping); every decision emits an audit event
+#     (deployment.canary_auto_promote / deployment.canary_auto_rollback)
+#   * reason format: "<metric> <observed> <op> <threshold> → <action>", e.g.
+#     "pass_rate 0.62 < 0.80 → rollback", "pass_rate 0.95 >= 0.80 → promote",
+#     "p95_latency_ms 300 > 100 → rollback",
+#     "avg_cost_per_run_cents 155 > 100 → rollback"
+openapi: 3.1.0
+info:
+  title: AgentOS — eval-gated canary promotion (issue #51 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the eval-gated canary promotion added by issue #51
+  ("CI/CD for agents"): a promotion policy (min case-weighted eval pass rate,
+  minimum completed eval runs, optional p95-latency and per-run-cost ceilings)
+  is attached to a canary; completed evaluation runs are sampled inside the
+  canary window and, once the evidence gate opens, the engine promotes the
+  canary or rolls it back automatically and records the decision (+reason) on
+  the deployment. The status endpoint is the operator's view of the split, the
+  standing policy, the last decision and the fresh sample statistics.
+paths:
+  /deployments/{id}/canary:
+    post:
+      operationId: setDeploymentCanary
+      summary: Attach or replace the canary version and/or move the traffic split
+      description: |
+        Restatement of the issue-#13 operation with the issue-#51 addition:
+        the body gains the optional `canary_policy` object (the eval-gated
+        promotion policy; `null` clears a configured policy). Attaching or
+        replacing a canary version opens a FRESH evaluation window and voids
+        any prior automatic decision; the policy itself is a standing rule of
+        the row and survives attach/replace. At least one body field is
+        required; a canary_policy-only body requires an already-attached
+        canary (409 otherwise). All other semantics — existing versions only,
+        weight 0-100 rejected-not-clamped, healthy rows only — are unchanged
+        (see api/fragments/canary.yaml).
+      x-required-permission: deployments.deploy
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/CnpDeploymentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CnpCanaryConfigRequest'
+      responses:
+        '200':
+          description: Updated deployment (canary fields + promotion state included).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpDeploymentResponse'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/CnpUnauthorized'
+        '403':
+          $ref: '#/components/responses/CnpForbidden'
+        '404':
+          description: Deployment not found within the caller's organization (error.code DEPLOYMENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpErrorEnvelope'
+        '409':
+          description: |
+            State conflict: canary_policy-only body without an attached canary,
+            weight moved without a canary, or the row is not the environment's
+            healthy deployment (error.code INVALID_STATE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpErrorEnvelope'
+        '422':
+          description: |
+            Validation error: empty body, out-of-domain canary_policy values
+            (min_pass_rate outside [0,1] or a negative threshold — rejected,
+            not clamped), canary_weight outside 0-100, unknown/cross-agent
+            canary version (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpErrorEnvelope'
+  /agents/{agentId}/canary/status:
+    get:
+      operationId: getCanaryStatus
+      tags:
+      - deployments
+      summary: Read the eval-gated canary promotion state for one agent
+      description: |
+        Additive read-only endpoint (issue #51; runs.read — all roles). Serves
+        the operator's view for one agent+environment: the current traffic
+        split, the promotion policy in effect (a standing rule that survives
+        abort and re-attach), the last automatic decision with its reason and
+        sample stats, and — while the canary is ACTIVE — fresh statistics of
+        the completed eval runs inside the window (runs counted, case-weighted
+        pass rate, nearest-rank p95 latency, average cost per run). With no
+        sample source wired (or no active canary) `stats` is omitted; with no
+        configured policy `policy`/`window_start`/`decision` are omitted. The
+        tenant comes from the auth claims; foreign agents surface as 404 (no
+        existence leak).
+      x-required-permission: runs.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/CnpAgentID'
+      - $ref: '#/components/parameters/CnpEnvironment'
+      responses:
+        '200':
+          description: The canary promotion status view.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpCanaryStatusResponse'
+              example:
+                canary_status:
+                  agent_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+                  environment: production
+                  deployment_id: 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+                  stable_version: 2
+                  canary_version: 3
+                  canary_weight: 10
+                  canary_active: true
+                  window_start: '2025-01-02T03:04:05Z'
+                  policy:
+                    min_pass_rate: 0.8
+                    min_canary_runs: 3
+                    max_p95_latency_ms: 0
+                    max_cost_per_run_cents: 0
+                  decision: null
+                  stats:
+                    runs_counted: 2
+                    cases_counted: 20
+                    passed_cases: 18
+                    pass_rate: 0.9
+                    p95_latency_ms: 25
+                    avg_cost_cents: 2.5
+        '401':
+          $ref: '#/components/responses/CnpUnauthorized'
+        '404':
+          description: |
+            No healthy deployment serves this agent+environment for the
+            caller's organization, or the agent is unknown/foreign
+            (error.code NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpErrorEnvelope'
+        '405':
+          description: Method not allowed (the endpoint is GET-only).
+        '422':
+          description: Unknown `environment` query value, error.code VALIDATION_ERROR (valid values development|staging|production).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CnpErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    CnpDeploymentID:
+      name: id
+      in: path
+      required: true
+      description: Deployment identifier (UUID v4 string).
+      schema:
+        type: string
+      example: 9d2f2f8e-1c3b-4a5d-9e6f-2f4d3b6c9a10
+    CnpAgentID:
+      name: agentId
+      in: path
+      required: true
+      description: Agent identifier (UUID v4 string).
+      schema:
+        type: string
+    CnpEnvironment:
+      name: environment
+      in: query
+      required: false
+      description: |
+        Target environment of the canary (default: production). One of
+        development|staging|production.
+      schema:
+        type: string
+        enum:
+        - development
+        - staging
+        - production
+        default: production
+  responses:
+    CnpUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CnpErrorEnvelope'
+    CnpForbidden:
+      description: Authenticated but lacking the required permission (writes are deployments.deploy — OWNER/ADMIN; the status read is runs.read — all roles).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CnpErrorEnvelope'
+  schemas:
+    CnpPromotionPolicy:
+      type: object
+      description: |
+        The eval-gated promotion policy (standing rule of the deployment row;
+        survives abort and canary re-attach — re-attaching a canary opens a
+        fresh evaluation window under the same policy). Out-of-domain values
+        are REJECTED, not clamped.
+      properties:
+        min_pass_rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Minimum case-weighted pass rate across the sampled eval runs required to promote; a sample below it rolls back.
+          examples:
+          - 0.8
+        min_canary_runs:
+          type: integer
+          minimum: 0
+          description: |
+            Evidence gate: minimum completed eval runs inside the canary window
+            before ANY decision is made. 0 (or a negative value, rejected at
+            validation) disables the policy entirely — the engine never decides
+            on an empty sample.
+          examples:
+          - 3
+        max_p95_latency_ms:
+          type: integer
+          minimum: 0
+          description: Maximum tolerated p95 case latency in ms; 0 disables the latency gate.
+          examples:
+          - 0
+        max_cost_per_run_cents:
+          type: integer
+          minimum: 0
+          description: Maximum tolerated average cost per eval run in cents; 0 disables the cost gate.
+          examples:
+          - 0
+      required:
+      - min_pass_rate
+      - min_canary_runs
+      - max_p95_latency_ms
+      - max_cost_per_run_cents
+    CnpCanaryConfigRequest:
+      type: object
+      description: |
+        Canary configuration patch (the issue-#13 body extended with the
+        issue-#51 policy field). At least one property is required; omitted
+        properties keep their current value.
+      properties:
+        canary_version:
+          type: integer
+          minimum: 1
+          description: |
+            Canary target version (issue #13 semantics unchanged). Must be an
+            existing version of the SAME agent (any publication status) and
+            differ from the deployment's stable version. Attaching/replacing
+            it opens a FRESH evaluation window and voids any prior decision.
+          examples:
+          - 3
+        canary_weight:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percentage of traffic routed to the canary (0-100). Requires an attached canary. Moving the split does NOT affect the evaluation window.
+          examples:
+          - 50
+        canary_policy:
+          description: |
+            The eval-gated promotion policy (issue #51). Attach/replace with an
+            object — this opens a fresh evaluation window and clears any prior
+            decision; clear with `null`. Requires an attached canary (attach
+            canary_version in the same body, before the policy is applied).
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/CnpPromotionPolicy'
+      minProperties: 1
+    CnpCanaryDecision:
+      type: object
+      description: |
+        The single immutable automatic decision recorded per canary window
+        (never rewritten; manual promote/abort preempt the engine). Reason
+        format: "<metric> <observed> <op> <threshold> → <action>".
+      properties:
+        action:
+          type: string
+          enum:
+          - promote
+          - rollback
+          description: promote = manual-promote semantics (canary becomes stable); rollback = manual-abort semantics (canary cleared, stable serves 100%).
+        reason:
+          type: string
+          description: Deterministic decision reason, e.g. "pass_rate 0.62 < 0.80 → rollback" or "p95_latency_ms 300 > 100 → rollback".
+          examples:
+          - 'pass_rate 0.62 < 0.80 → rollback'
+        decided_at:
+          type: string
+          format: date-time
+        runs_counted:
+          type: integer
+          description: Completed eval runs inside the window the decision was made from (<= 100, newest first).
+        pass_rate:
+          type: number
+          format: double
+          description: Case-weighted pass rate of the sample.
+        p95_latency_ms:
+          type: integer
+          description: Nearest-rank p95 over ALL sampled case latencies (ms).
+        avg_cost_cents:
+          type: number
+          format: double
+          description: Mean cost per sampled eval run (cents).
+        policy:
+          $ref: '#/components/schemas/CnpPromotionPolicy'
+      required:
+      - action
+      - reason
+      - decided_at
+      - runs_counted
+      - pass_rate
+      - p95_latency_ms
+      - avg_cost_cents
+      - policy
+    CnpSampleStats:
+      type: object
+      description: |
+        Fresh aggregates of the completed eval runs inside the canary window
+        (surfaced only while the canary is active and a sample source is
+        wired — the "why hasn't it promoted yet" view).
+      properties:
+        runs_counted:
+          type: integer
+        cases_counted:
+          type: integer
+        passed_cases:
+          type: integer
+        pass_rate:
+          type: number
+          format: double
+        p95_latency_ms:
+          type: integer
+        avg_cost_cents:
+          type: number
+          format: double
+      required:
+      - runs_counted
+      - cases_counted
+      - passed_cases
+      - pass_rate
+      - p95_latency_ms
+      - avg_cost_cents
+    CnpCanaryStatus:
+      type: object
+      description: |
+        Read model of GET /agents/{agentId}/canary/status. policy /
+        window_start / decision appear only when a promotion policy is
+        configured (window_start is stamped at canary attach/replace);
+        stats appears only while the canary is active with a sample source
+        wired.
+      properties:
+        agent_id:
+          type: string
+        environment:
+          type: string
+          enum:
+          - development
+          - staging
+          - production
+        deployment_id:
+          type: string
+          description: The healthy deployment row serving the split.
+        stable_version:
+          type: integer
+          description: The version serving 100 - canary_weight percent of traffic.
+        canary_version:
+          type: integer
+          description: The canary version; 0 = no canary attached.
+        canary_weight:
+          type: integer
+          minimum: 0
+          maximum: 100
+        canary_active:
+          type: boolean
+          description: True while the canary config is attached (the engine may act).
+        window_start:
+          type: string
+          format: date-time
+          nullable: true
+          description: Evaluation window anchor (canary attach/replace time); only samples created at/after it count.
+        policy:
+          allOf:
+          - $ref: '#/components/schemas/CnpPromotionPolicy'
+          nullable: true
+        decision:
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/CnpCanaryDecision'
+        stats:
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/CnpSampleStats'
+      required:
+      - agent_id
+      - environment
+      - deployment_id
+      - stable_version
+      - canary_version
+      - canary_weight
+      - canary_active
+    CnpCanaryStatusResponse:
+      type: object
+      properties:
+        canary_status:
+          $ref: '#/components/schemas/CnpCanaryStatus'
+      required:
+      - canary_status
+    CnpDeploymentResponse:
+      type: object
+      description: The updated deployment (base Deployment shape; the promotion state additionally surfaces on the status endpoint).
+      properties:
+        deployment:
+          type: object
+          description: Base Deployment view (see api/fragments/canary.yaml for the authoritative full shape); this fragment only documents the response envelope.
+          additionalProperties: true
+      required:
+      - deployment
+    CnpErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: |
+                One of DEPLOYMENT_NOT_FOUND (404), NOT_FOUND (404, status
+                endpoint), INVALID_STATE (409), VALIDATION_ERROR (422 —
+                includes out-of-domain canary_policy values), INVALID_REQUEST
+                (400), UNAUTHORIZED (401), FORBIDDEN (403), INTERNAL_ERROR
+                (500).
+              examples:
+              - VALIDATION_ERROR
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error

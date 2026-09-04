@@ -9,44 +9,47 @@ import (
 )
 
 // Deployment SQL. Tenant guard: every statement filters on organization_id.
+// canary_promotion (issue #51, migration 021) is the eval-gated promotion
+// state JSONB — NULL for legacy rows / no policy configured.
 const (
 	sqlInsertDeployment = `INSERT INTO deployments
-		(id, organization_id, agent_id, version, environment, status, health, created_by, created_at, updated_at, superseded_at, canary_version, canary_weight)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+                (id, organization_id, agent_id, version, environment, status, health, created_by, created_at, updated_at, superseded_at, canary_version, canary_weight, canary_promotion)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
 
 	sqlSelectDeploymentColumns = `id, organization_id, agent_id, version, environment, status,
-		health, created_by, created_at, updated_at, superseded_at, canary_version, canary_weight`
+                health, created_by, created_at, updated_at, superseded_at, canary_version, canary_weight, canary_promotion`
 
 	// Tenant guard: single-deployment reads are scoped to one organization_id.
 	sqlSelectDeployment = `SELECT ` + sqlSelectDeploymentColumns + `
-		FROM deployments WHERE id = $1 AND organization_id = $2`
+                FROM deployments WHERE id = $1 AND organization_id = $2`
 
 	// Tenant guard: listings filter on organization_id (agent_id optional).
 	sqlSelectDeploymentsByOrg = `SELECT ` + sqlSelectDeploymentColumns + `
-		FROM deployments
-		WHERE organization_id = $1 AND ($2 = '' OR agent_id = $2)
-		ORDER BY created_at DESC, id`
+                FROM deployments
+                WHERE organization_id = $1 AND ($2 = '' OR agent_id = $2)
+                ORDER BY created_at DESC, id`
 
 	// Tenant guard: lifecycle updates require a matching organization_id.
 	// canary_version/canary_weight are mutable too (configure/promote/abort
 	// transitions) and always written together with the lifecycle fields.
+	// canary_promotion rides along (policy attach + decision record).
 	sqlUpdateDeployment = `UPDATE deployments
-		SET status = $1, health = $2, updated_at = $3, superseded_at = $4, canary_version = $5, canary_weight = $6
-		WHERE id = $7 AND organization_id = $8`
+                SET status = $1, health = $2, updated_at = $3, superseded_at = $4, canary_version = $5, canary_weight = $6, canary_promotion = $7
+                WHERE id = $8 AND organization_id = $9`
 
 	// The environment's current deployment: the single healthy row.
 	sqlSelectHealthyDeployment = `SELECT ` + sqlSelectDeploymentColumns + `
-		FROM deployments
-		WHERE organization_id = $1 AND agent_id = $2 AND environment = $3 AND status = 'healthy'
-		ORDER BY updated_at DESC LIMIT 1`
+                FROM deployments
+                WHERE organization_id = $1 AND agent_id = $2 AND environment = $3 AND status = 'healthy'
+                ORDER BY updated_at DESC LIMIT 1`
 
 	// The previous healthy deployment: the most recently superseded row
 	// (healthy once, later demoted), excluding a row (the current deployment).
 	sqlSelectPreviousHealthyDeployment = `SELECT ` + sqlSelectDeploymentColumns + `
-		FROM deployments
-		WHERE organization_id = $1 AND agent_id = $2 AND environment = $3
-			AND superseded_at IS NOT NULL AND id <> $4
-		ORDER BY superseded_at DESC LIMIT 1`
+                FROM deployments
+                WHERE organization_id = $1 AND agent_id = $2 AND environment = $3
+                        AND superseded_at IS NOT NULL AND id <> $4
+                ORDER BY superseded_at DESC LIMIT 1`
 )
 
 // pgStore is the Postgres-backed Store implementation. The one-healthy-per-
@@ -87,7 +90,7 @@ func (s *pgStore) CreateDeployment(ctx context.Context, orgID string, deployment
 		deployment.ID, orgID, deployment.AgentID, deployment.Version,
 		deployment.Environment, deployment.Status, healthJSON(deployment.Health),
 		deployment.CreatedBy, createdAt, updatedAt, nullTime(deployment.SupersededAt),
-		deployment.CanaryVersion, deployment.CanaryWeight)
+		deployment.CanaryVersion, deployment.CanaryWeight, promotionJSON(deployment.Promotion))
 	return err
 }
 
@@ -132,7 +135,7 @@ func (s *pgStore) UpdateDeployment(ctx context.Context, orgID string, deployment
 	res, err := s.db.ExecContext(ctx, sqlUpdateDeployment,
 		deployment.Status, healthJSON(deployment.Health), updatedAt,
 		nullTime(deployment.SupersededAt), deployment.CanaryVersion, deployment.CanaryWeight,
-		deployment.ID, orgID)
+		promotionJSON(deployment.Promotion), deployment.ID, orgID)
 	if err != nil {
 		return err
 	}
@@ -174,20 +177,26 @@ func (s *pgStore) GetPreviousHealthyDeployment(ctx context.Context, orgID, agent
 // scanDeployment reads one row; sql.ErrNoRows maps to ErrDeploymentNotFound.
 func scanDeployment(scanner interface{ Scan(dest ...any) error }) (*Deployment, error) {
 	var (
-		deployment  Deployment
-		healthBytes []byte
-		healthValid bool
-		superseded  sql.NullTime
+		deployment     Deployment
+		healthBytes    []byte
+		healthValid    bool
+		superseded     sql.NullTime
+		promotionBytes []byte
 	)
-	// health scans into []byte + bool via COALESCE-free NULL handling below.
 	if err := scanner.Scan(&deployment.ID, &deployment.OrganizationID, &deployment.AgentID,
 		&deployment.Version, &deployment.Environment, &deployment.Status,
 		&healthBytes, &deployment.CreatedBy, &deployment.CreatedAt, &deployment.UpdatedAt, &superseded,
-		&deployment.CanaryVersion, &deployment.CanaryWeight); err != nil {
+		&deployment.CanaryVersion, &deployment.CanaryWeight, &promotionBytes); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrDeploymentNotFound
 		}
 		return nil, err
+	}
+	if promotionBytes != nil {
+		promotion := &CanaryPromotion{}
+		if err := json.Unmarshal(promotionBytes, promotion); err == nil {
+			deployment.Promotion = promotion
+		}
 	}
 	healthValid = healthBytes != nil
 	if healthValid {
@@ -209,6 +218,19 @@ func healthJSON(health *Health) any {
 		return nil
 	}
 	b, err := json.Marshal(health)
+	if err != nil {
+		return nil
+	}
+	return string(b)
+}
+
+// promotionJSON marshals the eval-gated promotion state (nil -> SQL NULL;
+// migration 021 column canary_promotion).
+func promotionJSON(promotion *CanaryPromotion) any {
+	if promotion == nil {
+		return nil
+	}
+	b, err := json.Marshal(promotion)
 	if err != nil {
 		return nil
 	}

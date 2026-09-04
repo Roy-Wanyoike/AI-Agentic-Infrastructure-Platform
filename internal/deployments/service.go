@@ -82,6 +82,13 @@ type Deployment struct {
 	// canary fields on non-healthy rows are staged config.
 	CanaryVersion int
 	CanaryWeight  int
+	// Promotion carries the eval-gated promotion state (issue #51): the
+	// AgentPromotionPolicy, the evaluation window start (stamped when the
+	// canary is attached/replaced) and the single recorded Decision. nil =
+	// no policy configured (the engine never touches the row). Persisted
+	// in the canary_promotion JSONB column (migration 021); the in-memory
+	// mode just holds it on the struct.
+	Promotion *CanaryPromotion
 }
 
 // VersionChecker validates that an agent version is deployable (exists and is
@@ -124,6 +131,12 @@ type Service struct {
 	finder VersionExistenceChecker
 	// items caches deployments in in-memory mode, keyed by agentID.
 	items map[string][]*Deployment
+	// samples feeds the eval-gated canary promotion engine (issue #51);
+	// wiring-time injection via SetCanarySampleSource, nil = engine inert.
+	samples EvalSampleSource
+	// auditer receives one audit event per automatic canary decision
+	// (SetCanaryDecisionAuditer, nil = no audit event).
+	auditer CanaryDecisionAuditer
 }
 
 // NewService returns the in-memory deployments service. The resolver validates
@@ -394,6 +407,7 @@ func (s *Service) demoteHealthy(ctx context.Context, orgID string, incoming *Dep
 		return nil
 	}
 	now := time.Now().UTC()
+	s.mu.Lock()
 	current.Status = StatusFailed
 	current.SupersededAt = &now
 	current.UpdatedAt = now
@@ -401,11 +415,16 @@ func (s *Service) demoteHealthy(ctx context.Context, orgID string, incoming *Dep
 	// cleared: the split is only ever resolved from the HEALTHY row.
 	current.CanaryVersion = 0
 	current.CanaryWeight = 0
+	// The eval-gated promotion state belongs to the canary window that just
+	// ended: a demoted row is history and must never auto-decide.
+	current.Promotion = nil
 	if current.Health == nil {
 		current.Health = &Health{}
 	}
 	current.Health.SupersededBy = incoming.ID
-	return s.persistUpdate(ctx, orgID, current)
+	err = s.persistUpdate(ctx, orgID, current)
+	s.mu.Unlock()
+	return err
 }
 
 // healthyDeployment returns the current healthy deployment for one

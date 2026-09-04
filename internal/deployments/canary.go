@@ -148,9 +148,20 @@ func (s *Service) SetCanaryVersionCtx(ctx context.Context, orgID, depID string, 
 	if err := s.canaryVersionExists(ctx, orgID, deployment.AgentID, canaryVersion); err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
 	deployment.CanaryVersion = canaryVersion
 	deployment.UpdatedAt = time.Now().UTC()
-	return deployment, s.persistUpdate(ctx, orgID, deployment)
+	// Issue #51: (re)attaching a canary opens a FRESH evaluation window —
+	// the policy (when configured) restarts its evidence collection and any
+	// prior decision is void. The policy itself is the operator's standing
+	// rule for this row and survives attach/replace.
+	if deployment.Promotion != nil {
+		deployment.Promotion.WindowStart = deployment.UpdatedAt
+		deployment.Promotion.Decision = nil
+	}
+	err = s.persistUpdate(ctx, orgID, deployment)
+	s.mu.Unlock()
+	return deployment, err
 }
 
 // SetCanaryWeightCtx moves the split point of an existing canary (0-100).
@@ -170,9 +181,12 @@ func (s *Service) SetCanaryWeightCtx(ctx context.Context, orgID, depID string, w
 	if deployment.Status != StatusHealthy {
 		return nil, fmt.Errorf("%w: canary operations require a healthy deployment", ErrInvalidTransition)
 	}
+	s.mu.Lock()
 	deployment.CanaryWeight = weight
 	deployment.UpdatedAt = time.Now().UTC()
-	return deployment, s.persistUpdate(ctx, orgID, deployment)
+	err = s.persistUpdate(ctx, orgID, deployment)
+	s.mu.Unlock()
+	return deployment, err
 }
 
 // PromoteCanaryCtx makes the canary the stable version: Version is swapped to
@@ -184,6 +198,16 @@ func (s *Service) PromoteCanaryCtx(ctx context.Context, orgID, depID string) (*D
 	if err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applyCanaryPromoteLocked(ctx, orgID, deployment)
+}
+
+// applyCanaryPromoteLocked is the transition body of PromoteCanaryCtx for a
+// deployment already fetched. The caller MUST hold s.mu (in-memory rows are
+// shared pointers; the canary promotion engine applies its auto-decisions
+// through the same locked path so engine and manual actions serialize).
+func (s *Service) applyCanaryPromoteLocked(ctx context.Context, orgID string, deployment *Deployment) (*Deployment, error) {
 	if !deployment.HasCanary() {
 		return nil, ErrNoCanary
 	}
@@ -205,6 +229,15 @@ func (s *Service) AbortCanaryCtx(ctx context.Context, orgID, depID string) (*Dep
 	if err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applyCanaryAbortLocked(ctx, orgID, deployment)
+}
+
+// applyCanaryAbortLocked is the transition body of AbortCanaryCtx for a
+// deployment already fetched. The caller MUST hold s.mu (same contract as
+// applyCanaryPromoteLocked).
+func (s *Service) applyCanaryAbortLocked(ctx context.Context, orgID string, deployment *Deployment) (*Deployment, error) {
 	if !deployment.HasCanary() {
 		return nil, ErrNoCanary
 	}

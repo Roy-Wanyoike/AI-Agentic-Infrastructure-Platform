@@ -19,6 +19,7 @@ package main
 //      POST   /deployments/{id}/canary                -> deployments.deploy   (canary)
 //      POST   /deployments/{id}/canary/promote        -> deployments.deploy   (canary)
 //      POST   /deployments/{id}/canary/abort          -> deployments.deploy   (canary)
+//      GET    /agents/{agentId}/canary/status         -> runs.read            (issue #51)
 //
 // The tenant is taken from the auth claims only; client-supplied organization
 // ids are never trusted. Error bodies use the shared
@@ -288,6 +289,9 @@ func writeDeploymentsError(w http.ResponseWriter, err error) bool {
 		writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
 	case errors.Is(err, deployments.ErrInvalidCanaryVersion):
 		writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
+	case errors.Is(err, deployments.ErrInvalidCanaryPolicy):
+		// Issue #51: out-of-domain promotion policy values.
+		writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
 	default:
 		return false
 	}
@@ -318,13 +322,14 @@ func listDeploymentsHandler(depSvc *deployments.Service) http.HandlerFunc {
 }
 
 // createDeploymentHandler serves POST /deployments/create with body
-// {"agent_id","version","environment","canary_version"?,"canary_weight"?}:
-// validates the target version exists and is published, then creates a
-// deployment in status requested. The optional canary fields stage a canary
-// config (must be an existing version of the same agent, any publication
-// status, because only one version can be published at a time; weight 0-100);
-// the split only serves traffic once the row is the environment's healthy
-// deployment.
+// {"agent_id","version","environment","canary_version"?,"canary_weight"?,
+// "canary_policy"?}: validates the target version exists and is published,
+// then creates a deployment in status requested. The optional canary fields
+// stage a canary config (must be an existing version of the same agent, any
+// publication status, because only one version can be published at a time;
+// weight 0-100); the split only serves traffic once the row is the
+// environment's healthy deployment. The optional canary_policy (issue #51)
+// attaches the eval-gated promotion policy to the staged canary.
 func createDeploymentHandler(depSvc *deployments.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orgID, ok := claimsOrgIDVD(w, r)
@@ -332,11 +337,12 @@ func createDeploymentHandler(depSvc *deployments.Service) http.HandlerFunc {
 			return
 		}
 		var req struct {
-			AgentID       string `json:"agent_id"`
-			Version       int    `json:"version"`
-			Environment   string `json:"environment"`
-			CanaryVersion int    `json:"canary_version"`
-			CanaryWeight  int    `json:"canary_weight"`
+			AgentID       string                            `json:"agent_id"`
+			Version       int                               `json:"version"`
+			Environment   string                            `json:"environment"`
+			CanaryVersion int                               `json:"canary_version"`
+			CanaryWeight  int                               `json:"canary_weight"`
+			CanaryPolicy  *deployments.AgentPromotionPolicy `json:"canary_policy"`
 		}
 		if !readJSONVD(w, r, &req) {
 			return
@@ -357,6 +363,16 @@ func createDeploymentHandler(depSvc *deployments.Service) http.HandlerFunc {
 			writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "canary_weight requires canary_version")
 			return
 		}
+		if req.CanaryPolicy != nil {
+			if err := req.CanaryPolicy.Validate(); err != nil {
+				writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
+				return
+			}
+			if req.CanaryVersion == 0 {
+				writeErrorVD(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "canary_policy requires canary_version")
+				return
+			}
+		}
 		claims, _ := auth.ExtractClaims(r.Context())
 		// Tenant guard: the deployment row is created with the caller's org.
 		// canary_version == 0 means "no canary" (plain create path).
@@ -366,6 +382,11 @@ func createDeploymentHandler(depSvc *deployments.Service) http.HandlerFunc {
 		)
 		if req.CanaryVersion > 0 {
 			deployment, err = depSvc.CreateCanaryDeploymentCtx(r.Context(), orgID, req.AgentID, req.Version, req.CanaryVersion, req.CanaryWeight, req.Environment, claims.UserID)
+			if err == nil && req.CanaryPolicy != nil {
+				// Issue #51: attach the eval-gated promotion policy to the
+				// staged canary (opens the evaluation window at create time).
+				deployment, err = depSvc.SetCanaryPromotionPolicyCtx(r.Context(), orgID, deployment.ID, req.CanaryPolicy)
+			}
 		} else {
 			deployment, err = depSvc.CreateDeploymentCtx(r.Context(), orgID, req.AgentID, req.Version, req.Environment, claims.UserID)
 		}
