@@ -334,6 +334,8 @@ func (a *app) routes() http.Handler {
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks
 	registerConnectorsRoutes(apiMux, a.connSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	// issue #48: API keys management (mint once / metadata list / revoke)
+	registerAPIKeysRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 
 	apiMux.HandleFunc("/", serviceInfoHandler)
 
