@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"agentos/internal/agents"
+	"agentos/internal/audit"
+	"agentos/internal/billing"
 	"agentos/internal/config"
 	"agentos/internal/database"
 	"agentos/internal/logger"
@@ -176,15 +179,45 @@ func main() {
 	// several workers: Postgres candidates are selected FOR UPDATE SKIP LOCKED
 	// and every transition is a guarded conditional UPDATE.
 	var recStore workflows.Store
+	// issue #47: the PG handle is shared with the worker quota gate below
+	// (billing/audit/durable-runs stores) so enforcement opens no extra
+	// connection and is only constructed when a DSN exists.
+	var quotaDB *sql.DB
 	if dsn := database.DSNFromEnv(); dsn != "" {
 		if recDB, derr := database.Connect(dsn); derr == nil {
 			defer func() { _ = recDB.Close() }()
 			recStore = workflows.NewPostgresStore(recDB)
+			quotaDB = recDB
 		} else {
 			logr.Warn("workflow recovery: database unavailable, recovery disabled", "error", derr.Error())
 		}
 	}
 	wfSvc := workflows.NewServiceWithOptions(recStore, workflows.WithStaleAfter(workflows.StaleAfterFromEnv()))
+
+	// issue #47: worker-side quota enforcement (defense in depth behind the
+	// create-run gate). Active only when AGENTOS_BILLING_ENFORCEMENT is on
+	// AND durable billing state exists (Postgres): the worker process has
+	// no billing state of its own in zero-infrastructure mode, and an
+	// in-memory billing service here would hold zero subscriptions —
+	// fabricating one would fake enforcement. The quota counters read the
+	// same durable runs.cost_cents aggregates the API's billing service
+	// uses, so both processes decide from one source of truth.
+	var quotaGate *quotaEnforcer
+	if billing.EnforcementFromEnv() {
+		if quotaDB != nil {
+			quotaRuns := runs.NewServiceWithStore(runs.NewPostgresStore(quotaDB))
+			quotaGate = &quotaEnforcer{
+				billing: billing.NewServiceWithStore(billing.NewPostgresStore(quotaDB),
+					billing.NewRunsUsageSource(quotaRuns)),
+				runs:  quotaRuns,
+				audit: audit.NewServiceWithStore(audit.NewPostgresStore(quotaDB)),
+				log:   logr,
+			}
+			logr.Info("worker quota enforcement enabled", "flag", billing.EnforcementEnvVar)
+		} else {
+			logr.Warn("worker quota enforcement disabled: AGENTOS_BILLING_ENFORCEMENT is set but no Postgres DSN is configured")
+		}
+	}
 	recoveryCtx, recoveryStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer recoveryStop()
 	go func() {
@@ -204,12 +237,12 @@ func main() {
 		if runID == "" || agentID == "" || input == "" {
 			return fmt.Errorf("task payload missing run_id, agent_id or input")
 		}
+		orgID, _ := task.Payload["organization_id"].(string)
 		// wave-3 3-c: durable checkpointing of workflow node execution.
 		workflowRunID, _ := task.Payload["workflow_run_id"].(string)
 		nodeID, _ := task.Payload["node_id"].(string)
 		var checkpoint *workflows.NodeRun
 		if workflowRunID != "" && nodeID != "" {
-			orgID, _ := task.Payload["organization_id"].(string)
 			nr, nerr := wfSvc.BeginNodeRun(ctx, orgID, workflowRunID, nodeID, runID)
 			switch {
 			case errors.Is(nerr, workflows.ErrNodeRunTerminal):
@@ -218,6 +251,25 @@ func main() {
 				return nerr
 			}
 			checkpoint = nr
+		}
+		// issue #47: pre-execution quota gate. A denial is final — the
+		// run is marked FAILED with reason quota_exceeded (durable when
+		// a DSN is configured), an audit entry is written, the failure
+		// is mirrored to the API, and the task is ACKed so the loop
+		// keeps consuming other tasks instead of retrying forever.
+		if !quotaGate.allow(ctx, orgID, runID, agentID) {
+			if checkpoint != nil {
+				_ = wfSvc.FinishNodeRun(ctx, checkpoint.OrganizationID, checkpoint.ID, workflows.RunStatusFailed, workflowCodeQuotaExceeded)
+			}
+			go func() {
+				apiBase := os.Getenv("AGENTOS_API")
+				if apiBase == "" {
+					apiBase = "http://localhost:8080"
+				}
+				payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusFailed), "output": billing.ReasonQuotaExceeded, "ts": time.Now().UTC().Format(time.RFC3339)}}
+				_ = postEventWithRetries(apiBase, runID, payload)
+			}()
+			return nil
 		}
 		// mark run running
 		_ = runsService.UpdateStatus(runID, runs.StatusRunning, "")
