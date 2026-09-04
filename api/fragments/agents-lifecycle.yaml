@@ -1,0 +1,356 @@
+# AgentOS API — OpenAPI 3.1 fragment for the agent update + delete endpoints
+# (issue #49, wave 6-g — "finish CRUD on the flagship resource").
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1). The /agents/{id} path key matches the base spec exactly, so a
+# merge folds these operations under the existing path: the `put` and `delete`
+# entries here SUPERSEDE the base spec's deprecated not-implemented reality
+# checks (patch updateAgent / delete deleteAgent documented as "behaves like
+# GET" — those placeholders can be dropped at merge time).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/agents-lifecycle.yaml`
+# passes. Components carry the track-unique `Agl` (agent lifecycle) prefix to
+# avoid collisions with the base spec's existing component names.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation.
+#     No new permission enum was introduced: both operations are guarded by
+#     agents.write, whose existing grant matrix is exactly OWNER/ADMIN
+#     (internal/auth rolePermissions; apikeys/secrets write-track precedent).
+#   * structured error model {"error":{"code","message"}}
+#
+# SEMANTICS (following internal/agents/service.go exactly):
+#   * PUT updates the live agent row — the row IS the working draft. Supported
+#     fields are exactly what agents.Service.UpdateAgentCtx persists:
+#     name, description, instructions (the system prompt; the version
+#     contract's canonical "system_prompt" key is accepted as an alias) and
+#     model. Merge semantics: only provided fields change.
+#   * Any other request key (tools, config, temperature, params, status,
+#     version, ids, timestamps, ...) belongs to the immutable published-version
+#     snapshot domain (internal/agents/versions.go: "published versions are
+#     immutable"; ErrVersionImmutable) or to identity/bookkeeping and is
+#     rejected with 400 IMMUTABLE_FIELDS enumerating the offending keys —
+#     fields are NEVER silently dropped. Publication/rollback owns those
+#     values through the version lifecycle endpoints, not through PUT.
+#   * DELETE is a HARD delete (agents.Service.DeleteAgentCtx; there is no
+#     soft-delete column). The durable schema cascades agent_versions
+#     (migration 003), deployments + canary rows (007/015), schedules (011)
+#     and memory snippets (014) via ON DELETE CASCADE. runs.agent_id
+#     (migration 001, fk_runs_agent) has NO ON DELETE action, so Postgres
+#     itself refuses to delete an agent that runs still reference; the
+#     endpoint mirrors that durable constraint and answers 409 AGENT_HAS_RUNS
+#     before attempting the delete (never a raw FK 500). Evaluations and
+#     marketplace provenance (source_agent_id) keep agent_id strings without
+#     FKs by design and do not block deletion.
+#   * Both operations are audit-logged (agent.updated / agent.deleted,
+#     tenant-scoped, best-effort).
+openapi: 3.1.0
+info:
+  title: AgentOS — agent lifecycle CRUD completion (issue #49 fragment)
+  version: 1.0.0-fragment
+description: |
+  Standalone fragment for the agent update + delete operations added by
+  issue #49, completing CRUD on the flagship resource. PUT /agents/{id}
+  merges draft fields (name, description, instructions/system_prompt, model)
+  onto the live agent row within the caller's tenant and explicitly rejects
+  immutable published-version fields instead of silently dropping them.
+  DELETE /agents/{id} hard-deletes the agent after the runs reference guard
+  passes. Tenant scope comes exclusively from the auth claims — foreign or
+  unknown agents surface as 404 with no existence leak across tenants.
+  RBAC is agents.write (exactly OWNER/ADMIN) on both operations.
+paths:
+  /agents/{id}:
+    put:
+      operationId: updateAgent
+      tags:
+      - agents
+      summary: Update an agent's draft fields (merge; immutable fields rejected explicitly)
+      description: |
+        Write operation (agents.write, exactly OWNER/ADMIN). Merges the
+        provided DRAFT fields onto the live agent row: name, description,
+        instructions (the system prompt) and model. The version contract's
+        canonical `system_prompt` key is accepted as an alias of
+        `instructions`; supplying both with conflicting values is a 400.
+        Only provided fields change (merge semantics); provided
+        name/instructions/model must be non-blank strings.
+
+        IMMUTABILITY: any other request key — e.g. tools, config,
+        temperature, params, status, version, id, organization_id,
+        created_at, updated_at — is governed by the immutable published
+        version snapshots (or identity bookkeeping) and is REJECTED with 400
+        IMMUTABLE_FIELDS listing the offending keys. Fields are never
+        silently dropped; publish/rollback mutate those values through the
+        version lifecycle, not through this endpoint.
+
+        The tenant comes from the auth claims; cross-organization agents
+        surface as 404 (no existence leak). Success writes an `agent.updated`
+        audit entry (metadata carries the changed field names) and returns
+        the updated agent in the same representation as GET /agents/{id}
+        (the legacy PascalCase Agent encoding).
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AglAgentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AglUpdateAgentRequest'
+            example:
+              name: Support Agent v2
+              description: Handles billing questions
+              system_prompt: You are a precise support agent. Cite docs.
+              model: gpt-4o-mini
+      responses:
+        '200':
+          description: Agent updated; the response is the updated agent (same shape as GET /agents/{id}).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglAgent'
+        '400':
+          description: |
+            Malformed JSON body (INVALID_REQUEST), conflicting
+            instructions/system_prompt values (INVALID_REQUEST), or the body
+            contains immutable/unsupported fields outside the draft update
+            surface (IMMUTABLE_FIELDS — the message enumerates every
+            rejected key).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/AglUnauthorized'
+        '403':
+          $ref: '#/components/responses/AglForbidden'
+        '404':
+          description: Unknown agent or agent of another organization (AGENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+        '422':
+          description: |
+            Validation error (VALIDATION_ERROR): blank name/instructions/model
+            when provided, non-string values, or no updatable field present.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+    delete:
+      operationId: deleteAgent
+      tags:
+      - agents
+      summary: Delete an agent (hard delete, guarded by run references)
+      description: |
+        Write operation (agents.write, exactly OWNER/ADMIN). Performs a HARD
+        delete of the agent row within the caller's tenant — there is no
+        soft-delete: a successful delete removes the agents row and
+        subsequent GETs 404. Agent config versions, deployments (including
+        canary rows), schedules and memory snippets are removed by their
+        ON DELETE CASCADE foreign keys.
+
+        REFERENCE GUARD: runs.agent_id (migration 001, fk_runs_agent) has no
+        ON DELETE action, so the durable store itself refuses the delete
+        while runs still reference the agent. The endpoint checks first and
+        answers 409 AGENT_HAS_RUNS (message carries the run count) instead
+        of surfacing a raw foreign-key 500; the agent remains untouched and
+        no audit entry is written for a guarded delete. Delete the runs (or
+        reassign them) before deleting the agent.
+
+        The tenant comes from the auth claims; cross-organization or unknown
+        agents surface as 404 (no existence leak, zero writes). Success
+        writes an `agent.deleted` audit entry.
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AglAgentID'
+      responses:
+        '200':
+          description: Agent deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglDeleteAgentResponse'
+        '401':
+          $ref: '#/components/responses/AglUnauthorized'
+        '403':
+          $ref: '#/components/responses/AglForbidden'
+        '404':
+          description: Unknown agent or agent of another organization (AGENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+        '409':
+          description: |
+            The agent still has runs referencing it (AGENT_HAS_RUNS); the
+            delete was refused and the agent is unchanged. This mirrors the
+            durable runs FK (no ON DELETE action).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    AglAgentID:
+      name: id
+      in: path
+      required: true
+      description: Agent id (UUID, as returned by agent creation).
+      schema:
+        type: string
+        minLength: 1
+      example: 8f2b6f4a-2c1d-4e8a-9b3c-5d7e1f0a2b3c
+  responses:
+    AglUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AglErrorEnvelope'
+    AglForbidden:
+      description: Authenticated but lacking the required permission (agents.write is OWNER/ADMIN only).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AglErrorEnvelope'
+  schemas:
+    AglUpdateAgentRequest:
+      type: object
+      description: |
+        Merge-update payload for the agent's draft fields. Only the four
+        draft-updatable keys are accepted; every other key is rejected with
+        400 IMMUTABLE_FIELDS (never silently dropped). system_prompt is an
+        accepted alias of instructions. Leave a field absent to keep its
+        current value.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Display name (non-blank when provided).
+          examples:
+          - Support Agent v2
+        description:
+          type: string
+          description: Human-readable description (may be cleared with an empty string).
+        instructions:
+          type: string
+          minLength: 1
+          description: The agent's system prompt (non-blank when provided).
+        system_prompt:
+          type: string
+          minLength: 1
+          description: Alias of instructions (the version contract's canonical key); must agree with instructions when both are present.
+        model:
+          type: string
+          minLength: 1
+          description: Model identifier the agent runs on (non-blank when provided).
+          examples:
+          - gpt-4o-mini
+      additionalProperties: false
+    AglAgent:
+      type: object
+      description: |
+        Agent representation — identical to the base spec's Agent schema and
+        the GET /agents/{id} response (legacy PascalCase encoding of the
+        internal agents.Agent struct, unchanged by this fragment).
+      properties:
+        ID:
+          type: string
+        OrganizationID:
+          type: string
+        Name:
+          type: string
+        Description:
+          type: string
+        Instructions:
+          type: string
+        Model:
+          type: string
+        Status:
+          type: string
+          description: Agent lifecycle status (DRAFT on creation; mutated by the version lifecycle, not by PUT).
+          examples:
+          - DRAFT
+        CurrentVersionID:
+          type: string
+        CreatedAt:
+          type: string
+          format: date-time
+        UpdatedAt:
+          type: string
+          format: date-time
+      required:
+      - ID
+      - OrganizationID
+      - Name
+      - Model
+      - Status
+      - CreatedAt
+      - UpdatedAt
+    AglDeleteAgentResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          description: Always true on success.
+        id:
+          type: string
+          description: The deleted agent's id.
+      required:
+      - deleted
+      - id
+    AglErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of AGENT_NOT_FOUND, IMMUTABLE_FIELDS, AGENT_HAS_RUNS, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - AGENT_HAS_RUNS
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
