@@ -10,9 +10,10 @@
 //	agentosctl [-json] <command> [flags]
 //
 // Commands: login, register, whoami, agents, runs, workflows, knowledge,
-// usage, tools. Run `agentosctl <command> -h` for per-command flags. --json
-// is accepted before or after the command and emits machine-readable output
-// for every command.
+// usage, tools, billing, secrets, marketplace, connectors, api-keys, sso.
+// Run `agentosctl <command> -h` for per-command flags. --json is accepted
+// before or after the command and emits machine-readable output for every
+// command.
 package main
 
 import (
@@ -81,7 +82,7 @@ usage: agentosctl [-json] <command> [flags]
 commands:
 `)
 	for _, cmd := range commands {
-		fmt.Fprintf(w, "  %-10s %s\n", cmd.name, cmd.summary)
+		fmt.Fprintf(w, "  %-12s %s\n", cmd.name, cmd.summary)
 	}
 	fmt.Fprint(w, `
 global flags:
@@ -92,6 +93,9 @@ configuration:
   `+EnvURL+`      API base URL (default http://localhost:8080)
   `+EnvToken+`    bearer token (overrides the stored login token)
   `+EnvAPIKey+`  API key sent as X-API-Key
+  `+EnvSCIMToken+`
+                   scim_ credential for `+"`agentosctl sso list`"+` (never stored
+                   in the profile file)
   profile file:    `+mustConfigPath()+` (written by `+"`agentosctl login`"+`)
 
 examples:
@@ -101,6 +105,11 @@ examples:
   agentosctl agents run AGENT_ID "what is 2+2?"
   agentosctl runs watch RUN_ID
   agentosctl usage costs -group-by agent
+  agentosctl billing show
+  agentosctl secrets create -name STRIPE_KEY -value-file ./stripe.key
+  agentosctl marketplace search -q support
+  agentosctl api-keys create -name ci-deploy
+  agentosctl sso login acme-corp
 `)
 }
 

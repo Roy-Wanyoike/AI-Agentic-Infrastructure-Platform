@@ -18,6 +18,10 @@ func popFront(args *[]string) string {
 	return v
 }
 
+// dayLayout is the compact date format used by table/detail output for the
+// billing period columns (RFC3339 timestamps stay in --json output).
+const dayLayout = "2006-01-02"
+
 // ctxRun returns the context for command execution. The CLI is one-shot per
 // process, so the base context is used: the process lifetime is the command
 // lifetime and there is nothing to cancel from (main wires no signal

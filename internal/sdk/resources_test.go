@@ -14,11 +14,12 @@ import (
 )
 
 // newTestClient wires a client to an httptest server handled by h.
-func newTestClient(t *testing.T, h http.HandlerFunc) (*Client, *httptest.Server) {
+func newTestClient(t *testing.T, h http.HandlerFunc, opts ...Option) (*Client, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return New(WithBaseURL(srv.URL)), srv
+	all := append([]Option{WithBaseURL(srv.URL)}, opts...)
+	return New(all...), srv
 }
 
 // ---------- Agents (bare array + bare object envelopes) ----------

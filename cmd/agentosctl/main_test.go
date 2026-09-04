@@ -410,7 +410,12 @@ func TestRunHelpSubcommands(t *testing.T) {
 }
 
 func TestDispatchTableComplete(t *testing.T) {
-	want := []string{"login", "register", "whoami", "agents", "runs", "workflows", "knowledge", "usage", "tools"}
+	want := []string{
+		"login", "register", "whoami", "agents", "runs", "workflows",
+		"knowledge", "usage", "tools",
+		// issue #54: billing/secrets/marketplace/connectors/api-keys/sso parity
+		"billing", "secrets", "marketplace", "connectors", "api-keys", "sso",
+	}
 	got := listSubcommands()
 	if len(got) != len(want) {
 		t.Fatalf("commands = %v, want %v", got, want)
