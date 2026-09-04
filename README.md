@@ -9,6 +9,7 @@
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
 ![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1%C2%A0%C2%B7%C2%A086%20paths-6BA539)
 ![Tests](https://img.shields.io/badge/tests-38%20packages%20%E2%9C%94-3FB950)
+[![License](https://img.shields.io/badge/license-Apache_2.0-blue)](./LICENSE)
 
 **Author agents → version them → deploy with canary traffic splits → run on a durable queue → evaluate, govern, observe, and bill for every token.**
 
@@ -160,6 +161,12 @@ make lint && make verify    # gofmt + vet + build + test
 - [Architecture walkthrough](docs/architecture.md)
 - [OpenAPI contract](api/openapi.yaml) — import into Swagger UI / Postman
 - [Implementation plan](docs/agentos-implementation-plan.md)
+- [Contributing](CONTRIBUTING.md) — setup, quality gates, PR rules
+- [Security policy](SECURITY.md) — private disclosure and SLAs
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).
 
 ## Built in the open
 
