@@ -1,0 +1,387 @@
+# AgentOS API — OpenAPI 3.1 fragment for marketplace provenance (issue #78).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment
+# (MktSig* schema prefix is track-unique; operationIds verified unique against
+# the base spec and other fragments).
+#
+# ORCHESTRATOR NOTE (publish-request provenance fields): POST
+# /marketplace/listings accepts two OPTIONAL request properties on the
+# existing MktPublishRequest — `signature` (base64 detached Ed25519 signature
+# over the canonical manifest bytes, see GET provenance manifest_hash) and
+# `signing_key_id` (a key registered via POST /marketplace/keys of the
+# publisher org). Both together = signed publish; both omitted = legacy
+# unsigned publish (install-time policy applies). The merge folds these two
+# properties into the base MktPublishRequest exactly like canary.yaml's
+# one-property precedent.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (see base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation
+#   * structured error model {"error":{"code","message"}}
+paths:
+  /marketplace/keys:
+    post:
+      operationId: registerMarketplaceSigningKey
+      summary: Register a publisher signing key (public half)
+      description: |
+        Registers the PUBLIC half of an Ed25519 keypair for the caller's
+        organization. The private half NEVER leaves the publisher's client:
+        sign the canonical manifest bytes locally (detached signature, base64)
+        and pass it on publish. Duplicate (organization, public_key) pairs are
+        rejected with 409. Audited (marketplace.key_registered, no key
+        material in the audit row beyond the fingerprint).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MktSigRegisterRequest'
+      responses:
+        '201':
+          description: Key registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigKeyEnvelope'
+        '400':
+          description: Invalid request body or key material
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '403':
+          description: Authenticated principal lacks agents.write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '409':
+          description: The org already registered this public key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+    get:
+      operationId: listMarketplaceSigningKeys
+      summary: List the caller org's registered signing keys
+      description: |
+        Org-scoped listing, oldest first. Foreign keys are never visible.
+        Revoked keys remain listed (status "revoked") for auditability; they
+        cannot sign new publishes and block installs of listings they signed.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.read (all roles)
+      responses:
+        '200':
+          description: Keys (possibly empty)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigKeyListEnvelope'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+  /marketplace/keys/{keyId}:
+    delete:
+      operationId: revokeMarketplaceSigningKey
+      summary: Revoke a publisher signing key (idempotent)
+      description: |
+        Flips the key to revoked. Future publishes referencing it fail and
+        installs of listings signed by it are blocked (unknown_signing_key);
+        agents already installed are unaffected. Unknown AND foreign ids are
+        the same 404 (no existence leak). Audited (marketplace.key_revoked).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Revocation applied (idempotent)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigRevokedEnvelope'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '403':
+          description: Authenticated principal lacks agents.write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '404':
+          description: Unknown or foreign key id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+  /marketplace/listings/{slug}/provenance:
+    get:
+      operationId: getMarketplaceListingProvenance
+      summary: Verifiable origin document of a listing
+      description: |
+        Returns the provenance record of a listing: publisher org, signing key
+        id and fingerprint, algorithm, signed-at timestamp and the
+        content-addressed manifest hash recorded at publish time. Visibility
+        follows the listing's rules (published = global read; draft/unlisted =
+        publisher org only). Unsigned/legacy listings read back with
+        signed=false and empty provenance fields.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.read (all roles)
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Provenance document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigProvenanceEnvelope'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '404':
+          description: Unknown slug (or not visible to the caller's org)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+  /marketplace/settings:
+    get:
+      operationId: getMarketplaceSettings
+      summary: Read the caller org's marketplace install policy
+      description: |
+        Returns the org-level install policy. allow_unsigned defaults to
+        false — installs of unsigned new listings are blocked (default:
+        verify). Legacy listings created before signing shipped are always
+        installable (grandfathered).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.read (all roles)
+      responses:
+        '200':
+          description: Org install policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigSettingsEnvelope'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+    put:
+      operationId: setMarketplaceSettings
+      summary: Update the caller org's marketplace install policy
+      description: |
+        Sets allow_unsigned for the caller's organization. true permits
+        installs of unsigned NEW listings into this org; false (default)
+        requires a valid publisher signature. Audited.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MktSigSettingsUpdate'
+      responses:
+        '200':
+          description: Updated policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigSettingsEnvelope'
+        '400':
+          description: Missing allow_unsigned (boolean required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '403':
+          description: Authenticated principal lacks agents.write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+components:
+  # own components.securitySchemes (api/fragments/apikeys.yaml pattern) so
+  # this fragment validates standalone; the merge target already declares the
+  # identical pair and deduplicates on merge.
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    MktSigRegisterRequest:
+      type: object
+      required: [public_key]
+      properties:
+        public_key:
+          type: string
+          format: byte
+          description: Base64-encoded Ed25519 PUBLIC key material.
+        alg:
+          type: string
+          default: ed25519
+          description: Signature algorithm (currently only "ed25519").
+    MktSigKey:
+      type: object
+      properties:
+        id:
+          type: string
+        organization_id:
+          type: string
+        public_key:
+          type: string
+          format: byte
+        alg:
+          type: string
+        status:
+          type: string
+          enum: [active, revoked]
+        fingerprint:
+          type: string
+          description: Short SHA-256 fingerprint of the public key material.
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          description: RFC3339 timestamp, empty when active.
+    MktSigKeyEnvelope:
+      type: object
+      required: [key]
+      properties:
+        key:
+          $ref: '#/components/schemas/MktSigKey'
+    MktSigKeyListEnvelope:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/MktSigKey'
+    MktSigRevokedEnvelope:
+      type: object
+      required: [revoked]
+      properties:
+        revoked:
+          type: boolean
+    MktSigProvenance:
+      type: object
+      properties:
+        slug:
+          type: string
+        publisher_org_id:
+          type: string
+        signing_key_id:
+          type: string
+          description: Empty for unsigned (legacy) listings.
+        fingerprint:
+          type: string
+          description: Fingerprint of the signing key; empty when unsigned.
+        alg:
+          type: string
+        signed:
+          type: boolean
+        signed_at:
+          type: string
+          description: RFC3339 timestamp of the publish-time signature; empty when unsigned.
+        manifest_hash:
+          type: string
+          description: Content-addressed SHA-256 of the canonical manifest; empty when unsigned.
+    MktSigProvenanceEnvelope:
+      type: object
+      required: [provenance]
+      properties:
+        provenance:
+          $ref: '#/components/schemas/MktSigProvenance'
+    MktSigSettings:
+      type: object
+      required: [allow_unsigned]
+      properties:
+        allow_unsigned:
+          type: boolean
+          description: When true, installs of unsigned new listings are permitted for this org.
+    MktSigSettingsEnvelope:
+      type: object
+      required: [settings]
+      properties:
+        settings:
+          $ref: '#/components/schemas/MktSigSettings'
+    MktSigSettingsUpdate:
+      type: object
+      required: [allow_unsigned]
+      properties:
+        allow_unsigned:
+          type: boolean
+    MktSigError:
+      type: object
+      description: Structured error envelope (mirrors the base spec error model).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: >
+                Machine-readable code, e.g. SIGNING_KEY_NOT_FOUND,
+                SIGNATURE_INVALID, UNSIGNED_LISTING, SNAPSHOT_TAMPERED,
+                UNKNOWN_SIGNING_KEY, SIGNATURE_INCOMPLETE.
+            message:
+              type: string

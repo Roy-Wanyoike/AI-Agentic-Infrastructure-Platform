@@ -22,6 +22,10 @@ import (
 //      POST   /marketplace/listings/{slug}/install (agents.write — OWNER/ADMIN) install
 //      DELETE /marketplace/listings/{slug}     (agents.write — OWNER/ADMIN) unlist
 //
+// The issue-#78 publisher-provenance surface (signing keys, provenance,
+// install policy) is mounted by registerMarketplaceSigningRoutes in
+// marketplace_signing.go, called from registerMarketplaceRoutes below.
+//
 // Routes are registered on apiMux so main.go serves them under both /v1 and
 // /api/v1 (StripPrefix mounting).
 //
@@ -58,6 +62,10 @@ func registerMarketplaceRoutes(apiMux *http.ServeMux, svc *marketplace.Service, 
 	apiMux.Handle("GET /marketplace/listings/{slug}", wrap(auth.PermissionAgentsRead, http.HandlerFunc(getListingHandler(svc))))
 	apiMux.Handle("POST /marketplace/listings/{slug}/install", wrap(auth.PermissionAgentsWrite, http.HandlerFunc(installListingHandler(svc, auditSvc))))
 	apiMux.Handle("DELETE /marketplace/listings/{slug}", wrap(auth.PermissionAgentsWrite, http.HandlerFunc(unlistListingHandler(svc, auditSvc))))
+
+	// Issue #78 publisher provenance: key registration/list/revoke, listing
+	// provenance and the org-level allow_unsigned install policy.
+	registerMarketplaceSigningRoutes(apiMux, svc, authSvc, apiKeysSvc, auditSvc)
 }
 
 // writeJSONMkt serializes v with the given status (distinct name to avoid
@@ -79,10 +87,33 @@ func writeMktError(w http.ResponseWriter, status int, code, message string) {
 // mapMktError converts marketplace service errors into contract error
 // responses. ErrNotFound deliberately covers unknown slugs AND foreign-org
 // draft/unlisted listings (no existence leak across tenants).
+//
+// Install-verification blocks (issue #78) are 409 CONFLICT with the distinct
+// machine codes the issue mandates: UNSIGNED_LISTING, UNKNOWN_SIGNING_KEY,
+// SIGNATURE_INVALID, SNAPSHOT_TAMPERED. Signing-key management errors follow
+// the key lifecycle: unknown/foreign keys are 404 SIGNING_KEY_NOT_FOUND (no
+// existence leak), duplicates 409 SIGNING_KEY_ALREADY_REGISTERED.
 func mapMktError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, marketplace.ErrNotFound):
 		writeMktError(w, http.StatusNotFound, "LISTING_NOT_FOUND", "marketplace listing not found")
+	case errors.Is(err, marketplace.ErrUnsignedListing):
+		writeMktError(w, http.StatusConflict, "UNSIGNED_LISTING", "listing is unsigned and this organization requires signed listings")
+	case errors.Is(err, marketplace.ErrUnknownSigningKey):
+		writeMktError(w, http.StatusConflict, "UNKNOWN_SIGNING_KEY", "signing key is not registered (or has been revoked) for the publisher organization")
+	case errors.Is(err, marketplace.ErrSignatureInvalid):
+		writeMktError(w, http.StatusConflict, "SIGNATURE_INVALID", "listing signature does not verify")
+	case errors.Is(err, marketplace.ErrSnapshotTampered):
+		writeMktError(w, http.StatusConflict, "SNAPSHOT_TAMPERED", "listing snapshot does not match the manifest hash recorded at publish time")
+	case errors.Is(err, marketplace.ErrSignatureIncomplete):
+		writeMktError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", marketplace.ErrSignatureIncomplete.Error())
+	case errors.Is(err, marketplace.ErrKeyNotFound):
+		writeMktError(w, http.StatusNotFound, "SIGNING_KEY_NOT_FOUND", "marketplace signing key not found")
+	case errors.Is(err, marketplace.ErrDuplicateKey):
+		writeMktError(w, http.StatusConflict, "SIGNING_KEY_ALREADY_REGISTERED", "signing key already registered")
+	case errors.Is(err, marketplace.ErrPublicKeyInvalid),
+		errors.Is(err, marketplace.ErrAlgUnsupported):
+		writeMktError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
 	case errors.Is(err, marketplace.ErrDuplicateSlug):
 		writeMktError(w, http.StatusConflict, "SLUG_ALREADY_EXISTS", "a listing with this slug already exists")
 	case errors.Is(err, marketplace.ErrNotPublished):
@@ -104,7 +135,8 @@ func mapMktError(w http.ResponseWriter, err error) {
 		errors.Is(err, marketplace.ErrTagTooLong),
 		errors.Is(err, marketplace.ErrStatusInvalid):
 		writeMktError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
-	case errors.Is(err, marketplace.ErrVersionSourceUnavailable):
+	case errors.Is(err, marketplace.ErrVersionSourceUnavailable),
+		errors.Is(err, marketplace.ErrSigningStoreUnavailable):
 		writeMktError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error")
 	case errors.Is(err, marketplace.ErrNameCollision):
 		writeMktError(w, http.StatusConflict, "NAME_COLLISION", err.Error())
@@ -138,8 +170,13 @@ func listingJSON(l *marketplace.Listing) map[string]any {
 		"status":            l.Status,
 		"download_count":    l.DownloadCount,
 		"version_snapshot":  snapshot,
-		"created_at":        l.CreatedAt.UTC().Format(time.RFC3339),
-		"updated_at":        l.UpdatedAt.UTC().Format(time.RFC3339),
+		// Provenance summary (issue #78); the full document lives at
+		// GET /marketplace/listings/{slug}/provenance.
+		"signed":         l.Signature != "",
+		"signing_key_id": l.SigningKeyID,
+		"manifest_hash":  l.ManifestHash,
+		"created_at":     l.CreatedAt.UTC().Format(time.RFC3339),
+		"updated_at":     l.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -153,13 +190,15 @@ func publishListingHandler(svc *marketplace.Service, auditSvc *audit.Service) ht
 			return
 		}
 		var req struct {
-			AgentID     string   `json:"agent_id"`
-			Version     int      `json:"version"`
-			Name        string   `json:"name"`
-			Slug        string   `json:"slug"`
-			Description string   `json:"description"`
-			Tags        []string `json:"tags"`
-			Status      string   `json:"status"`
+			AgentID      string   `json:"agent_id"`
+			Version      int      `json:"version"`
+			Name         string   `json:"name"`
+			Slug         string   `json:"slug"`
+			Description  string   `json:"description"`
+			Tags         []string `json:"tags"`
+			Status       string   `json:"status"`
+			Signature    string   `json:"signature"`
+			SigningKeyID string   `json:"signing_key_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeMktError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
@@ -168,13 +207,15 @@ func publishListingHandler(svc *marketplace.Service, auditSvc *audit.Service) ht
 		// Tenant guard: the listing is published by the CALLER's organization;
 		// client-supplied org ids are ignored by design.
 		listing, err := svc.Publish(r.Context(), claims.OrganizationID, claims.UserID, marketplace.PublishInput{
-			AgentID:     req.AgentID,
-			Version:     req.Version,
-			Name:        req.Name,
-			Slug:        req.Slug,
-			Description: req.Description,
-			Tags:        req.Tags,
-			Status:      req.Status,
+			AgentID:      req.AgentID,
+			Version:      req.Version,
+			Name:         req.Name,
+			Slug:         req.Slug,
+			Description:  req.Description,
+			Tags:         req.Tags,
+			Status:       req.Status,
+			Signature:    req.Signature,
+			SigningKeyID: req.SigningKeyID,
 		})
 		if err != nil {
 			mapMktError(w, err)
