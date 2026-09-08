@@ -435,7 +435,7 @@ func (a *app) routes() http.Handler {
 		observability.NewRateLimiter(limit, window),
 		limit, window,
 	)
-	return observability.MetricsMiddleware(a.metricsSvc, rateLimit(corsMiddleware(mux)))
+	return tracingMiddleware(observability.MetricsMiddleware(a.metricsSvc, rateLimit(corsMiddleware(mux))))
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -478,6 +478,16 @@ func corsMiddleware(next http.Handler) http.Handler {
 func main() {
 	cfg := config.Load()
 	logr := logger.New(cfg.Env)
+
+	// Issue #80: OTel tracing (default OFF — AGENTOS_TRACING_ENABLED). Reads
+	// the flag once; when enabled installs the SDK tracer provider exporting
+	// OTLP/HTTP to OTEL_EXPORTER_OTLP_ENDPOINT before the server is built.
+	traceShutdown, terr := observability.SetupTracing(context.Background(), observability.TracingConfigFromEnv())
+	if terr != nil {
+		logr.Warn("tracing disabled", "error", terr.Error())
+	} else {
+		defer func() { _ = traceShutdown(context.Background()) }()
+	}
 
 	// Issue #55: JWT production guard. The API must never boot in production
 	// with the public development signing secret. Dev/zero-infra behavior is
