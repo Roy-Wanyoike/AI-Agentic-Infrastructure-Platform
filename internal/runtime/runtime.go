@@ -8,6 +8,8 @@
 //   - per-tool-call timeout
 //   - caller context cancellation is honored between and during steps
 //   - loop detection (identical tool call repeated too many times)
+//   - governance policy checks at the tool seam (issue #75): a tool denied
+//     by policy is never invoked; the denial is visible on the step
 //   - retries are left to the provider/router layer; the loop itself never
 //     silently retries non-transient failures
 //
@@ -31,6 +33,7 @@ import (
 	"agentos/internal/agents"
 	"agentos/internal/models"
 	"agentos/internal/observability"
+	"agentos/internal/policies"
 	"agentos/internal/tools"
 )
 
@@ -65,6 +68,50 @@ const (
 	StepFailed    = "failed"
 )
 
+// PolicyDecision carries the governance verdict that shaped a step (issue
+// #75). It mirrors the evaluated policies.Decision so step records (and the
+// run_steps output_meta documents built from them) can show WHY a tool was
+// denied without importing the policy engine's types into the timeline.
+type PolicyDecision struct {
+	PolicyID string `json:"policy_id,omitempty"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+}
+
+// Tool policy outcome codes recorded on denied/blocked steps. They match the
+// error codes the create-run enforcement answers with so operators grep one
+// vocabulary across run creation, steps and audit.
+const (
+	ToolPolicyDeniedCode      = "policy_denied"
+	ToolPolicyUnavailableCode = "policy_unavailable"
+)
+
+// ToolPolicyError marks a tool invocation that was blocked BEFORE execution
+// by the governance seam (issue #75). Code distinguishes an explicit policy
+// denial (policy_denied) from a failing decision source that failed closed
+// (policy_unavailable).
+type ToolPolicyError struct {
+	Tool     string
+	Code     string
+	Decision *policies.Decision
+	Err      error // underlying evaluation failure (unavailable only)
+}
+
+// Error implements error.
+func (e *ToolPolicyError) Error() string {
+	if e.Code == ToolPolicyUnavailableCode {
+		return fmt.Sprintf("%s: policy evaluation for tool %q failed: %v", e.Code, e.Tool, e.Err)
+	}
+	reason := ""
+	if e.Decision != nil {
+		reason = e.Decision.Reason
+	}
+	return fmt.Sprintf("%s: tool %q denied by policy: %s", e.Code, e.Tool, reason)
+}
+
+// Unwrap exposes the underlying evaluation failure.
+func (e *ToolPolicyError) Unwrap() error { return e.Err }
+
 // Step is one recorded unit of execution: either a model call or a tool call.
 // The coordinator persists these as run_steps rows for the execution timeline.
 type Step struct {
@@ -77,6 +124,10 @@ type Step struct {
 	Error      string
 	DurationMS int64
 	TokenUsage models.Usage
+	// Policy is set when a governance decision shaped this step (issue
+	// #75): tool denials and fail-closed evaluation failures carry the
+	// policy id, decision and reason for the dashboard/audit trail.
+	Policy *PolicyDecision
 }
 
 // StepRecorder receives every step as it completes. Implementations must be
@@ -141,6 +192,13 @@ type Runner struct {
 	// the agentos_tools_total counter for every recorded tool step. See
 	// WithMetrics / SetMetrics.
 	metrics *observability.Metrics
+	// policy is optional (nil-safe DI, issue #75): when wired, every tool
+	// invocation is evaluated against the organization's governance
+	// policies BEFORE execution and a denied tool is never invoked. The
+	// run scope (tenant + environment) is read from the caller-stamped
+	// context (policies.WithRunScope). See WithPolicyEnforcer /
+	// SetPolicyEnforcer.
+	policy *policies.Enforcer
 }
 
 // Option configures a Runner.
@@ -162,6 +220,13 @@ func WithStepRecorder(rec StepRecorder) Option {
 // Passing nil disables the counter (nil-safe DI, issue #12).
 func WithMetrics(m *observability.Metrics) Option {
 	return func(r *Runner) { r.metrics = m }
+}
+
+// WithPolicyEnforcer attaches the governance enforcement seam (issue #75):
+// tool invocations are evaluated before execution and denied tools are never
+// invoked. Passing nil keeps the legacy always-allow behavior (nil-safe DI).
+func WithPolicyEnforcer(e *policies.Enforcer) Option {
+	return func(r *Runner) { r.policy = e }
 }
 
 // WithLimits overrides max model steps and max total runtime. Values <= 0
@@ -207,6 +272,17 @@ func (r *Runner) SetMetrics(m *observability.Metrics) {
 		return
 	}
 	r.metrics = m
+}
+
+// SetPolicyEnforcer attaches (or clears, via nil) the governance enforcement
+// seam after construction. Nil-safe on the receiver. Like the Option
+// constructors, call this before runs are in flight (the Runner is not
+// lock-protected).
+func (r *Runner) SetPolicyEnforcer(e *policies.Enforcer) {
+	if r == nil {
+		return
+	}
+	r.policy = e
 }
 
 // NewRunnerWithOptions builds a Runner with options applied.
@@ -330,7 +406,20 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 	// Offline mode: no provider configured -> legacy deterministic behavior.
 	if r.provider == nil {
 		if expr := extractMathExpression(input); expr != "" {
-			if out, ok := r.runCalculator(expr); ok {
+			// Issue #75: the offline calculator path goes through the
+			// same governance seam as the provider loop — a denied
+			// tool is never invoked and the denial is visible on the
+			// recorded step; the run then completes through the
+			// offline-fallback answer below (skip semantics).
+			if decision, code, blocked := r.checkToolPolicy(ctx, "calculator"); blocked {
+				r.record(ctx, run.ID, Step{
+					Index: 1, Type: StepTypeTool, Name: "calculator",
+					Status: StepFailed, Input: expr,
+					Output: policyObservation(&decision),
+					Error:  policyStepError(code, "calculator", decision),
+					Policy: policyStepField(decision),
+				})
+			} else if out, ok := r.runCalculator(expr); ok {
 				r.record(ctx, run.ID, Step{
 					Index: 1, Type: StepTypeTool, Name: "calculator",
 					Status: StepSucceeded, Input: expr, Output: out,
@@ -437,10 +526,24 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			toolStep.Status = StepFailed
 			toolStep.Error = toolErr.Error()
 			toolStep.DurationMS = 0
+			// Issue #75: policy blocks surface the verdict on the
+			// step (policy id + decision + reason) and the
+			// observation fed back to the model says the tool was
+			// withheld by governance, not that it failed.
+			var policyErr *ToolPolicyError
+			if errors.As(toolErr, &policyErr) {
+				toolStep.Output = truncateForRecord(policyObservation(policyErr.Decision), 512)
+				if policyErr.Decision != nil {
+					toolStep.Policy = policyStepField(*policyErr.Decision)
+				}
+			}
 			r.record(ctx, run.ID, toolStep)
 			// Feed the failure back to the model so it can adapt; the loop
 			// bound protects against infinite failure retries.
 			observation = fmt.Sprintf("tool error: %v", toolErr)
+			if errors.As(toolErr, &policyErr) {
+				observation = policyObservation(policyErr.Decision)
+			}
 		} else {
 			toolStep.Status = StepSucceeded
 			r.record(ctx, run.ID, toolStep)
@@ -455,8 +558,14 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 }
 
 // executeTool runs one tool call with the configured timeout, preferring the
-// context-aware path when the tool supports it.
+// context-aware path when the tool supports it. Issue #75: the governance
+// policy is evaluated BEFORE the tool is resolved or executed — a denied (or
+// require_approval-gated) tool, or a failing decision source (fail closed),
+// returns a ToolPolicyError and the tool is never invoked.
 func (r *Runner) executeTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	if decision, code, blocked := r.checkToolPolicy(ctx, name); blocked {
+		return "", &ToolPolicyError{Tool: name, Code: code, Decision: &decision}
+	}
 	if r.toolRegistry == nil {
 		return "", fmt.Errorf("tool %q is not registered", name)
 	}
@@ -480,6 +589,58 @@ func (r *Runner) executeTool(ctx context.Context, name string, args map[string]a
 		return "", err
 	}
 	return formatToolResult(result), nil
+}
+
+// checkToolPolicy consults the optional governance seam (nil enforcer =
+// disabled). It reports blocked=true (with the ToolPolicyError code) when
+// the invocation must NOT execute: an explicit deny, a require_approval
+// decision (mid-run approval pauses are not supported, so an
+// approval-gated tool fails closed with the reason), or a failing decision
+// source (ToolPolicyUnavailableCode). The returned Decision carries the
+// reason for the step record and the model observation.
+func (r *Runner) checkToolPolicy(ctx context.Context, name string) (policies.Decision, string, bool) {
+	if !r.policy.Enabled() {
+		return policies.Decision{}, "", false
+	}
+	scope := policies.RunScopeFromContext(ctx)
+	decision, err := r.policy.AuthorizeToolCall(ctx, scope.OrganizationID, name, scope.Environment)
+	if err != nil {
+		// Fail closed: a governance outage must degrade to "no tools
+		// execute", never to "policies bypassed".
+		return policies.Decision{Decision: policies.EffectDeny, Reason: err.Error()}, ToolPolicyUnavailableCode, true
+	}
+	if decision.Allowed() && !decision.RequireApproval {
+		return decision, "", false
+	}
+	return decision, ToolPolicyDeniedCode, true
+}
+
+// policyStepError renders the step error string for a blocked invocation.
+func policyStepError(code, tool string, decision policies.Decision) string {
+	return (&ToolPolicyError{Tool: tool, Code: code, Decision: &decision}).Error()
+}
+
+// policyStepField renders a decision for the Step.Policy record.
+func policyStepField(decision policies.Decision) *PolicyDecision {
+	return &PolicyDecision{
+		PolicyID: decision.MatchedPolicyID,
+		Decision: decision.Decision,
+		Reason:   decision.Reason,
+	}
+}
+
+// policyObservation is the observation fed back to the model when a tool is
+// withheld by governance. It states the denial explicitly so the model can
+// produce its answer without the tool.
+func policyObservation(decision *policies.Decision) string {
+	reason := ""
+	if decision != nil {
+		reason = decision.Reason
+	}
+	if reason == "" {
+		return "tool denied by policy"
+	}
+	return "tool denied by policy: " + reason
 }
 
 // record pushes a step to the recorder and maintains the agentos_tools_total

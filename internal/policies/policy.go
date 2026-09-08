@@ -181,6 +181,22 @@ type Decision struct {
 	Decision        string `json:"decision"` // allow | deny
 	MatchedPolicyID string `json:"matched_policy_id"`
 	Reason          string `json:"reason"`
+	// RequireApproval reports whether the winning policy carries the
+	// require_approval condition (issue #75). It is additive metadata:
+	// enforcement seams route allow+require_approval decisions into the
+	// approvals flow (WAITING_APPROVAL) instead of executing, while the
+	// evaluate endpoint simply surfaces the field.
+	RequireApproval bool `json:"require_approval,omitempty"`
+}
+
+// Allowed reports whether the decision permits the action to proceed.
+// A nil decision (no evaluation happened) is treated as allowed so
+// optional-seam callers keep their legacy behavior.
+func (d Decision) Allowed() bool {
+	if d.Decision == "" {
+		return true
+	}
+	return d.Decision == EffectAllow
 }
 
 // requestTool resolves the tool identity a policy's tool_allowlist matches
@@ -286,5 +302,6 @@ func Evaluate(candidates []*Policy, req EvaluateRequest) Decision {
 		Decision:        winner.Effect,
 		MatchedPolicyID: winner.ID,
 		Reason:          reason,
+		RequireApproval: winner.Conditions.RequireApproval,
 	}
 }

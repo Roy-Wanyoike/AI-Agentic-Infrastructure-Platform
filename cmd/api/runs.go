@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"agentos/internal/approvals"
 	"agentos/internal/audit"
 	"agentos/internal/auth"
 	"agentos/internal/billing"
+	"agentos/internal/policies"
 	"agentos/internal/queue"
 	"agentos/internal/runs"
 )
@@ -22,6 +28,163 @@ var runsServiceVar *runs.Service
 // BILLING_UNAVAILABLE whenever AGENTOS_BILLING_ENFORCEMENT is on, so a
 // half-wired rollout fails loudly instead of silently bypassing the quota.
 var billingServiceVar *billing.Service
+
+// policyEnforcementVar carries the governance enforcement seam (issue #75) to
+// the create-run handler, mirroring the runsServiceVar/billingServiceVar
+// wiring precedent: newApp assigns it after construction and tests wire it
+// directly. When nil (or its enforcer disabled), run creation keeps the
+// legacy always-allow behavior — no policy evaluation, no policy steps.
+var policyEnforcementVar *runPolicyEnforcement
+
+// Reason codes answered by the run-creation enforcement gate. They match the
+// step-error codes the runtime tool seam records so one vocabulary spans run
+// creation, steps and audit.
+const (
+	reasonPolicyDenied      = "policy_denied"
+	reasonPolicyUnavailable = "policy_unavailable"
+)
+
+// runPolicyEnforcement bundles the policy service (shared with the
+// governance CRUD routes so POST /policies/create is immediately visible to
+// enforcement), the run-creation decision source and the approvals service
+// that receives require_approval pauses.
+type runPolicyEnforcement struct {
+	Policies  *policies.Service
+	Enforcer  *policies.Enforcer
+	Approvals *approvals.Service
+}
+
+// newRunPolicyEnforcement builds the seam in the established dual-mode
+// fashion: the policies service picks its store from db (Postgres when
+// non-nil, in-memory otherwise).
+func newRunPolicyEnforcement(db *sql.DB, apSvc *approvals.Service) *runPolicyEnforcement {
+	polSvc := newPoliciesService(db)
+	return &runPolicyEnforcement{
+		Policies:  polSvc,
+		Enforcer:  policies.NewEnforcer(polSvc),
+		Approvals: apSvc,
+	}
+}
+
+// sharedPoliciesService returns the policies service shared between the
+// governance CRUD routes and the enforcement seam. routes() uses it so both
+// surfaces see ONE tenant's policies in every mode (two in-memory services
+// would silently disagree in zero-infrastructure deployments). When the
+// enforcement wiring is absent (tests that construct routes() without opting
+// in) it falls back to a fresh dual-mode service, preserving legacy behavior.
+func (a *app) sharedPoliciesService() *policies.Service {
+	if policyEnforcementVar != nil && policyEnforcementVar.Policies != nil {
+		return policyEnforcementVar.Policies
+	}
+	return newPoliciesService(a.db)
+}
+
+// runPolicyVerdict is the outcome of the create-run policy gate.
+type runPolicyVerdict struct {
+	decision policies.Decision
+	// enforced reports whether an active enforcement seam evaluated the
+	// request (false = disabled/unwired: legacy behavior, no policy traces).
+	enforced bool
+	// approvalID is the approval request filed for a require_approval pause
+	// (empty otherwise); it is echoed in the 202 response.
+	approvalID string
+}
+
+// enforceRunPolicy is the create-run governance gate (issue #75). It runs
+// AFTER RBAC (the route middleware) and BEFORE the quota gate and any run
+// row exists, so a refusal leaves no run behind. Decision matrix:
+//
+//   - seam unwired / flag off -> allow (legacy behavior; enforced=false)
+//   - evaluation fails        -> 503 policy_unavailable (fail closed: an
+//     operator asked for enforcement, a failing policy source must surface,
+//     never silently bypass) + audit entry
+//   - decision deny           -> 403 policy_denied with the decision reason
+//   - audit entry; no run row, no queue task
+//   - decision allow with
+//     require_approval         -> caller parks the run in WAITING_APPROVAL
+//     and files an approval request (verified here: the approvals service
+//     must be wired, else 503 fail closed)
+//   - decision allow           -> run proceeds; the verdict is recorded on
+//     the run's timeline (policy step) so the dashboard shows WHY
+func enforceRunPolicy(w http.ResponseWriter, r *http.Request, orgID, agentID, environment string, estimatedCostCents int64, auditSvc *audit.Service) (runPolicyVerdict, bool) {
+	verdict := runPolicyVerdict{decision: policies.Decision{Decision: policies.EffectAllow, Reason: "policy enforcement disabled"}}
+	seam := policyEnforcementVar
+	if seam == nil || !seam.Enforcer.Enabled() {
+		return verdict, true
+	}
+	verdict.enforced = true
+	decision, err := seam.Enforcer.AuthorizeRunCreation(r.Context(), orgID, agentID, environment, estimatedCostCents)
+	if err != nil {
+		// Fail closed with a distinct code so operators can tell a policy
+		// denial from a broken decision source.
+		if auditSvc != nil {
+			if claims, claimsErr := auth.ExtractClaims(r.Context()); claimsErr == nil {
+				_, _ = auditSvc.LogCtx(r.Context(), claims.UserID, "run.policy_unavailable", orgID, "runs/-", map[string]any{
+					"reason":   err.Error(),
+					"agent_id": agentID,
+				})
+			}
+		}
+		writeRunError(w, http.StatusServiceUnavailable, reasonPolicyUnavailable, err.Error())
+		return verdict, false
+	}
+	verdict.decision = decision
+	if !decision.Allowed() {
+		if auditSvc != nil {
+			if claims, claimsErr := auth.ExtractClaims(r.Context()); claimsErr == nil {
+				_, _ = auditSvc.LogCtx(r.Context(), claims.UserID, "run.policy_denied", orgID, "runs/-", map[string]any{
+					"reason":      decision.Reason,
+					"policy_id":   decision.MatchedPolicyID,
+					"decision":    decision.Decision,
+					"agent_id":    agentID,
+					"environment": environment,
+				})
+			}
+		}
+		writeRunError(w, http.StatusForbidden, reasonPolicyDenied, policies.DenyMessage("run", decision))
+		return verdict, false
+	}
+	if decision.RequireApproval && (seam.Approvals == nil) {
+		// Approval routing was requested by policy but the approvals flow is
+		// not wired: failing open would execute an action an operator
+		// explicitly gated.
+		writeRunError(w, http.StatusServiceUnavailable, reasonPolicyUnavailable, "require_approval policy matched but the approvals service is not available")
+		return verdict, false
+	}
+	return verdict, true
+}
+
+// recordPolicyEvaluationStep appends the policy verdict to the run timeline
+// (run_steps row, step_type "policy") so GET /runs/{id}/steps and the
+// dashboard show WHY a run was allowed, denied or parked for approval.
+// Best-effort: observability must never block run acceptance.
+func recordPolicyEvaluationStep(ctx context.Context, orgID, runID string, verdict runPolicyVerdict, agentID, environment string, estimatedCostCents int64) {
+	if !verdict.enforced || runsServiceVar == nil {
+		return
+	}
+	now := time.Now().UTC()
+	step := &runs.Step{
+		StepType: "policy",
+		Status:   "succeeded",
+		InputMeta: map[string]any{
+			"action":               policies.ActionRunExecute,
+			"agent_id":             agentID,
+			"environment":          environment,
+			"estimated_cost_cents": estimatedCostCents,
+		},
+		OutputMeta: map[string]any{
+			"policy_id":        verdict.decision.MatchedPolicyID,
+			"decision":         verdict.decision.Decision,
+			"reason":           verdict.decision.Reason,
+			"require_approval": verdict.decision.RequireApproval,
+		},
+		StartedAt:   now,
+		CompletedAt: now,
+	}
+	if err := runsServiceVar.RecordStep(ctx, orgID, runID, step); err != nil {
+		slog.Warn("policy evaluation step not recorded", "run_id", runID, "error", err.Error())
+	}
+}
 
 // writeRunError emits the structured {"error":{"code","message"}} envelope
 // used by the quota enforcement paths (issue #47). The legacy handlers below
@@ -100,6 +263,12 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.Hand
 			OrganizationID string `json:"organization_id"`
 			AgentID        string `json:"agent_id"`
 			Input          string `json:"input"`
+			// issue #75: optional governance context. Environment
+			// feeds the policies' environments condition (default
+			// "production"); EstimatedCostCents feeds the
+			// max_cost_cents budget-guard condition.
+			Environment        string `json:"environment,omitempty"`
+			EstimatedCostCents int64  `json:"estimated_cost_cents,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -118,6 +287,16 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.Hand
 		}
 		if strings.TrimSpace(req.AgentID) == "" {
 			http.Error(w, "agent id is required", http.StatusBadRequest)
+			return
+		}
+		// issue #75: governance gate BEFORE the quota gate and before
+		// any run row exists — policy refusals (deny / failing policy
+		// source) leave no run behind, only the response and their
+		// audit entry. The verdict rides along so the accepted-run
+		// paths below can record it on the timeline and route
+		// require_approval decisions into the approvals flow.
+		verdict, ok := enforceRunPolicy(w, r, req.OrganizationID, req.AgentID, req.Environment, req.EstimatedCostCents, auditSvc)
+		if !ok {
 			return
 		}
 		// issue #47: quota gate BEFORE the run row is created and BEFORE the
@@ -140,12 +319,59 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.Hand
 			}
 			runID = run.ID
 		}
+
+		// issue #75: require_approval decisions park the run in
+		// WAITING_APPROVAL and file an approval request INSTEAD of
+		// enqueueing execution. An operator approval resumes the run
+		// (approvalRunController) and re-enqueues it.
+		if verdict.decision.RequireApproval && verdict.enforced {
+			if runID == "" {
+				// No runs service wired: the pause flow needs a
+				// run row to gate on — fail loudly rather than
+				// executing an approval-gated run.
+				http.Error(w, "require_approval policy matched but the runs service is not available", http.StatusServiceUnavailable)
+				return
+			}
+			approvalID, err := parkRunForApproval(r.Context(), req.OrganizationID, runID, verdict, req.AgentID, req.Environment, req.EstimatedCostCents, auditSvc)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			verdict.approvalID = approvalID
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			resp := map[string]any{
+				"run_id": runID,
+				"status": string(runs.StatusWaitingApproval),
+				"policy": map[string]any{
+					"policy_id":        verdict.decision.MatchedPolicyID,
+					"decision":         verdict.decision.Decision,
+					"reason":           verdict.decision.Reason,
+					"require_approval": true,
+				},
+			}
+			if verdict.approvalID != "" {
+				resp["approval_id"] = verdict.approvalID
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// issue #75: record the verdict on the run timeline so the
+		// dashboard/audit can show why the run was accepted.
+		recordPolicyEvaluationStep(r.Context(), req.OrganizationID, runID, verdict, req.AgentID, req.Environment, req.EstimatedCostCents)
+
 		if workQueue == nil {
 			workQueue = queue.NewQueue()
 		}
 		payload := map[string]any{"organization_id": req.OrganizationID, "agent_id": req.AgentID, "input": req.Input}
 		if runID != "" {
 			payload["run_id"] = runID
+		}
+		if env := strings.TrimSpace(req.Environment); env != "" {
+			// issue #75: the worker stamps the tool-policy scope
+			// from this field; blank keeps the platform default.
+			payload["environment"] = env
 		}
 		task := workQueue.Enqueue("agent.run", payload)
 		if task == nil {
@@ -166,6 +392,108 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.Hand
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": runID, "status": "queued"})
 	}
+}
+
+// parkRunForApproval routes an approval-gated run into the existing approvals
+// flow (issue #75): the run is transitioned QUEUED -> WAITING_APPROVAL, a
+// pending approval linked to the run is filed for the operators, the policy
+// verdict lands on the run timeline, and the decision is audited. Execution
+// is NOT enqueued; the approval decision resumes the run through the
+// approvalRunController wired into the approvals service. It returns the
+// filed approval id (empty when the approvals service is unwired).
+func parkRunForApproval(ctx context.Context, orgID, runID string, verdict runPolicyVerdict, agentID, environment string, estimatedCostCents int64, auditSvc *audit.Service) (string, error) {
+	decision := verdict.decision
+	if runsServiceVar != nil {
+		if err := runsServiceVar.UpdateStatusCtx(ctx, orgID, runID, runs.StatusWaitingApproval, ""); err != nil {
+			return "", err
+		}
+	}
+	recordPolicyEvaluationStep(ctx, orgID, runID, runPolicyVerdict{decision: decision, enforced: verdict.enforced}, agentID, environment, estimatedCostCents)
+
+	claims, claimsErr := auth.ExtractClaims(ctx)
+	var requester string
+	if claimsErr == nil {
+		requester = claims.UserID
+	}
+	var approvalID string
+	if seam := policyEnforcementVar; seam != nil && seam.Approvals != nil {
+		approval, err := seam.Approvals.Request(ctx, orgID, approvals.RequestInput{
+			RunID:     runID,
+			Resource:  "runs/" + runID,
+			Action:    policies.ActionRunExecute,
+			Reason:    decision.Reason,
+			Risk:      approvals.RiskMedium,
+			Requester: requester,
+		})
+		if err != nil {
+			return "", err
+		}
+		approvalID = approval.ID
+	}
+	if auditSvc != nil && claimsErr == nil {
+		_, _ = auditSvc.LogCtx(ctx, claims.UserID, "run.approval_required", orgID, "runs/"+runID, map[string]any{
+			"reason":      decision.Reason,
+			"policy_id":   decision.MatchedPolicyID,
+			"approval_id": approvalID,
+			"agent_id":    agentID,
+		})
+	}
+	return approvalID, nil
+}
+
+// approvalRunController completes the approvals flow (issue #75): when an
+// approval linked to a run is decided, the run is resumed through
+// runs.ResumeRun (paused or waiting_approval -> pending) and, when the
+// resume actually moved it out of a gate, the agent.run task is re-enqueued
+// so execution continues. Without the re-enqueue the run would sit in
+// pending forever — the queue is the only execution trigger. Idempotence:
+// approvals can only be decided once, and already-pending/running runs are
+// never re-enqueued.
+type approvalRunController struct {
+	runsSvc  *runs.Service
+	queueSvc *queue.Queue
+}
+
+// newApprovalRunController builds the RunController the approvals service
+// uses to resume gated runs (wired in newApp).
+func newApprovalRunController(runsSvc *runs.Service, queueSvc *queue.Queue) *approvalRunController {
+	return &approvalRunController{runsSvc: runsSvc, queueSvc: queueSvc}
+}
+
+// ResumeRun implements approvals.RunController.
+func (c *approvalRunController) ResumeRun(ctx context.Context, orgID, runID string) (*runs.Run, error) {
+	if c == nil || c.runsSvc == nil {
+		return nil, errors.New("runs service is not available")
+	}
+	before, err := c.runsSvc.GetRunCtx(ctx, orgID, runID)
+	if err != nil {
+		return nil, err
+	}
+	// Capture the pre-resume status BEFORE resuming: the in-memory runs
+	// service hands out the live run pointer, so once ResumeRun lands the
+	// shared record already reports pending and a post-resume read would
+	// wrongly conclude nothing was gated (issue #75 approval resume).
+	wasGated := before.Status == runs.StatusPaused || before.Status == runs.StatusWaitingApproval
+	run, err := c.runsSvc.ResumeRun(ctx, orgID, runID)
+	if err != nil {
+		return nil, err
+	}
+	if !wasGated {
+		// Nothing was gated (legacy paused-run approvals that already
+		// resumed, races, replays): no re-enqueue.
+		return run, nil
+	}
+	if c.queueSvc != nil {
+		payload := map[string]any{
+			"organization_id":  run.OrganizationID,
+			"agent_id":         run.AgentID,
+			"input":            run.Input,
+			"run_id":           run.ID,
+			"approval_resumed": true,
+		}
+		c.queueSvc.Enqueue("agent.run", payload)
+	}
+	return run, nil
 }
 
 func getRunHandler(runsService *runs.Service) http.HandlerFunc {

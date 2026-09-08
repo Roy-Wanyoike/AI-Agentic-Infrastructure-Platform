@@ -1,52 +1,52 @@
 package main
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"fmt"
-	"log"
-	"log/slog"
-	"net/http"
-	"os"
-	"strings"
-	"time"
+        "context"
+        "database/sql"
+        "errors"
+        "fmt"
+        "log"
+        "log/slog"
+        "net/http"
+        "os"
+        "strings"
+        "time"
 
-	// tzdata ensures time.LoadLocation works in scratch/distroless containers.
-	_ "time/tzdata"
+        // tzdata ensures time.LoadLocation works in scratch/distroless containers.
+        _ "time/tzdata"
 
-	"agentos/internal/agents"
-	"agentos/internal/apikeys"
-	"agentos/internal/approvals"
-	"agentos/internal/audit"
-	"agentos/internal/auth"
-	"agentos/internal/billing"
-	"agentos/internal/config"
-	"agentos/internal/connectors"
-	"agentos/internal/database"
-	"agentos/internal/deployments"
-	"agentos/internal/evaluations"
-	"agentos/internal/events"
-	"agentos/internal/httpx"
-	"agentos/internal/knowledge"
-	"agentos/internal/logger"
-	"agentos/internal/marketplace"
-	"agentos/internal/memory"
-	"agentos/internal/models"
-	"agentos/internal/notifications"
-	"agentos/internal/observability"
-	"agentos/internal/organizations"
-	"agentos/internal/queue"
-	"agentos/internal/runs"
-	"agentos/internal/runtime"
-	"agentos/internal/scheduler"
-	"agentos/internal/scim"
-	"agentos/internal/secrets"
-	"agentos/internal/sso"
-	"agentos/internal/streaming"
-	"agentos/internal/tools"
-	"agentos/internal/webhooks"
-	"agentos/internal/workflows"
+        "agentos/internal/agents"
+        "agentos/internal/apikeys"
+        "agentos/internal/approvals"
+        "agentos/internal/audit"
+        "agentos/internal/auth"
+        "agentos/internal/billing"
+        "agentos/internal/config"
+        "agentos/internal/connectors"
+        "agentos/internal/database"
+        "agentos/internal/deployments"
+        "agentos/internal/evaluations"
+        "agentos/internal/events"
+        "agentos/internal/httpx"
+        "agentos/internal/knowledge"
+        "agentos/internal/logger"
+        "agentos/internal/marketplace"
+        "agentos/internal/memory"
+        "agentos/internal/models"
+        "agentos/internal/notifications"
+        "agentos/internal/observability"
+        "agentos/internal/organizations"
+        "agentos/internal/queue"
+        "agentos/internal/runs"
+        "agentos/internal/runtime"
+        "agentos/internal/scheduler"
+        "agentos/internal/scim"
+        "agentos/internal/secrets"
+        "agentos/internal/sso"
+        "agentos/internal/streaming"
+        "agentos/internal/tools"
+        "agentos/internal/webhooks"
+        "agentos/internal/workflows"
 )
 
 // defaultJWTSecret is the zero-infrastructure development fallback used when
@@ -66,472 +66,477 @@ var jwtSecretVar = defaultJWTSecret
 // app bundles every service the API handlers need. When db is nil the app runs
 // in zero-infrastructure mode with in-memory services (tests/dev default).
 type app struct {
-	cfg        config.Config
-	logr       *slog.Logger
-	db         *sql.DB
-	authSvc    *auth.Service
-	apiKeysSvc *apikeys.Service
-	orgsSvc    *organizations.Service
-	identities auth.ProvisioningStore
-	auditSvc   *audit.Service
-	agentsSvc  *agents.Service
-	runsSvc    *runs.Service
-	queueSvc   *queue.Queue
-	metricsSvc *observability.Metrics
-	streamSvc  *streaming.Service
+        cfg        config.Config
+        logr       *slog.Logger
+        db         *sql.DB
+        authSvc    *auth.Service
+        apiKeysSvc *apikeys.Service
+        orgsSvc    *organizations.Service
+        identities auth.ProvisioningStore
+        auditSvc   *audit.Service
+        agentsSvc  *agents.Service
+        runsSvc    *runs.Service
+        queueSvc   *queue.Queue
+        metricsSvc *observability.Metrics
+        streamSvc  *streaming.Service
 
-	// wave-2 verticals
-	wfSvc *workflows.Service
-	apSvc *approvals.Service
+        // wave-2 verticals
+        wfSvc *workflows.Service
+        apSvc *approvals.Service
 
-	// wave-3 verticals
-	knowledgeSvc   *knowledge.Service
-	memorySvc      *memory.Service
-	versionsSvc    *agents.VersionsService
-	deploymentsSvc *deployments.Service
-	evalSvc        *evaluations.Service
-	evalRunner     *runtime.Runner
-	schedSvc       *scheduler.Service
-	billingSvc     *billing.Service
-	secretsSvc     *secrets.Service
-	ssoSvc         *sso.Service
-	scimSvc        *scim.Service
-	mktSvc         *marketplace.Service
-	connSvc        *connectors.Service
-	whSvc          *webhooks.Service
-	notifSvc       *notifications.Service
-	publisher      events.Publisher
-	eventsLister   events.PagedStore
+        // wave-3 verticals
+        knowledgeSvc   *knowledge.Service
+        memorySvc      *memory.Service
+        versionsSvc    *agents.VersionsService
+        deploymentsSvc *deployments.Service
+        evalSvc        *evaluations.Service
+        evalRunner     *runtime.Runner
+        schedSvc       *scheduler.Service
+        billingSvc     *billing.Service
+        secretsSvc     *secrets.Service
+        ssoSvc         *sso.Service
+        scimSvc        *scim.Service
+        mktSvc         *marketplace.Service
+        connSvc        *connectors.Service
+        whSvc          *webhooks.Service
+        notifSvc       *notifications.Service
+        publisher      events.Publisher
+        eventsLister   events.PagedStore
 }
 
 // newApp builds the service graph. When db is non-nil every service is
 // constructed with a Postgres-backed store; otherwise the original in-memory
 // services are used so the platform runs with zero infrastructure.
 func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
-	// Task queue (wave-3 3-a): AGENTOS_QUEUE selects the backend -
-	//   memory (default): in-process queue, zero infrastructure
-	//   redis:            shared Redis list across every API/worker process
-	// The constructor pings Redis and FAILS when AGENTOS_QUEUE=redis and Redis
-	// is unreachable: a silent memory fallback would split the task flow
-	// (producers enqueueing in memory, consumers reading Redis).
-	queueSvc, qerr := queue.NewFromConfig(cfg)
-	if qerr != nil {
-		logr.Error("queue backend init failed", "error", qerr)
-		os.Exit(1)
-	}
-	a := &app{
-		cfg:        cfg,
-		logr:       logr,
-		db:         db,
-		queueSvc:   queueSvc,
-		metricsSvc: observability.NewMetrics(),
-		streamSvc:  streaming.NewService(),
-	}
-	if db != nil {
-		a.authSvc = auth.NewServiceWithStore(jwtSecretVar, auth.NewPostgresStore(db))
-		a.apiKeysSvc = apikeys.NewServiceWithStore(apikeys.NewPostgresStore(db))
-		a.orgsSvc = organizations.NewServiceWithStore(organizations.NewPostgresStore(db))
-		a.auditSvc = audit.NewServiceWithStore(audit.NewPostgresStore(db))
-		a.agentsSvc = agents.NewServiceWithStore(agents.NewPostgresStore(db))
-		a.runsSvc = runs.NewServiceWithStore(runs.NewPostgresStore(db))
-		a.wfSvc = workflows.NewServiceWithOptions(workflows.NewPostgresStore(db),
-			workflows.WithStaleAfter(workflows.StaleAfterFromEnv()),
-			workflows.WithDefaultRunDeadline(30*time.Minute)) // watchdog budget per run (0 disables)
-		a.apSvc = approvals.NewServiceWithStore(approvals.NewPostgresStore(db))
-		a.versionsSvc = agents.NewVersionsServiceWithStore(a.agentsSvc, agents.NewVersionsPostgresStore(db))
-		a.deploymentsSvc = deployments.NewServiceWithStore(deployments.NewPostgresStore(db), a.versionsSvc)
-		a.schedSvc = scheduler.NewServiceWithStore(scheduler.NewPostgresStore(db))
-		// wave-3 3-d: knowledge/RAG + memory persistence (org-scoped)
-		a.knowledgeSvc = knowledge.NewServiceWithStore(db)
-		a.memorySvc = memory.NewServiceWithStore(db)
-		// issue #24: billing (plans/subscriptions/invoices) billed from the runs cost ledger
-		a.billingSvc = billing.NewServiceWithStore(billing.NewPostgresStore(db), billing.NewRunsUsageSource(a.runsSvc))
-		// issue #25: encrypted org-scoped secrets; FAIL FAST without a valid
-		// AGENTOS_SECRETS_MASTER_KEY (plaintext persistence is the regression)
-		secretsSvc, serr := secrets.NewPostgresService(db)
-		if serr != nil {
-			logr.Error("secrets service init failed", "error", serr)
-			os.Exit(1)
-		}
-		a.secretsSvc = secretsSvc
-		// issue #29: OIDC SSO + SCIM 2.0 provisioning (identities via the
-		// Postgres provisioning store; session tokens stay the existing HMAC scheme)
-		ssoConfigs, scerr := sso.NewPostgresConfigStore(db)
-		if scerr != nil {
-			logr.Error("sso config store init failed", "error", scerr)
-			os.Exit(1)
-		}
-		identities := auth.NewProvisioningStore(db)
-		a.identities = identities
-		a.ssoSvc = sso.NewService(ssoConfigs, identities, a.authSvc)
-		scimTokens, scmerr := scim.NewPostgresTokenStore(db)
-		if scmerr != nil {
-			logr.Error("scim token store init failed", "error", scmerr)
-			os.Exit(1)
-		}
-		a.scimSvc = scim.NewServiceWithStore(scimTokens, identities)
-		// issue #28: agent marketplace (publish/browse/install from version snapshots)
-		a.mktSvc = marketplace.NewServiceWithStore(marketplace.NewPostgresStore(db), a.agentsSvc, a.versionsSvc)
-		// issue #30: connectors resolving secret refs through the secrets service
-		connSvc, cerr := connectors.NewServiceWithStore(connectors.NewPostgresStore(db), connectors.SecretResolverFunc(a.secretsSvc.Resolve))
-		if cerr != nil {
-			logr.Error("connectors service init failed", "error", cerr)
-			os.Exit(1)
-		}
-		a.connSvc = connSvc
-		a.logr.Info("postgres stores enabled")
-	} else {
-		a.authSvc = auth.NewService(jwtSecretVar)
-		a.apiKeysSvc = apikeys.NewService()
-		a.orgsSvc = organizations.NewService()
-		a.auditSvc = audit.NewService()
-		a.agentsSvc = agents.NewService()
-		a.runsSvc = runs.NewService()
-		a.wfSvc = workflows.NewServiceWithOptions(nil, workflows.WithStaleAfter(workflows.StaleAfterFromEnv()))
-		a.apSvc = approvals.NewService()
-		a.versionsSvc = agents.NewVersionsService(a.agentsSvc)
-		a.deploymentsSvc = deployments.NewService(a.versionsSvc)
-		a.schedSvc = scheduler.NewService()
-		// wave-3 3-d: zero-infrastructure knowledge/memory (offline hash embedder)
-		a.knowledgeSvc = knowledge.NewService()
-		a.memorySvc = memory.NewService()
-		// issue #24/#25: zero-infrastructure billing + secrets (no master key needed)
-		a.billingSvc = billing.NewService()
-		a.secretsSvc = secrets.NewService()
-		// issue #29: zero-infrastructure SSO + SCIM (shared in-memory identity store
-		// so SCIM-provisioned users can immediately SSO-login)
-		memIdentities := auth.NewMemoryStore()
-		a.identities = memIdentities
-		a.ssoSvc = sso.NewService(sso.NewMemoryConfigStore(), memIdentities, a.authSvc)
-		a.scimSvc = scim.NewService(memIdentities)
-		// issue #28/#30: zero-infrastructure marketplace + connectors
-		a.mktSvc = marketplace.NewService(a.agentsSvc)
-		a.connSvc = connectors.NewService()
-		// create a dev API key for local worker polling convenience (only
-		// possible in-memory: the api_keys FK requires a real organization row)
-		if key, err := a.apiKeysSvc.Create("org-demo", "dev-user", "dev-key"); err != nil {
-			a.logr.Warn("dev api key creation failed", "error", err)
-		} else {
-			a.logr.Info("dev api key created", "api_key", key.Value)
-		}
-	}
-	// wave-2: evaluation runner + service. Issue #15: the API process now
-	// shares the worker's env-driven provider construction — when
-	// OPENAI_API_KEY is set, eval cases execute against the configured
-	// OpenAI-compatible endpoint (real token usage on runtime.Run.Tokens,
-	// priced into per-case cost_cents by the ComputeCostCents hook below);
-	// without it the runner keeps the deterministic offline mode so
-	// zero-infrastructure development is unchanged.
-	provider, haveProvider := models.ProviderFromEnv(a.logr)
-	a.evalRunner = runtime.NewRunnerWithOptions(a.agentsSvc, nil, runtime.WithProvider(provider))
-	if haveProvider {
-		a.logr.Info("eval runner: live model provider configured", "provider", provider.Name())
-	} else {
-		a.logr.Info("eval runner: offline deterministic mode (no OPENAI_API_KEY)")
-	}
-	if db != nil {
-		a.evalSvc = evaluations.NewServiceWithStore(evaluations.NewPostgresStore(db), evaluations.Deps{
-			Agents: a.agentsSvc,
-			Runner: a.evalRunner,
-		})
-	} else {
-		a.evalSvc = evaluations.NewService(evaluations.Deps{
-			Agents: a.agentsSvc,
-			Runner: a.evalRunner,
-		})
-	}
-	// wave-3 3-b: price eval cases from reported token usage; the model
-	// is resolved from the agent's configuration (best-effort: unknown
-	// model -> 0 cents, never an error).
-	a.evalSvc.AttachUsageSource(evaluations.UsageSourceFunc(func(orgID, agentID string) (string, bool) {
-		agent, err := a.agentsSvc.GetAgentCtx(context.Background(), orgID, agentID)
-		if err != nil {
-			return "", false
-		}
-		return agent.Model, true
-	}))
+        // Task queue (wave-3 3-a): AGENTOS_QUEUE selects the backend -
+        //   memory (default): in-process queue, zero infrastructure
+        //   redis:            shared Redis list across every API/worker process
+        // The constructor pings Redis and FAILS when AGENTOS_QUEUE=redis and Redis
+        // is unreachable: a silent memory fallback would split the task flow
+        // (producers enqueueing in memory, consumers reading Redis).
+        queueSvc, qerr := queue.NewFromConfig(cfg)
+        if qerr != nil {
+                logr.Error("queue backend init failed", "error", qerr)
+                os.Exit(1)
+        }
+        a := &app{
+                cfg:        cfg,
+                logr:       logr,
+                db:         db,
+                queueSvc:   queueSvc,
+                metricsSvc: observability.NewMetrics(),
+                streamSvc:  streaming.NewService(),
+        }
+        if db != nil {
+                a.authSvc = auth.NewServiceWithStore(jwtSecretVar, auth.NewPostgresStore(db))
+                a.apiKeysSvc = apikeys.NewServiceWithStore(apikeys.NewPostgresStore(db))
+                a.orgsSvc = organizations.NewServiceWithStore(organizations.NewPostgresStore(db))
+                a.auditSvc = audit.NewServiceWithStore(audit.NewPostgresStore(db))
+                a.agentsSvc = agents.NewServiceWithStore(agents.NewPostgresStore(db))
+                a.runsSvc = runs.NewServiceWithStore(runs.NewPostgresStore(db))
+                a.wfSvc = workflows.NewServiceWithOptions(workflows.NewPostgresStore(db),
+                        workflows.WithStaleAfter(workflows.StaleAfterFromEnv()),
+                        workflows.WithDefaultRunDeadline(30*time.Minute)) // watchdog budget per run (0 disables)
+                a.apSvc = approvals.NewServiceWithStore(approvals.NewPostgresStore(db))
+                a.versionsSvc = agents.NewVersionsServiceWithStore(a.agentsSvc, agents.NewVersionsPostgresStore(db))
+                a.deploymentsSvc = deployments.NewServiceWithStore(deployments.NewPostgresStore(db), a.versionsSvc)
+                a.schedSvc = scheduler.NewServiceWithStore(scheduler.NewPostgresStore(db))
+                // issue #75: governance enforcement seam (Postgres mode)
+                policyEnforcementVar = newRunPolicyEnforcement(a.db, a.apSvc)
+                // wave-3 3-d: knowledge/RAG + memory persistence (org-scoped)
+                a.knowledgeSvc = knowledge.NewServiceWithStore(db)
+                a.memorySvc = memory.NewServiceWithStore(db)
+                // issue #24: billing (plans/subscriptions/invoices) billed from the runs cost ledger
+                a.billingSvc = billing.NewServiceWithStore(billing.NewPostgresStore(db), billing.NewRunsUsageSource(a.runsSvc))
+                // issue #25: encrypted org-scoped secrets; FAIL FAST without a valid
+                // AGENTOS_SECRETS_MASTER_KEY (plaintext persistence is the regression)
+                secretsSvc, serr := secrets.NewPostgresService(db)
+                if serr != nil {
+                        logr.Error("secrets service init failed", "error", serr)
+                        os.Exit(1)
+                }
+                a.secretsSvc = secretsSvc
+                // issue #29: OIDC SSO + SCIM 2.0 provisioning (identities via the
+                // Postgres provisioning store; session tokens stay the existing HMAC scheme)
+                ssoConfigs, scerr := sso.NewPostgresConfigStore(db)
+                if scerr != nil {
+                        logr.Error("sso config store init failed", "error", scerr)
+                        os.Exit(1)
+                }
+                identities := auth.NewProvisioningStore(db)
+                a.identities = identities
+                a.ssoSvc = sso.NewService(ssoConfigs, identities, a.authSvc)
+                scimTokens, scmerr := scim.NewPostgresTokenStore(db)
+                if scmerr != nil {
+                        logr.Error("scim token store init failed", "error", scmerr)
+                        os.Exit(1)
+                }
+                a.scimSvc = scim.NewServiceWithStore(scimTokens, identities)
+                // issue #28: agent marketplace (publish/browse/install from version snapshots)
+                a.mktSvc = marketplace.NewServiceWithStore(marketplace.NewPostgresStore(db), a.agentsSvc, a.versionsSvc)
+                // issue #30: connectors resolving secret refs through the secrets service
+                connSvc, cerr := connectors.NewServiceWithStore(connectors.NewPostgresStore(db), connectors.SecretResolverFunc(a.secretsSvc.Resolve))
+                if cerr != nil {
+                        logr.Error("connectors service init failed", "error", cerr)
+                        os.Exit(1)
+                }
+                a.connSvc = connSvc
+                a.logr.Info("postgres stores enabled")
+        } else {
+                a.authSvc = auth.NewService(jwtSecretVar)
+                a.apiKeysSvc = apikeys.NewService()
+                a.orgsSvc = organizations.NewService()
+                a.auditSvc = audit.NewService()
+                a.agentsSvc = agents.NewService()
+                a.runsSvc = runs.NewService()
+                a.wfSvc = workflows.NewServiceWithOptions(nil, workflows.WithStaleAfter(workflows.StaleAfterFromEnv()))
+                a.apSvc = approvals.NewService()
+                a.versionsSvc = agents.NewVersionsService(a.agentsSvc)
+                a.deploymentsSvc = deployments.NewService(a.versionsSvc)
+                a.schedSvc = scheduler.NewService()
+                // issue #75: governance enforcement seam — ONE policies service
+                // shared between the CRUD routes and run/tool enforcement
+                policyEnforcementVar = newRunPolicyEnforcement(a.db, a.apSvc)
+                // wave-3 3-d: zero-infrastructure knowledge/memory (offline hash embedder)
+                a.knowledgeSvc = knowledge.NewService()
+                a.memorySvc = memory.NewService()
+                // issue #24/#25: zero-infrastructure billing + secrets (no master key needed)
+                a.billingSvc = billing.NewService()
+                a.secretsSvc = secrets.NewService()
+                // issue #29: zero-infrastructure SSO + SCIM (shared in-memory identity store
+                // so SCIM-provisioned users can immediately SSO-login)
+                memIdentities := auth.NewMemoryStore()
+                a.identities = memIdentities
+                a.ssoSvc = sso.NewService(sso.NewMemoryConfigStore(), memIdentities, a.authSvc)
+                a.scimSvc = scim.NewService(memIdentities)
+                // issue #28/#30: zero-infrastructure marketplace + connectors
+                a.mktSvc = marketplace.NewService(a.agentsSvc)
+                a.connSvc = connectors.NewService()
+                // create a dev API key for local worker polling convenience (only
+                // possible in-memory: the api_keys FK requires a real organization row)
+                if key, err := a.apiKeysSvc.Create("org-demo", "dev-user", "dev-key"); err != nil {
+                        a.logr.Warn("dev api key creation failed", "error", err)
+                } else {
+                        a.logr.Info("dev api key created", "api_key", key.Value)
+                }
+        }
+        // wave-2: evaluation runner + service. Issue #15: the API process now
+        // shares the worker's env-driven provider construction — when
+        // OPENAI_API_KEY is set, eval cases execute against the configured
+        // OpenAI-compatible endpoint (real token usage on runtime.Run.Tokens,
+        // priced into per-case cost_cents by the ComputeCostCents hook below);
+        // without it the runner keeps the deterministic offline mode so
+        // zero-infrastructure development is unchanged.
+        provider, haveProvider := models.ProviderFromEnv(a.logr)
+        a.evalRunner = runtime.NewRunnerWithOptions(a.agentsSvc, nil, runtime.WithProvider(provider))
+        if haveProvider {
+                a.logr.Info("eval runner: live model provider configured", "provider", provider.Name())
+        } else {
+                a.logr.Info("eval runner: offline deterministic mode (no OPENAI_API_KEY)")
+        }
+        if db != nil {
+                a.evalSvc = evaluations.NewServiceWithStore(evaluations.NewPostgresStore(db), evaluations.Deps{
+                        Agents: a.agentsSvc,
+                        Runner: a.evalRunner,
+                })
+        } else {
+                a.evalSvc = evaluations.NewService(evaluations.Deps{
+                        Agents: a.agentsSvc,
+                        Runner: a.evalRunner,
+                })
+        }
+        // wave-3 3-b: price eval cases from reported token usage; the model
+        // is resolved from the agent's configuration (best-effort: unknown
+        // model -> 0 cents, never an error).
+        a.evalSvc.AttachUsageSource(evaluations.UsageSourceFunc(func(orgID, agentID string) (string, bool) {
+                agent, err := a.agentsSvc.GetAgentCtx(context.Background(), orgID, agentID)
+                if err != nil {
+                        return "", false
+                }
+                return agent.Model, true
+        }))
 
-	// wave-2: event publisher (NATS JetStream when AGENTOS_NATS_URL is set and
-	// reachable; otherwise in-memory/noop fallbacks) + append-only audit trail
-	a.publisher = events.NewFromEnv()
-	if db != nil {
-		pgEvents := events.NewPostgresStore(db)
-		a.publisher = events.NewAuditPublisher(pgEvents, a.publisher)
-		if paged, ok := pgEvents.(events.PagedStore); ok {
-			a.eventsLister = paged
-		}
-	} else {
-		// issue #56: zero-infrastructure events — appends land in the in-memory
-		// store (same AuditPublisher chain as Postgres mode) so GET /v1/events
-		// works without infrastructure.
-		memEvents := events.NewMemoryStore()
-		a.publisher = events.NewAuditPublisher(memEvents, a.publisher)
-		a.eventsLister = memEvents
-	}
+        // wave-2: event publisher (NATS JetStream when AGENTOS_NATS_URL is set and
+        // reachable; otherwise in-memory/noop fallbacks) + append-only audit trail
+        a.publisher = events.NewFromEnv()
+        if db != nil {
+                pgEvents := events.NewPostgresStore(db)
+                a.publisher = events.NewAuditPublisher(pgEvents, a.publisher)
+                if paged, ok := pgEvents.(events.PagedStore); ok {
+                        a.eventsLister = paged
+                }
+        } else {
+                // issue #56: zero-infrastructure events — appends land in the in-memory
+                // store (same AuditPublisher chain as Postgres mode) so GET /v1/events
+                // works without infrastructure.
+                memEvents := events.NewMemoryStore()
+                a.publisher = events.NewAuditPublisher(memEvents, a.publisher)
+                a.eventsLister = memEvents
+        }
 
-	// wave-2: webhooks service + delivery worker (single process: this API).
-	if db != nil {
-		a.whSvc = webhooks.NewServiceWithStore(webhooks.NewPostgresStore(db))
-	} else {
-		a.whSvc = webhooks.NewService()
-	}
-	a.whSvc.SetSigningKey(os.Getenv("AGENTOS_WEBHOOK_SIGNING_KEY"))
-	if sub, ok := a.publisher.(events.Subscriber); ok {
-		whWorker := webhooks.NewWorker(a.whSvc, sub, nil, logr)
-		go func() {
-			if err := whWorker.Run(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
-				logr.Warn("webhook delivery worker stopped", "error", err.Error())
-			}
-		}()
-		// issue #83: notification subscriptions — org-scoped operational
-		// alerts (run failure, approval required, canary rollback) routed
-		// through the signed webhook delivery path. The worker satisfies
-		// the notifications Dispatcher seam (Worker.Deliver).
-		a.notifSvc = notifications.NewService(sub, a.whSvc, whWorker)
-		go func() {
-			if err := a.notifSvc.Run(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
-				logr.Warn("notifications subscriber stopped", "error", err.Error())
-			}
-		}()
-	}
+        // wave-2: webhooks service + delivery worker (single process: this API).
+        if db != nil {
+                a.whSvc = webhooks.NewServiceWithStore(webhooks.NewPostgresStore(db))
+        } else {
+                a.whSvc = webhooks.NewService()
+        }
+        a.whSvc.SetSigningKey(os.Getenv("AGENTOS_WEBHOOK_SIGNING_KEY"))
+        if sub, ok := a.publisher.(events.Subscriber); ok {
+                whWorker := webhooks.NewWorker(a.whSvc, sub, nil, logr)
+                go func() {
+                        if err := whWorker.Run(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+                                logr.Warn("webhook delivery worker stopped", "error", err.Error())
+                        }
+                }()
+                // issue #83: notification subscriptions — org-scoped operational
+                // alerts (run failure, approval required, canary rollback) routed
+                // through the signed webhook delivery path. The worker satisfies
+                // the notifications Dispatcher seam (Worker.Deliver).
+                a.notifSvc = notifications.NewService(sub, a.whSvc, whWorker)
+                go func() {
+                        if err := a.notifSvc.Run(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+                                logr.Warn("notifications subscriber stopped", "error", err.Error())
+                        }
+                }()
+        }
 
-	// wire runs service to streaming service so run status updates are published
-	a.runsSvc.SetStreamer(a.streamSvc)
-	// issue #12: feed agentos_runs_total from API-side run transitions
-	a.runsSvc.SetMetrics(a.metricsSvc)
-	// issue #51: eval-gated canary autopromotion (no-op unless
-	// AGENTOS_CANARY_AUTOPROMOTE is truthy)
-	WireCanaryAutoPromotion(a.evalSvc, a.deploymentsSvc, a.auditSvc, a.logr)
-	// expose to handlers for backwards-compatible wiring in tests
-	runsServiceVar = a.runsSvc
-	// issue #47: expose billing to the create-run quota gate
-	billingServiceVar = a.billingSvc
-	return a
+        // wire runs service to streaming service so run status updates are published
+        a.runsSvc.SetStreamer(a.streamSvc)
+        // issue #12: feed agentos_runs_total from API-side run transitions
+        a.runsSvc.SetMetrics(a.metricsSvc)
+        // issue #51: eval-gated canary autopromotion (no-op unless
+        // AGENTOS_CANARY_AUTOPROMOTE is truthy)
+        WireCanaryAutoPromotion(a.evalSvc, a.deploymentsSvc, a.auditSvc, a.logr)
+        // expose to handlers for backwards-compatible wiring in tests
+        runsServiceVar = a.runsSvc
+        // issue #47: expose billing to the create-run quota gate
+        billingServiceVar = a.billingSvc
+        return a
 }
 
 // routes builds the HTTP routing surface. Versioned API routes are registered
 // once on an internal mux and mounted under BOTH the legacy /v1 prefix and the
 // canonical /api/v1 prefix; /healthz and /readyz stay unversioned.
 func (a *app) routes() http.Handler {
-	apiMux := http.NewServeMux()
-	apiMux.HandleFunc("/auth/register", registerHandler(a.authSvc))
-	apiMux.HandleFunc("/auth/login", loginHandler(a.authSvc))
-	// issue #76: auth lifecycle — server-side revocation + single-use refresh
-	registerAuthLifecycleRoutes(apiMux, a.authSvc, a.auditSvc)
-	apiMux.Handle("/agents", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(a.agentsSvc)))))
-	// issue #55 e2e blocker fix: this registration used to be methodless,
-	// which CONFLICTED with the issue #49 lifecycle wildcards ("PUT /agents/{id}"
-	// vs "/agents/create" overlap, neither shadows the other) and panicked
-	// ServeMux at routes() build time - the API binary panicked at startup
-	// and no test noticed, because nothing booted the real mux (the new
-	// full-stack e2e does). Scoping to POST - the only method the OpenAPI
-	// contract documents for /agents/create - resolves the conflict;
-	// wrong-method requests now fall through to the more specific patterns
-	// (PUT/DELETE land on the lifecycle handlers' 404s, GET on the catch-all).
-	apiMux.Handle("POST /agents/create", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsWrite)(http.HandlerFunc(createAgentHandler(a.agentsSvc, a.auditSvc)))))
-	apiMux.Handle("/agents/", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsRead)(http.HandlerFunc(agentDetailHandler(a.agentsSvc)))))
-	// issue #49: agent update + delete (CRUD completion; method-prefixed
-	// patterns win over the "/agents/" catch-all for PUT/DELETE)
-	registerAgentsLifecycleRoutes(apiMux, a.agentsSvc, a.runsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	apiMux.Handle("/runs", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			// require read permission for listing
-			auth.RequirePermission(a.authSvc, auth.PermissionRunsRead)(http.HandlerFunc(listRunsHandler(a.runsSvc))).ServeHTTP(w, r)
-			return
-		}
-		// default to create (POST); idempotency middleware honors Idempotency-Key
-		idempotent := httpx.NewIdempotencyMiddleware(httpx.NewIdempotencyStoreFromDB(a.db))
-		auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(idempotent(http.HandlerFunc(createRunHandler(a.queueSvc, a.auditSvc)))).ServeHTTP(w, r)
-	})))
-	// queue pull endpoint for workers to pull tasks (dev-only)
-	apiMux.Handle("/queue/pull", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(http.HandlerFunc(queuePullHandler(a.queueSvc)))))
-	// issue #77: queue introspection + dead-letter requeue (org-scoped)
-	registerQueueOpsRoutes(apiMux, a.queueSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	apiMux.Handle("/runs/", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsRead)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rest := trimRoutePrefix(r.URL.Path, "/runs/")
-		switch {
-		case strings.HasSuffix(rest, "/events"):
-			runEventsHandler(a.streamSvc).ServeHTTP(w, r)
-		case strings.HasSuffix(rest, "/steps"):
-			runStepsHandler(a.runsSvc).ServeHTTP(w, r)
-		default:
-			getRunHandler(a.runsSvc).ServeHTTP(w, r)
-		}
-	}))))
-	apiMux.Handle("/metrics", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsRead)(http.HandlerFunc(metricsV2Handler(a.metricsSvc, a.queueSvc)))))
+        apiMux := http.NewServeMux()
+        apiMux.HandleFunc("/auth/register", registerHandler(a.authSvc))
+        apiMux.HandleFunc("/auth/login", loginHandler(a.authSvc))
+        // issue #76: auth lifecycle — server-side revocation + single-use refresh
+        registerAuthLifecycleRoutes(apiMux, a.authSvc, a.auditSvc)
+        apiMux.Handle("/agents", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(a.agentsSvc)))))
+        // issue #55 e2e blocker fix: this registration used to be methodless,
+        // which CONFLICTED with the issue #49 lifecycle wildcards ("PUT /agents/{id}"
+        // vs "/agents/create" overlap, neither shadows the other) and panicked
+        // ServeMux at routes() build time - the API binary panicked at startup
+        // and no test noticed, because nothing booted the real mux (the new
+        // full-stack e2e does). Scoping to POST - the only method the OpenAPI
+        // contract documents for /agents/create - resolves the conflict;
+        // wrong-method requests now fall through to the more specific patterns
+        // (PUT/DELETE land on the lifecycle handlers' 404s, GET on the catch-all).
+        apiMux.Handle("POST /agents/create", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsWrite)(http.HandlerFunc(createAgentHandler(a.agentsSvc, a.auditSvc)))))
+        apiMux.Handle("/agents/", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsRead)(http.HandlerFunc(agentDetailHandler(a.agentsSvc)))))
+        // issue #49: agent update + delete (CRUD completion; method-prefixed
+        // patterns win over the "/agents/" catch-all for PUT/DELETE)
+        registerAgentsLifecycleRoutes(apiMux, a.agentsSvc, a.runsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        apiMux.Handle("/runs", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                if r.Method == http.MethodGet {
+                        // require read permission for listing
+                        auth.RequirePermission(a.authSvc, auth.PermissionRunsRead)(http.HandlerFunc(listRunsHandler(a.runsSvc))).ServeHTTP(w, r)
+                        return
+                }
+                // default to create (POST); idempotency middleware honors Idempotency-Key
+                idempotent := httpx.NewIdempotencyMiddleware(httpx.NewIdempotencyStoreFromDB(a.db))
+                auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(idempotent(http.HandlerFunc(createRunHandler(a.queueSvc, a.auditSvc)))).ServeHTTP(w, r)
+        })))
+        // queue pull endpoint for workers to pull tasks (dev-only)
+        apiMux.Handle("/queue/pull", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(http.HandlerFunc(queuePullHandler(a.queueSvc)))))
+        // issue #77: queue introspection + dead-letter requeue (org-scoped)
+        registerQueueOpsRoutes(apiMux, a.queueSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        apiMux.Handle("/runs/", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsRead)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                rest := trimRoutePrefix(r.URL.Path, "/runs/")
+                switch {
+                case strings.HasSuffix(rest, "/events"):
+                        runEventsHandler(a.streamSvc).ServeHTTP(w, r)
+                case strings.HasSuffix(rest, "/steps"):
+                        runStepsHandler(a.runsSvc).ServeHTTP(w, r)
+                default:
+                        getRunHandler(a.runsSvc).ServeHTTP(w, r)
+                }
+        }))))
+        apiMux.Handle("/metrics", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsRead)(http.HandlerFunc(metricsV2Handler(a.metricsSvc, a.queueSvc)))))
 
-	// wave-2 verticals (workflows registration also mounts run control:
-	// POST /runs/{id}/cancel|pause|resume)
-	registerWorkflowsRoutes(apiMux, a.wfSvc, a.apSvc, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)
-	registerWorkflowRunNodeRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc) // wave-3 3-c: checkpointed node timeline
-	registerVersionsRoutes(apiMux, a.versionsSvc, a.authSvc, a.apiKeysSvc)
-	registerDeploymentsRoutes(apiMux, a.deploymentsSvc, a.authSvc, a.apiKeysSvc)
-	registerEvaluationsRoutes(apiMux, a.evalSvc, a.authSvc, a.apiKeysSvc)
-	registerSchedulesRoutes(apiMux, a.schedSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	registerWebhooksRoutes(apiMux, a.whSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	// issue #83: notification subscriptions (org-scoped alert routing over
-	// the signed webhook delivery path); nil when the event publisher does
-	// not support subscriptions
-	if a.notifSvc != nil {
-		registerNotificationsRoutes(apiMux, a.notifSvc, a.authSvc, a.apiKeysSvc)
-	}
-	registerPoliciesRoutes(apiMux, newPoliciesService(a.db), a.authSvc, a.apiKeysSvc)
-	// wave-3: cost report, knowledge/RAG, memory
-	registerUsageCostsRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)
-	registerKnowledgeRoutes(apiMux, a.knowledgeSvc, a.authSvc, a.apiKeysSvc)
-	registerMemoryRoutes(apiMux, a.memorySvc, a.authSvc, a.apiKeysSvc)
-	// issue #18: public tool registry + audit trail
-	registerToolsRoutes(apiMux, tools.DefaultRegistry(), a.authSvc, a.apiKeysSvc)
-	registerAuditEventsRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
-	// issue #56: events read API (keyset-paginated, org-scoped)
-	registerEventsRoutes(apiMux, a.eventsLister, a.authSvc, a.apiKeysSvc)
-	// issue #24: billing plans/subscriptions/invoices
-	registerBillingRoutes(apiMux, a.billingSvc, a.authSvc, a.apiKeysSvc)
-	// issue #57: usage meters + margin + optional Stripe usage-record sync
-	registerUsageMetersRoutes(apiMux, a.billingSvc, billing.NewRunsMeterSource(a.runsSvc, a.runsSvc), billing.NewStripeSyncerFromEnv(a.logr), a.authSvc, a.apiKeysSvc, a.logr)
-	// issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)
-	registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	// issue #29: OIDC SSO browser flow + SCIM 2.0 provisioning
-	registerSsoRoutes(apiMux, a.ssoSvc)
-	// issue #79: SCIM token revocation is audited (scim_token.revoked)
-	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	// issue #52: organizations & membership management (last-owner guarded)
-	registerOrganizationRoutes(apiMux, a.orgsSvc, a.identities, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	// issue #28: agent marketplace
-	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	// issue #30: connectors CRUD + health checks
-	registerConnectorsRoutes(apiMux, a.connSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	// issue #48: API keys management (mint once / metadata list / revoke)
-	registerAPIKeysRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	// issue #50: MCP server endpoint (JSON-RPC 2.0) — tenant tools over MCP
-	registerMcpRoutes(apiMux, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        // wave-2 verticals (workflows registration also mounts run control:
+        // POST /runs/{id}/cancel|pause|resume)
+        registerWorkflowsRoutes(apiMux, a.wfSvc, a.apSvc, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)
+        registerWorkflowRunNodeRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc) // wave-3 3-c: checkpointed node timeline
+        registerVersionsRoutes(apiMux, a.versionsSvc, a.authSvc, a.apiKeysSvc)
+        registerDeploymentsRoutes(apiMux, a.deploymentsSvc, a.authSvc, a.apiKeysSvc)
+        registerEvaluationsRoutes(apiMux, a.evalSvc, a.authSvc, a.apiKeysSvc)
+        registerSchedulesRoutes(apiMux, a.schedSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        registerWebhooksRoutes(apiMux, a.whSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        // issue #83: notification subscriptions (org-scoped alert routing over
+        // the signed webhook delivery path); nil when the event publisher does
+        // not support subscriptions
+        if a.notifSvc != nil {
+                registerNotificationsRoutes(apiMux, a.notifSvc, a.authSvc, a.apiKeysSvc)
+        }
+        registerPoliciesRoutes(apiMux, a.sharedPoliciesService(), a.authSvc, a.apiKeysSvc)
+        // wave-3: cost report, knowledge/RAG, memory
+        registerUsageCostsRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)
+        registerKnowledgeRoutes(apiMux, a.knowledgeSvc, a.authSvc, a.apiKeysSvc)
+        registerMemoryRoutes(apiMux, a.memorySvc, a.authSvc, a.apiKeysSvc)
+        // issue #18: public tool registry + audit trail
+        registerToolsRoutes(apiMux, tools.DefaultRegistry(), a.authSvc, a.apiKeysSvc)
+        registerAuditEventsRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
+        // issue #56: events read API (keyset-paginated, org-scoped)
+        registerEventsRoutes(apiMux, a.eventsLister, a.authSvc, a.apiKeysSvc)
+        // issue #24: billing plans/subscriptions/invoices
+        registerBillingRoutes(apiMux, a.billingSvc, a.authSvc, a.apiKeysSvc)
+        // issue #57: usage meters + margin + optional Stripe usage-record sync
+        registerUsageMetersRoutes(apiMux, a.billingSvc, billing.NewRunsMeterSource(a.runsSvc, a.runsSvc), billing.NewStripeSyncerFromEnv(a.logr), a.authSvc, a.apiKeysSvc, a.logr)
+        // issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)
+        registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        // issue #29: OIDC SSO browser flow + SCIM 2.0 provisioning
+        registerSsoRoutes(apiMux, a.ssoSvc)
+        // issue #79: SCIM token revocation is audited (scim_token.revoked)
+        registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        // issue #52: organizations & membership management (last-owner guarded)
+        registerOrganizationRoutes(apiMux, a.orgsSvc, a.identities, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        // issue #28: agent marketplace
+        registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        // issue #30: connectors CRUD + health checks
+        registerConnectorsRoutes(apiMux, a.connSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        // issue #48: API keys management (mint once / metadata list / revoke)
+        registerAPIKeysRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+        // issue #50: MCP server endpoint (JSON-RPC 2.0) — tenant tools over MCP
+        registerMcpRoutes(apiMux, a.authSvc, a.apiKeysSvc, a.auditSvc)
 
-	apiMux.HandleFunc("/", serviceInfoHandler)
+        apiMux.HandleFunc("/", serviceInfoHandler)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthHandler)
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ready"))
-	})
-	// The authenticated API is served under /api/v1 (canonical, used by the
-	// frontend) and /v1 (legacy clients); StripPrefix lets the inner mux serve
-	// both without duplicating route registrations.
-	mux.Handle("/v1/", http.StripPrefix("/v1", apiMux))
-	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", apiMux))
-	mux.HandleFunc("/", serviceInfoHandler)
+        mux := http.NewServeMux()
+        mux.HandleFunc("/healthz", healthHandler)
+        mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+                w.WriteHeader(http.StatusOK)
+                _, _ = w.Write([]byte("ready"))
+        })
+        // The authenticated API is served under /api/v1 (canonical, used by the
+        // frontend) and /v1 (legacy clients); StripPrefix lets the inner mux serve
+        // both without duplicating route registrations.
+        mux.Handle("/v1/", http.StripPrefix("/v1", apiMux))
+        mux.Handle("/api/v1/", http.StripPrefix("/api/v1", apiMux))
+        mux.HandleFunc("/", serviceInfoHandler)
 
-	// wave-2: global rate limiting (Redis when configured, in-memory fallback;
-	// AGENTOS_RATE_LIMIT_RPM, default 120) outside CORS so 429s are JSON, and
-	// request metrics outermost so every response (incl. 429s) is observed.
-	limit, window := httpx.RateLimitFromEnv()
-	rateLimit := httpx.NewRateLimitMiddleware(
-		httpx.RedisClientFromEnv(),
-		observability.NewRateLimiter(limit, window),
-		limit, window,
-	)
-	return observability.MetricsMiddleware(a.metricsSvc, rateLimit(corsMiddleware(mux)))
+        // wave-2: global rate limiting (Redis when configured, in-memory fallback;
+        // AGENTOS_RATE_LIMIT_RPM, default 120) outside CORS so 429s are JSON, and
+        // request metrics outermost so every response (incl. 429s) is observed.
+        limit, window := httpx.RateLimitFromEnv()
+        rateLimit := httpx.NewRateLimitMiddleware(
+                httpx.RedisClientFromEnv(),
+                observability.NewRateLimiter(limit, window),
+                limit, window,
+        )
+        return observability.MetricsMiddleware(a.metricsSvc, rateLimit(corsMiddleware(mux)))
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
-	// Issue #55: AGENTOS_CORS_ORIGINS (comma-separated) selects allowlist mode.
-	// Parsed once at middleware construction (routes() build time).
-	allowed := CORSOriginsFromEnv()
-	if len(allowed) == 0 {
-		// Empty/unset keeps the historical permissive wildcard handler for
-		// local development: the zero-infrastructure contract is that the
-		// platform runs (dashboard, curl, the pull worker) with zero
-		// configuration, and flipping a default would break every existing
-		// dev setup. Credentials are never granted next to "*" (no
-		// Access-Control-Allow-Credentials here), so the wildcard stays
-		// credentials-safe by omission. Production deployments set
-		// AGENTOS_CORS_ORIGINS to switch to the allowlist branch below.
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", corsAllowMethods)
-			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
-			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-	// Allowlist mode (see cors.go): Access-Control-Allow-Origin echoes ONLY
-	// allowlisted origins, Vary: Origin is always set, and credentials can
-	// be granted safely because the echo is never "*".
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ApplyCORSHeaders(w.Header(), allowed, r.Header.Get("Origin"))
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+        // Issue #55: AGENTOS_CORS_ORIGINS (comma-separated) selects allowlist mode.
+        // Parsed once at middleware construction (routes() build time).
+        allowed := CORSOriginsFromEnv()
+        if len(allowed) == 0 {
+                // Empty/unset keeps the historical permissive wildcard handler for
+                // local development: the zero-infrastructure contract is that the
+                // platform runs (dashboard, curl, the pull worker) with zero
+                // configuration, and flipping a default would break every existing
+                // dev setup. Credentials are never granted next to "*" (no
+                // Access-Control-Allow-Credentials here), so the wildcard stays
+                // credentials-safe by omission. Production deployments set
+                // AGENTOS_CORS_ORIGINS to switch to the allowlist branch below.
+                return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                        w.Header().Set("Access-Control-Allow-Origin", "*")
+                        w.Header().Set("Access-Control-Allow-Methods", corsAllowMethods)
+                        w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
+                        if r.Method == http.MethodOptions {
+                                w.WriteHeader(http.StatusNoContent)
+                                return
+                        }
+                        next.ServeHTTP(w, r)
+                })
+        }
+        // Allowlist mode (see cors.go): Access-Control-Allow-Origin echoes ONLY
+        // allowlisted origins, Vary: Origin is always set, and credentials can
+        // be granted safely because the echo is never "*".
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                ApplyCORSHeaders(w.Header(), allowed, r.Header.Get("Origin"))
+                if r.Method == http.MethodOptions {
+                        w.WriteHeader(http.StatusNoContent)
+                        return
+                }
+                next.ServeHTTP(w, r)
+        })
 }
 
 func main() {
-	cfg := config.Load()
-	logr := logger.New(cfg.Env)
+        cfg := config.Load()
+        logr := logger.New(cfg.Env)
 
-	// Issue #55: JWT production guard. The API must never boot in production
-	// with the public development signing secret. Dev/zero-infra behavior is
-	// unchanged: without JWT_SECRET outside production the process keeps
-	// defaultJWTSecret (resolveJWTSecret is the pure, tested decision core).
-	jwtSecret, serr := resolveJWTSecret(cfg.Env, os.Getenv(jwtSecretEnvVar))
-	if serr != nil {
-		logr.Error(serr.Error())
-		os.Exit(1)
-	}
-	jwtSecretVar = jwtSecret
+        // Issue #55: JWT production guard. The API must never boot in production
+        // with the public development signing secret. Dev/zero-infra behavior is
+        // unchanged: without JWT_SECRET outside production the process keeps
+        // defaultJWTSecret (resolveJWTSecret is the pure, tested decision core).
+        jwtSecret, serr := resolveJWTSecret(cfg.Env, os.Getenv(jwtSecretEnvVar))
+        if serr != nil {
+                logr.Error(serr.Error())
+                os.Exit(1)
+        }
+        jwtSecretVar = jwtSecret
 
-	// Attempt a Postgres connection when DATABASE_URL / POSTGRES_* are set.
-	// The platform must keep running with zero infrastructure, so any failure
-	// falls back to in-memory stores.
-	var db *sql.DB
-	if dsn := database.DSNFromEnv(); dsn != "" {
-		conn, err := database.Connect(dsn)
-		if err != nil {
-			logr.Warn("database unavailable, using in-memory stores", "error", err.Error())
-		} else {
-			db = conn
-		}
-	} else {
-		logr.Warn("database unavailable, using in-memory stores", "error", "DATABASE_URL/POSTGRES_* env vars are not set")
-	}
-	if db != nil {
-		defer db.Close()
-	}
+        // Attempt a Postgres connection when DATABASE_URL / POSTGRES_* are set.
+        // The platform must keep running with zero infrastructure, so any failure
+        // falls back to in-memory stores.
+        var db *sql.DB
+        if dsn := database.DSNFromEnv(); dsn != "" {
+                conn, err := database.Connect(dsn)
+                if err != nil {
+                        logr.Warn("database unavailable, using in-memory stores", "error", err.Error())
+                } else {
+                        db = conn
+                }
+        } else {
+                logr.Warn("database unavailable, using in-memory stores", "error", "DATABASE_URL/POSTGRES_* env vars are not set")
+        }
+        if db != nil {
+                defer db.Close()
+        }
 
-	application := newApp(cfg, logr, db)
-	// wave-3 3-a: release the Redis connection on exit. Queue contents live in
-	// Redis and survive the process; Close only tears down the client (a no-op
-	// in memory mode, so it is safe unconditionally).
-	defer func() { _ = application.queueSvc.Close() }()
+        application := newApp(cfg, logr, db)
+        // wave-3 3-a: release the Redis connection on exit. Queue contents live in
+        // Redis and survive the process; Close only tears down the client (a no-op
+        // in memory mode, so it is safe unconditionally).
+        defer func() { _ = application.queueSvc.Close() }()
 
-	// wave-2: scheduler trigger loop (runs in exactly one process; claims are
-	// atomic so a second instance would be safe, just wasteful).
-	schedPoll := scheduler.DefaultPollInterval
-	if v := strings.TrimSpace(os.Getenv("AGENTOS_SCHEDULER_POLL_INTERVAL")); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			schedPoll = d
-		}
-	}
-	schedWorker := scheduler.NewWorker(application.schedSvc, application.runsSvc, application.queueSvc, schedPoll)
-	go schedWorker.Run(context.Background())
-	logr.Info("scheduler trigger worker started", "poll_interval", schedPoll.String())
+        // wave-2: scheduler trigger loop (runs in exactly one process; claims are
+        // atomic so a second instance would be safe, just wasteful).
+        schedPoll := scheduler.DefaultPollInterval
+        if v := strings.TrimSpace(os.Getenv("AGENTOS_SCHEDULER_POLL_INTERVAL")); v != "" {
+                if d, err := time.ParseDuration(v); err == nil && d > 0 {
+                        schedPoll = d
+                }
+        }
+        schedWorker := scheduler.NewWorker(application.schedSvc, application.runsSvc, application.queueSvc, schedPoll)
+        go schedWorker.Run(context.Background())
+        logr.Info("scheduler trigger worker started", "poll_interval", schedPoll.String())
 
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", cfg.API.Port),
-		Handler:      application.routes(),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  30 * time.Second,
-	}
+        srv := &http.Server{
+                Addr:         fmt.Sprintf(":%s", cfg.API.Port),
+                Handler:      application.routes(),
+                ReadTimeout:  10 * time.Second,
+                WriteTimeout: 10 * time.Second,
+                IdleTimeout:  30 * time.Second,
+        }
 
-	logr.Info("agentos api starting", "port", cfg.API.Port, "env", cfg.Env)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Printf("listen failed: %v", err)
-		os.Exit(1)
-	}
+        logr.Info("agentos api starting", "port", cfg.API.Port, "env", cfg.Env)
+        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+                log.Printf("listen failed: %v", err)
+                os.Exit(1)
+        }
 }

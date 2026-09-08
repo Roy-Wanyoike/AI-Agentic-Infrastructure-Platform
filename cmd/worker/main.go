@@ -218,6 +218,11 @@ func main() {
 			logr.Warn("worker quota enforcement disabled: AGENTOS_BILLING_ENFORCEMENT is set but no Postgres DSN is configured")
 		}
 	}
+	// issue #75: per-tool governance enforcement at the runtime tool seam.
+	// The Enforcer honors AGENTOS_POLICY_ENFORCEMENT (default ON); the
+	// decision source follows the process mode (pull -> API evaluate
+	// endpoint, Postgres -> durable policy records, else in-process state).
+	wirePolicyEnforcer(runner, logr, quotaDB)
 	recoveryCtx, recoveryStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer recoveryStop()
 	go func() {
@@ -282,7 +287,11 @@ func main() {
 			payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusRunning), "ts": time.Now().UTC().Format(time.RFC3339)}}
 			_ = postEventWithRetries(apiBase, runID, payload)
 		}()
-		run, rerr := runner.RunWithID(context.Background(), runID, agentID, input)
+		// issue #75: stamp the run scope (tenant + environment) so the
+		// runtime tool seam evaluates the right organization's policies;
+		// a blank environment keeps the platform default (production).
+		environment, _ := task.Payload["environment"].(string)
+		run, rerr := runner.RunWithID(runScopeContext(ctx, orgID, environment), runID, agentID, input)
 		if rerr != nil {
 			_ = runsService.UpdateStatus(runID, runs.StatusFailed, "")
 			go func() {
