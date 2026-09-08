@@ -7,12 +7,12 @@ package main
 // Endpoints (registered on apiMux by registerMcpRegistryRoutes; served
 // under BOTH /v1 and /api/v1):
 //
-//	POST   /mcp-servers        register + health-check (initialize ping)
-//	GET    /mcp-servers        list (name ASC)
-//	GET    /mcp-servers/{id}   get one
-//	PUT    /mcp-servers/{id}   update + re-check (tool cache refresh)
-//	DELETE /mcp-servers/{id}   delete (tools stop being exposed)
-//	POST   /mcp-servers/{id}/test  explicit re-test (status + tool cache refresh)
+//      POST   /mcp-servers        register + health-check (initialize ping)
+//      GET    /mcp-servers        list (name ASC)
+//      GET    /mcp-servers/{id}   get one
+//      PUT    /mcp-servers/{id}   update + re-check (tool cache refresh)
+//      DELETE /mcp-servers/{id}   delete (tools stop being exposed)
+//      POST   /mcp-servers/{id}/test  explicit re-test (status + tool cache refresh)
 //
 // Registration health check: the service runs the initialize handshake and
 // tools/list against the endpoint. An unreachable server is a 422
@@ -111,6 +111,20 @@ func mcpRegForce(r *http.Request) bool {
 	return forced
 }
 
+// mcpRegAcceptChanges reads the ?accept_changes flag of the re-test
+// endpoint (trust layer: adopt a changed toolset as cache + pin).
+func mcpRegAcceptChanges(r *http.Request) bool {
+	raw := strings.TrimSpace(r.URL.Query().Get("accept_changes"))
+	if raw == "" {
+		return false
+	}
+	accepted, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false
+	}
+	return accepted
+}
+
 // mcpServerPayload mirrors the HTTP create/update body. The secret_ref is a
 // NAME reference only — secret values are never accepted by this surface.
 type mcpServerPayload struct {
@@ -160,7 +174,9 @@ func mapMcpRegistryError(w http.ResponseWriter, err error) {
 // mcpServerJSON renders one server through an explicit field allowlist.
 // secret_ref is a NAME reference; the cached tools carry the remote
 // name/description/inputSchema verbatim (no secret material exists on the
-// row).
+// row). The trust fields (toolset_hash / pinned_toolset_hash /
+// last_drift_at, wave-8 issue B) are ADDITIVE and omitted when unset so
+// the v1 response contract is unchanged.
 func mcpServerJSON(s *mcp.Server) map[string]any {
 	out := map[string]any{
 		"id":           s.ID,
@@ -179,6 +195,15 @@ func mcpServerJSON(s *mcp.Server) map[string]any {
 		out["last_check_at"] = nil
 	}
 	out["protocol_version"] = s.ProtocolVersion
+	if s.ToolsetHash != "" {
+		out["toolset_hash"] = s.ToolsetHash
+	}
+	if s.PinnedToolsetHash != "" {
+		out["pinned_toolset_hash"] = s.PinnedToolsetHash
+	}
+	if s.LastDriftAt != nil {
+		out["last_drift_at"] = s.LastDriftAt.UTC().Format(time.RFC3339)
+	}
 	tools := make([]map[string]any, 0, len(s.Tools))
 	for _, t := range s.Tools {
 		entry := map[string]any{"name": t.Name}
@@ -329,7 +354,10 @@ func deleteMcpServerHandler(svc *mcp.Registry, auditSvc *audit.Service) http.Han
 }
 
 // testMcpServerHandler re-runs the health check (initialize ping +
-// tools/list refresh) for one server and returns the refreshed row.
+// tools/list refresh) for one server and returns the refreshed row. Trust
+// layer (wave-8 issue B): ?accept_changes=true adopts a changed toolset as
+// cache + pin, and the response carries a "drift" object whenever drift was
+// detected on THIS call (additive JSON only).
 func testMcpServerHandler(svc *mcp.Registry, auditSvc *audit.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, err := auth.ExtractClaims(r.Context())
@@ -342,16 +370,28 @@ func testMcpServerHandler(svc *mcp.Registry, auditSvc *audit.Service) http.Handl
 			writeMcpRegError(w, http.StatusNotFound, "MCP_SERVER_NOT_FOUND", "mcp server not found")
 			return
 		}
-		s, err := svc.TestServer(r.Context(), claims.OrganizationID, id)
+		s, drift, err := svc.TestServerOpts(r.Context(), claims.OrganizationID, id, mcp.TestOptions{
+			AcceptChanges: mcpRegAcceptChanges(r),
+		})
 		if err != nil {
 			mapMcpRegistryError(w, err)
 			return
 		}
 		if auditSvc != nil {
+			metadata := map[string]any{"name": s.Name, "status": s.Status, "tool_count": len(s.Tools)}
+			if drift != nil {
+				metadata["drift"] = true
+				metadata["drift_added"] = drift.Added
+				metadata["drift_removed"] = drift.Removed
+				metadata["drift_changed"] = drift.Changed
+			}
 			_, _ = auditSvc.LogCtx(r.Context(), claims.UserID, "mcp.server_tested",
-				claims.OrganizationID, "mcp_servers/"+id,
-				map[string]any{"name": s.Name, "status": s.Status, "tool_count": len(s.Tools)})
+				claims.OrganizationID, "mcp_servers/"+id, metadata)
 		}
-		writeJSONMcpReg(w, http.StatusOK, map[string]any{"mcp_server": mcpServerJSON(s)})
+		out := map[string]any{"mcp_server": mcpServerJSON(s)}
+		if drift != nil {
+			out["drift"] = driftJSON(*drift)
+		}
+		writeJSONMcpReg(w, http.StatusOK, out)
 	}
 }

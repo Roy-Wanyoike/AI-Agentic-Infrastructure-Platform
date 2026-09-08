@@ -109,6 +109,12 @@ type Server struct {
 	CreatedBy       string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+
+	// Trust layer (wave-8 issue B; additive fields — JSON omitempty keeps
+	// the v1 serialization contract; see trust.go for the semantics).
+	ToolsetHash       string     `json:"toolset_hash,omitempty"`        // sha256 of the cached toolset (ToolsetFingerprint)
+	PinnedToolsetHash string     `json:"pinned_toolset_hash,omitempty"` // operator-approved baseline ("" = not pinned)
+	LastDriftAt       *time.Time `json:"last_drift_at,omitempty"`       // last detected toolset drift (never cleared)
 }
 
 // CreateServerInput is the validated-on-arrival payload for Create/Update.
@@ -174,12 +180,23 @@ type Registry struct {
 	auditor    Auditor
 	httpClient *http.Client
 	timeout    time.Duration
+
+	// Trust layer state (wave-8 issue B; see trust.go):
+	//   - drift: in-memory bounded per-server drift history (in-memory by
+	//     design — the v1 Postgres schema is untouched; after a restart the
+	//     fingerprint baseline self-heals from the persisted tools cache).
+	//   - argScanner / argScanBlocking: the outbound argument-injection
+	//     scan seam and its opt-in enforcement flag (default OFF).
+	drift           map[string][]DriftEvent // orgID\x00serverID -> events (oldest first)
+	argScanner      ArgScanner
+	argScanBlocking bool
 }
 
 // NewRegistry returns the in-memory registry (zero infrastructure).
 func NewRegistry() *Registry {
 	return &Registry{
 		items:      make(map[string]map[string]*Server),
+		drift:      make(map[string][]DriftEvent),
 		httpClient: defaultProbeClient(),
 		timeout:    DefaultCheckTimeout,
 	}
@@ -197,6 +214,7 @@ func NewRegistryWithStore(store ServerStore, resolver SecretResolver) (*Registry
 	return &Registry{
 		store:      store,
 		resolver:   resolver,
+		drift:      make(map[string][]DriftEvent),
 		httpClient: defaultProbeClient(),
 		timeout:    DefaultCheckTimeout,
 	}, nil
@@ -404,6 +422,12 @@ func (r *Registry) CreateServer(ctx context.Context, orgID string, in CreateServ
 		if srv.Status != StatusOK && !force {
 			return nil, fmt.Errorf("%w: initialize handshake against %s failed", ErrServerUnreachable, srv.EndpointURL)
 		}
+		// Trust layer: a successful registration establishes the
+		// toolset baseline (no drift is possible against an empty
+		// history — this IS the baseline).
+		if srv.Status == StatusOK {
+			srv.ToolsetHash = ToolsetFingerprint(srv.Tools)
+		}
 	}
 
 	if r.store != nil {
@@ -431,8 +455,10 @@ func (r *Registry) CreateServer(ctx context.Context, orgID string, in CreateServ
 
 // UpdateServer replaces the mutable fields of one server within one tenant
 // and re-runs the health check (the endpoint may have changed), refreshing
-// the tool cache. Disabled updates skip the probe. Unknown/foreign ids are
-// ErrNotFound.
+// the tool cache UNDER THE TRUST RULES (trust.go): a changed toolset
+// fingerprint is recorded as drift, and a pinned server keeps its old
+// cached tools until the operator accepts the changes. Disabled updates
+// skip the probe. Unknown/foreign ids are ErrNotFound.
 func (r *Registry) UpdateServer(ctx context.Context, orgID, id string, in CreateServerInput, updatedBy string, force bool) (*Server, error) {
 	if r == nil {
 		return nil, errors.New("mcp: registry is nil")
@@ -463,7 +489,10 @@ func (r *Registry) UpdateServer(ctx context.Context, orgID, id string, in Create
 		srv.Tools = []RemoteTool{}
 		srv.ProtocolVersion = ""
 	} else {
-		r.probe(ctx, orgID, srv)
+		// Trust-aware probe/merge: drift detection + pin enforcement
+		// apply on the update path too (pointing a pinned server at a
+		// NEW endpoint must not silently swap its tools).
+		r.probeAndMerge(ctx, orgID, srv, TestOptions{})
 		if srv.Status != StatusOK && !force {
 			return nil, fmt.Errorf("%w: initialize handshake against %s failed", ErrServerUnreachable, srv.EndpointURL)
 		}
@@ -553,33 +582,9 @@ func (r *Registry) GetServer(ctx context.Context, orgID, id string) (*Server, er
 	return rec, nil
 }
 
-// TestServer re-runs the health check for one server (explicit re-test
-// endpoint): initialize ping + tools/list refresh, persisting status,
-// last_check_at, protocol_version and the refreshed tool cache. Disabled
-// servers stay probeable (the check informs the enable decision, connectors
-// precedent). The refreshed server is returned.
-func (r *Registry) TestServer(ctx context.Context, orgID, id string) (*Server, error) {
-	if r == nil {
-		return nil, errors.New("mcp: registry is nil")
-	}
-	if strings.TrimSpace(orgID) == "" {
-		return nil, ErrOrgRequired
-	}
-	srv, err := r.GetServer(ctx, orgID, id)
-	if err != nil {
-		return nil, err
-	}
-
-	r.probe(ctx, orgID, srv)
-	srv.UpdatedAt = time.Now().UTC()
-
-	if r.store != nil {
-		if err := r.store.Update(ctx, srv); err != nil {
-			return nil, err
-		}
-	}
-	return srv, nil
-}
+// TestServer now lives in trust.go: the re-test runs under the trust rules
+// (drift detection + pin enforcement) and stays signature-compatible with
+// the v1 endpoint.
 
 // BuildTools returns tool adapters for EVERY exposed tool of one org's
 // registered servers (the TENANT GUARD seam): only servers in status "ok"
@@ -643,10 +648,15 @@ func (r *Registry) RegisterToolsInto(ctx context.Context, orgID string, reg *too
 
 // callerFor wraps the outbound client for one server with the audit seam
 // (every external invocation writes one mcp.tool_call row with the server
-// ref + remote tool name; arguments are never logged).
+// ref + remote tool name; arguments are never logged) and the trust-layer
+// argument scan (findings land in the same audit row; blocking only when
+// the opt-in flag is on).
 func (r *Registry) callerFor(_ context.Context, orgID string, srv *Server, auditor Auditor) tools.MCPToolCaller {
 	client := r.clientFor(orgID, srv)
-	if auditor == nil {
+	r.mu.RLock()
+	scanner, block := r.argScanner, r.argScanBlocking
+	r.mu.RUnlock()
+	if auditor == nil && scanner == nil {
 		return client
 	}
 	return &auditedCaller{
@@ -655,25 +665,47 @@ func (r *Registry) callerFor(_ context.Context, orgID string, srv *Server, audit
 		serverID:   srv.ID,
 		serverName: srv.Name,
 		auditor:    auditor,
+		scanner:    scanner,
+		block:      block,
 	}
 }
 
-// auditedCaller decorates a tools.MCPToolCaller with the audit row.
+// auditedCaller decorates a tools.MCPToolCaller with the audit row and the
+// argument-injection scan (trust layer).
 type auditedCaller struct {
 	inner      tools.MCPToolCaller
 	orgID      string
 	serverID   string
 	serverName string
 	auditor    Auditor
+	scanner    ArgScanner
+	block      bool // WithArgScanBlocking(true): flagged calls never reach the wire
 }
 
 // maxAuditErrorBytes bounds the error text stored in audit metadata.
 const maxAuditErrorBytes = 512
 
-// CallTool implements tools.MCPToolCaller (audit is best-effort: it never
-// alters the tool outcome).
+// CallTool implements tools.MCPToolCaller: the optional arg scan runs
+// BEFORE the call leaves the platform (a blocked call never touches the
+// wire), and the audit is best-effort — it never alters a call that was
+// allowed to run. When a scanner is wired, its findings (redacted excerpts
+// only — never full arguments) ride the audit row under "scan_findings";
+// with blocking on, the error is the machine-readable ErrArgScanBlocked.
 func (c *auditedCaller) CallTool(ctx context.Context, toolName string, args map[string]any) (map[string]any, error) {
-	res, err := c.inner.CallTool(ctx, toolName, args)
+	var findings []Finding
+	if c.scanner != nil {
+		findings = c.scanner(c.serverName, toolName, args)
+	}
+	blocked := len(findings) > 0 && c.block
+
+	var res map[string]any
+	var err error
+	if blocked {
+		err = fmt.Errorf("%w (%d finding(s))", ErrArgScanBlocked, len(findings))
+	} else {
+		res, err = c.inner.CallTool(ctx, toolName, args)
+	}
+
 	if c.auditor != nil {
 		metadata := map[string]any{
 			"channel":   "mcp-client",
@@ -681,6 +713,12 @@ func (c *auditedCaller) CallTool(ctx context.Context, toolName string, args map[
 			"server_id": c.serverID,
 			"tool":      toolName,
 			"ok":        err == nil,
+		}
+		if c.scanner != nil {
+			metadata["scan_findings"] = trustAuditFindings(findings)
+		}
+		if blocked {
+			metadata["scan_blocked"] = true
 		}
 		if err != nil {
 			metadata["error"] = truncateString(err.Error(), maxAuditErrorBytes)
