@@ -1,0 +1,211 @@
+# AgentOS API — OpenAPI 3.1 fragment for the auth lifecycle surface
+# (issue #76: logout, single-use refresh, server-side token revocation).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1), exactly like the existing /auth/login and /auth/register paths.
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes, so
+#   python3 scripts/check_fragment_refs.py api/fragments/auth-lifecycle.yaml
+# prints ALL_REFS_RESOLVE (exit 0). Components carry the track-unique
+# `AuthLifecycle` prefix to avoid collisions.
+#
+# operationIds logout and refresh are NEW (verified unique against
+# api/openapi.yaml and every other fragment).
+#
+# Credential contract (deliberate, matches cmd/api/auth_lifecycle.go): these
+# operations are NOT behind the platform RBAC (no x-required-permission —
+# same convention as the /auth/sso/* operations in sso.yaml): every role
+# including VIEWER may log out or refresh its own session. The credential is
+# ALWAYS the presented HMAC session token (Authorization: Bearer); API keys
+# are not accepted here — machine credentials have their own revocation
+# endpoint (DELETE /api-keys/{id}). There is NO request body: the token to
+# act on is the presented one, so no principal can revoke another
+# principal's session by id.
+#
+# Server-side semantics (auth.Service, internal/auth):
+#   * logout writes the token's revocation reference to a deny list keyed
+#     "jti:<jti>" (tokens minted after issue #76) or "tok:<sha256 of the
+#     full token>" (legacy tokens without a jti) with a TTL equal to the
+#     token's remaining lifetime; ValidateToken consults the deny list after
+#     the signature check, so a logged-out token is dead on EVERY endpoint
+#     immediately. Storage is dual-mode: in-memory by default (zero-
+#     infrastructure mode), Postgres table auth_revocations (migration 023)
+#     in durable deployments — shared across replicas.
+#   * logout is IDEMPOTENT: an already-revoked or already-expired token
+#     still yields 204; only an invalidly signed credential is a 401.
+#   * refresh is SINGLE-USE: the presented token is validated (signature +
+#     expiry + deny list), the user's CURRENT identity row is re-read (SCIM
+#     deprovisioning active=false and role changes apply exactly as at
+#     password login), the old token is revoked server-side BEFORE the new
+#     one is minted (rotation can never leave two live tokens), and the
+#     fresh token carries a rotated jti and a full fresh 24h window.
+#   * Audit: auth.logout and auth.refresh rows are written to the org-scoped
+#     audit trail with deny-list references (jti:<uuid> / tok:<sha256 hex>)
+#     in resource and metadata — identifiers, never token material.
+openapi: 3.1.0
+info:
+  title: AgentOS — auth lifecycle (issue #76 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the auth lifecycle operations added by issue #76:
+  server-side session revocation (logout) and single-use token rotation
+  (refresh). Both close the gap that a leaked HMAC session token was valid
+  until natural expiry (24h) with no server-side kill switch. The deny list
+  is consulted by token validation on every protected endpoint, so a
+  logged-out or rotated-away token fails on the very next request. See the
+  fragment header comment for the full credential, revocation-key, and audit
+  contracts.
+paths:
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke the presented session token server-side (idempotent)
+      description: |
+        Invalidates the presented HMAC session token immediately and
+        server-side. The token's revocation reference lands on the deny
+        list with a TTL equal to the token's remaining lifetime, so the
+        entry self-expires when the token would have expired anyway; every
+        subsequent request with the same token fails (401, "token has been
+        revoked") on any protected endpoint. Idempotent: logging out an
+        already-revoked or already-expired token answers 204 again. The
+        credential is the presented bearer token only — no body, and API
+        keys are not accepted (machine credentials are revoked through
+        DELETE /api-keys/{id}). A successful logout is audit-logged
+        (auth.logout) with the token reference, never token material.
+        Tokens minted before issue #76 (no jti claim) are revoked under the
+        SHA-256 of their full token string and are equally killable.
+      security:
+      - bearerToken: []
+      responses:
+        '204':
+          description: |
+            Token revoked (or already revoked/expired — idempotent). No
+            response body. The token is dead on every protected endpoint
+            from this moment.
+        '401':
+          description: |
+            Missing or malformed Authorization header (error.code
+            UNAUTHORIZED), or the presented credential is not a validly
+            signed session token at all (error.code TOKEN_INVALID). Logout
+            of a merely expired or already-revoked token is NOT this case —
+            it answers 204.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleErrorEnvelope'
+  /auth/refresh:
+    post:
+      operationId: refresh
+      summary: Exchange a valid session token for a fresh one (single-use rotation)
+      description: |
+        Rotates the presented session token: the old token is revoked
+        server-side and a fresh token (rotated jti, full new 24h window,
+        sliding session) is returned. Single-use by construction — the old
+        token is revoked BEFORE the new one is minted, so replaying it (for
+        another refresh or any protected endpoint) answers 401
+        TOKEN_REVOKED; a rotation can never leave two live tokens. The
+        fresh claims are re-derived from the user's CURRENT stored identity
+        row, so SCIM deprovisioning (active=false) and role changes apply
+        exactly as they do at password login: a deprovisioned user is
+        refused with 401 ACCOUNT_DISABLED (and no rotation happens — the
+        old token's validity is untouched by a failed refresh), and an
+        identity that can no longer be resolved is refused with 401
+        TOKEN_INVALID. A deny-list backend outage also fails closed (401).
+        Successful rotations are audit-logged (auth.refresh) with the old
+        and new token references, never token material.
+      security:
+      - bearerToken: []
+      responses:
+        '200':
+          description: |
+            Rotation complete. The old token is already dead server-side;
+            the response carries the only live credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleRefreshResponse'
+        '401':
+          description: |
+            The presented token is invalid, malformed, expired, revoked
+            (error.code TOKEN_INVALID or TOKEN_REVOKED — a revoked token is
+            reported distinctly so single-use replay is observable), or the
+            account has been deprovisioned (error.code ACCOUNT_DISABLED).
+            UNAUTHORIZED is used when the Authorization header is missing
+            or not a bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: |
+        HMAC-SHA256 JWT-style token from POST /auth/login (24h expiry) — the
+        only credential these lifecycle endpoints accept. Logout and refresh
+        act on the PRESENTED token; API keys are deliberately not accepted.
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Pre-provisioned API key (see main spec). DECLARED here only because
+        the fragment is standalone-valid; the lifecycle endpoints reject it —
+        API keys are revoked through DELETE /api-keys/{id}, not /auth/logout.
+  schemas:
+    AuthLifecycleRefreshResponse:
+      type: object
+      description: |
+        Fresh session token (rotated jti, full new 24h window). Same shape
+        as the POST /auth/login response. The replaced token is already
+        revoked server-side when this response is emitted.
+      properties:
+        token:
+          type: string
+          minLength: 1
+          description: The new HMAC session token. Store it; the old one is dead.
+      required:
+      - token
+    AuthLifecycleErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: |
+                One of UNAUTHORIZED (missing/non-bearer credential),
+                TOKEN_INVALID (not a validly signed token, expired, or
+                unresolvable identity), TOKEN_REVOKED (deny-listed: logged
+                out or rotated away — single-use replay is observable),
+                ACCOUNT_DISABLED (SCIM deprovisioned or otherwise inactive
+                identity).
+              examples:
+              - TOKEN_REVOKED
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
