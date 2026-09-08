@@ -54,6 +54,9 @@ export type Deployment = {
   version: number
   environment: string
   status: string
+  /** Canary config (issue #13): version 0 = no canary; weight is the 0-100 split. */
+  canaryVersion?: number
+  canaryWeight?: number
   health?: DeploymentHealth | null
   createdAt?: string
   updatedAt?: string
@@ -114,13 +117,16 @@ function normalizeHealth(raw: unknown): DeploymentHealth | null {
   }
 }
 
-function normalizeDeployment(raw: unknown): Deployment {
+/** Exported so the canary module can normalize the echoed deployment views. */
+export function normalizeDeployment(raw: unknown): Deployment {
   return {
     id: asString(pickField(raw, 'id', 'deploymentId')) ?? '',
     agentId: asString(pickField(raw, 'agentId', 'agent_id')) ?? '',
     version: asNumber(pickField(raw, 'version')) ?? 0,
     environment: (asString(pickField(raw, 'environment')) ?? '').toLowerCase(),
     status: (asString(pickField(raw, 'status')) ?? 'unknown').toLowerCase(),
+    canaryVersion: asNumber(pickField(raw, 'canary_version', 'canaryVersion')),
+    canaryWeight: asNumber(pickField(raw, 'canary_weight', 'canaryWeight')),
     health: normalizeHealth(pickField(raw, 'health')),
     createdAt: asString(pickField(raw, 'createdAt', 'created_at')),
     updatedAt: asString(pickField(raw, 'updatedAt', 'updated_at')),

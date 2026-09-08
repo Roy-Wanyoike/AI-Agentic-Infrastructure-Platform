@@ -4,23 +4,29 @@
 // - GET/POST /agents/{id}/versions… — snapshot list, publish, agent rollback
 // - GET /agents/{id}/versions/diff?from=&to= — field-level diff (3-e)
 // - GET/POST /deployments… — create, promote, rollback (RBAC-gated buttons)
+// - POST /deployments/{id}/canary(/promote|/abort) + GET /agents/{agentId}/canary/status
+//   — progressive canary rollout controls (issues #13/#51/#81)
 //
 // RBAC props mirror the API permission grants:
 // - canManageVersions (agents.write → OWNER/ADMIN): snapshot, publish, restore
 // - canWrite (deployments.write → MEMBER+): request a deployment
-// - canDeploy (deployments.deploy → OWNER/ADMIN): promote/rollback
+// - canDeploy (deployments.deploy → OWNER/ADMIN): promote/rollback + canary ops
 
 import { useMemo, useState, type FormEvent } from 'react'
 import {
+  useAbortCanary,
   useAgentVersions,
   useAgents,
+  useCanaryStatus,
   useCreateAgentVersion,
   useCreateDeployment,
   useDeployments,
+  usePromoteCanary,
   usePromoteDeployment,
   usePublishAgentVersion,
   useRollbackAgent,
   useRollbackDeployment,
+  useSetDeploymentCanary,
   useVersionDiff,
 } from '../lib/hooks'
 import {
@@ -29,9 +35,11 @@ import {
   type AgentConfigVersion,
   type VersionDiffField,
 } from '../lib/api/versions'
+import type { CanaryStatus } from '../lib/api/canary'
+import { ApiError } from '../lib/api/client'
 import { formatDateTime, formatRelativeTime, shortenId } from '../lib/format'
 import { EmptyState, ErrorBanner, PageHeader, Skeleton, StatusPill, SummaryStat } from './shared'
-import { describeError } from './uiHelpers'
+import { apiErrorCode, describeError } from './uiHelpers'
 
 /** Renders a raw JSON diff value defensively (never "undefined" / "[object Object]"). */
 function formatDiffValue(value: unknown): string {
@@ -289,6 +297,289 @@ function DeploymentActions({ deploymentId, status, canDeploy }: { deploymentId: 
   )
 }
 
+// ---------------------------------------------------------------------------
+// Canary rollout (issue #81): traffic split controls over the deployment
+// lifecycle. The status endpoint (GET /agents/{agentId}/canary/status) is the
+// single source of truth — the split %, the eval-gated decision (when the
+// auto-promotion engine recorded one) and fresh eval sample stats are polled
+// live; writes go through the same healthy deployment row the status names.
+// ---------------------------------------------------------------------------
+
+/**
+ * Live split slider (1-100). The surrounding container is keyed by the live
+ * server weight so this re-initializes only when the split actually changes
+ * server-side — dragging never fights the poller.
+ */
+function CanaryWeightSlider({ initialWeight, value, onChange }: { initialWeight: number; value?: number; onChange?: (weight: number) => void }) {
+  const [weight, setWeight] = useState(initialWeight)
+  const current = value ?? weight
+  const update = (next: number) => {
+    setWeight(next)
+    onChange?.(next)
+  }
+  return (
+    <div className="field">
+      <label htmlFor="canary-weight">
+        Canary traffic — <strong>{current}%</strong> canary / {100 - current}% stable
+      </label>
+      <input
+        id="canary-weight"
+        type="range"
+        className="weight-slider"
+        min={1}
+        max={100}
+        step={1}
+        value={current}
+        onChange={(event) => update(Number(event.target.value))}
+      />
+    </div>
+  )
+}
+
+function CanaryControls({ status, versions, canDeploy }: { status: CanaryStatus; versions: AgentConfigVersion[]; canDeploy: boolean }) {
+  const setCanary = useSetDeploymentCanary(status.agentId, status.environment)
+  const promote = usePromoteCanary(status.agentId, status.environment)
+  const abort = useAbortCanary(status.agentId, status.environment)
+  const [message, setMessage] = useState<string | null>(null)
+  const [messageError, setMessageError] = useState(false)
+  // Local slider position; it re-snaps to the polled server truth whenever
+  // the split changes out-of-band (another operator, the auto-decision), so
+  // dragging never fights the live status poller.
+  const [weight, setWeight] = useState(Math.max(status.canaryWeight, 1))
+  const [seenServerWeight, setSeenServerWeight] = useState(status.canaryWeight)
+  if (status.canaryWeight !== seenServerWeight) {
+    setSeenServerWeight(status.canaryWeight)
+    setWeight(Math.max(status.canaryWeight, 1))
+  }
+
+  const report = (ok: string | null, error: unknown) => {
+    setMessageError(Boolean(error))
+    setMessage(error ? describeError(error) : ok)
+  }
+
+  const busy = setCanary.isPending || promote.isPending || abort.isPending
+
+  const candidateVersions = useMemo(
+    () =>
+      versions
+        .filter((version) => version.version !== status.stableVersion)
+        .sort((a, b) => b.version - a.version),
+    [versions, status.stableVersion],
+  )
+
+  const startCanary = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const raw = new FormData(event.currentTarget).get('canary-version')
+    const version = Number(raw)
+    if (!version) return
+    setCanary.mutate(
+      { deploymentId: status.deploymentId, canaryVersion: version },
+      { onSuccess: (deployment) => report(`Canary v${version} attached to ${deployment.environment} at ${deployment.canaryWeight}% traffic.`, null), onError: (error) => report(null, error) },
+    )
+  }
+
+  const confirmPromote = () => {
+    if (!window.confirm(`Promote canary v${status.canaryVersion} to stable? It will serve 100% of ${status.environment} traffic.`)) return
+    promote.mutate(status.deploymentId, {
+      onSuccess: (deployment) => report(`Canary promoted — v${deployment.version} is now the stable ${deployment.environment} version.`, null),
+      onError: (error) => report(null, error),
+    })
+  }
+
+  const confirmAbort = () => {
+    if (!window.confirm(`Abort canary v${status.canaryVersion}? The stable v${status.stableVersion} returns to 100% of traffic.`)) return
+    abort.mutate(status.deploymentId, {
+      onSuccess: () => report(`Canary aborted — stable v${status.stableVersion} serves 100% again.`, null),
+      onError: (error) => report(null, error),
+    })
+  }
+
+  return (
+    <div className="stack-gap">
+      {!canDeploy ? <p className="detail-copy muted">Canary operations change what serves traffic — they need OWNER or ADMIN (deployments.deploy).</p> : null}
+      {canDeploy && message ? <div className={messageError ? 'form-error' : 'form-note'}>{message}</div> : null}
+
+      {canDeploy && !status.canaryActive ? (
+        <form onSubmit={startCanary} className="stack-gap">
+          <div className="form-grid">
+            <div className="field">
+              <label htmlFor="canary-version">Canary version (must differ from stable v{status.stableVersion})</label>
+              <select id="canary-version" name="canary-version" required defaultValue="">
+                <option value="" disabled>
+                  {candidateVersions.length === 0 ? 'No other versions exist' : 'Pick a version…'}
+                </option>
+                {candidateVersions.map((version) => (
+                  <option key={version.version} value={version.version}>
+                    v{version.version} ({version.status})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="form-actions">
+            <span className="form-note">POST /deployments/{shortenId(status.deploymentId)}/canary — ramp starts at 0%</span>
+            <button type="submit" className="primary-button" disabled={busy || candidateVersions.length === 0}>
+              {setCanary.isPending ? 'Starting…' : 'Start canary'}
+            </button>
+          </div>
+        </form>
+      ) : null}
+
+      {canDeploy && status.canaryActive ? (
+        <>
+          <div className="canary-controls" key={`${status.deploymentId}:${status.canaryWeight}`}>
+            <CanaryWeightSlider initialWeight={Math.max(status.canaryWeight, 1)} value={weight} onChange={setWeight} />
+            <button
+              type="button"
+              className="ghost-button small"
+              disabled={busy || weight === status.canaryWeight}
+              onClick={() =>
+                setCanary.mutate(
+                  { deploymentId: status.deploymentId, canaryWeight: weight },
+                  { onSuccess: (deployment) => report(`Split moved — canary now serves ${deployment.canaryWeight}%.`, null), onError: (error) => report(null, error) },
+                )
+              }
+            >
+              {setCanary.isPending ? 'Applying…' : 'Apply split'}
+            </button>
+          </div>
+          <div className="card-actions">
+            <button type="button" className="primary-button small" disabled={busy} onClick={confirmPromote}>
+              {promote.isPending ? 'Promoting…' : `Promote canary v${status.canaryVersion}`}
+            </button>
+            <button type="button" className="danger-button small" disabled={busy} onClick={confirmAbort}>
+              {abort.isPending ? 'Aborting…' : 'Abort canary'}
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function CanaryDecisionPanel({ status }: { status: CanaryStatus }) {
+  const decision = status.decision
+  if (!decision) {
+    return status.policy ? (
+      <p className="form-note">No automatic decision yet — the eval-gated engine records one per canary window once {status.policy.minCanaryRuns}+ eval run(s) complete.</p>
+    ) : null
+  }
+  return (
+    <div className="canary-decision">
+      <div className="canary-decision-head">
+        <StatusPill status={decision.action === 'promote' ? 'promote' : 'rollback'} />
+        <span>{formatDateTime(decision.decidedAt)}</span>
+        <span>
+          {decision.runsCounted} run(s) · pass rate {(decision.passRate * 100).toFixed(1)}% · p95 {decision.p95LatencyMs}ms · avg cost {decision.avgCostCents.toFixed(2)}¢
+        </span>
+      </div>
+      {decision.reason ? <p className="canary-reason">{decision.reason}</p> : null}
+    </div>
+  )
+}
+
+function CanaryPanel({ agentId, versions, canDeploy }: { agentId: string; versions: AgentConfigVersion[]; canDeploy: boolean }) {
+  const [environment, setEnvironment] = useState<string>(DEPLOYMENT_ENVIRONMENTS[2])
+  const statusQuery = useCanaryStatus(agentId, environment)
+  const status = statusQuery.data
+
+  // 404 NOT_FOUND = "no healthy deployment serves this agent+environment" —
+  // a documented empty state (request a deployment first), not a failure.
+  const noServingDeployment =
+    statusQuery.isError && ((statusQuery.error instanceof ApiError && statusQuery.error.status === 404) || apiErrorCode(statusQuery.error) === 'NOT_FOUND')
+
+  return (
+    <article className="panel wide">
+      <div className="panel-header">
+        <div>
+          <p className="eyebrow">Progressive rollout</p>
+          <h3>Canary</h3>
+        </div>
+        <div className="topbar-actions">
+          {status?.canaryActive ? <StatusPill status="live" /> : null}
+          <label className="inline-label" htmlFor="canary-environment">
+            Environment
+            <select id="canary-environment" value={environment} onChange={(event) => setEnvironment(event.target.value)}>
+              {DEPLOYMENT_ENVIRONMENTS.map((candidate) => (
+                <option key={candidate} value={candidate}>
+                  {candidate}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <p className="form-note">GET /agents/{shortenId(agentId)}/canary/status?environment={environment} · polled every 5s</p>
+
+      {statusQuery.isPending ? (
+        <div className="stack-gap">
+          <Skeleton height={16} />
+          <Skeleton height={16} />
+          <Skeleton height={16} />
+        </div>
+      ) : statusQuery.isError ? (
+        noServingDeployment ? (
+          <EmptyState
+            title={`No healthy deployment serves ${environment}`}
+            hint="A canary rides on the environment's healthy deployment row — request a deployment of a published version above, then start the canary here."
+          />
+        ) : (
+          <ErrorBanner error={statusQuery.error} onRetry={() => void statusQuery.refetch()} />
+        )
+      ) : status ? (
+        <>
+          <section className="summary-grid">
+            <SummaryStat label="Deployment" value={shortenId(status.deploymentId)} accent="info" />
+            <SummaryStat label="Stable" value={`v${status.stableVersion}`} accent="success" />
+            <SummaryStat label="Canary" value={status.canaryActive ? `v${status.canaryVersion}` : '—'} accent={status.canaryActive ? 'warning' : 'default'} />
+            <SummaryStat label="Split" value={status.canaryActive ? `${status.canaryWeight}% canary` : 'no canary'} accent={status.canaryActive ? 'info' : 'default'} />
+          </section>
+
+          {status.canaryActive ? (
+            <div className="quality-list" aria-label="Live traffic split">
+              <div>
+                <label>Traffic split</label>
+                <div className="meter">
+                  <span style={{ width: `${status.canaryWeight}%` }} />
+                </div>
+                <strong>
+                  {status.canaryWeight}% canary v{status.canaryVersion} · {100 - status.canaryWeight}% stable v{status.stableVersion}
+                </strong>
+              </div>
+            </div>
+          ) : null}
+
+          <CanaryDecisionPanel status={status} />
+
+          {status.stats ? (
+            <section className="summary-grid">
+              <SummaryStat label="Eval runs in window" value={String(status.stats.runsCounted)} />
+              <SummaryStat
+                label="Case pass rate"
+                value={status.stats.casesCounted > 0 ? `${((status.stats.passedCases / status.stats.casesCounted) * 100).toFixed(1)}%` : '—'}
+                accent="success"
+              />
+              <SummaryStat label="p95 latency" value={`${status.stats.p95LatencyMs} ms`} accent="info" />
+              <SummaryStat label="Avg cost / run" value={`${status.stats.avgCostCents.toFixed(2)}¢`} accent="warning" />
+            </section>
+          ) : null}
+
+          {status.policy ? (
+            <p className="form-note">
+              Policy — min pass rate {(status.policy.minPassRate * 100).toFixed(0)}% · min {status.policy.minCanaryRuns} eval run(s)
+              {status.policy.maxP95LatencyMs > 0 ? ` · p95 ≤ ${status.policy.maxP95LatencyMs}ms` : ''}
+              {status.policy.maxCostPerRunCents > 0 ? ` · avg cost ≤ ${status.policy.maxCostPerRunCents}¢/run` : ''}
+            </p>
+          ) : null}
+
+          <CanaryControls status={status} versions={versions} canDeploy={canDeploy} />
+        </>
+      ) : null}
+    </article>
+  )
+}
+
 export function VersionsView({
   canManageVersions,
   canWrite,
@@ -479,6 +770,9 @@ export function VersionsView({
               </div>
             )}
           </article>
+
+          {/* issue #81: canary split/promote/abort + eval-gated decision + live stats */}
+          <CanaryPanel agentId={agentId} versions={versions} canDeploy={canDeploy} />
         </>
       )}
     </>

@@ -2012,3 +2012,171 @@ button.searchbox:hover {
   font-size: 0.8rem;
   white-space: nowrap;
 }
+
+
+/* ---------------------------------------------------------------------------
+Issue #81 dashboard parity — canary controls (Versions), Ops (queue/DLQ),
+Tools (registry), Security (audit trail), Settings (identity admin)
+--------------------------------------------------------------------------- */
+
+/* Canary: dead-letter/promote/rollback + identity status pills. */
+.status-badge.dead-letter,
+.status-badge.rollback {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
+
+.status-badge.promote {
+  background: rgba(52, 211, 153, 0.12);
+  color: #6ee7b7;
+}
+
+.status-badge.configured {
+  background: rgba(52, 211, 153, 0.12);
+  color: #6ee7b7;
+}
+
+.status-badge.not-configured {
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+}
+
+.status-badge.unknown {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fcd34d;
+}
+
+/* Canary: split slider + decision panel. */
+.canary-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+}
+
+.canary-controls .field {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.weight-slider {
+  width: 100%;
+  accent-color: #7dd3fc;
+  cursor: pointer;
+}
+
+.canary-decision {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.canary-decision-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.canary-reason {
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9rem;
+  color: #e8eeff;
+}
+
+/* Ops: task payload + error cells. */
+.payload-cell {
+  display: inline-block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  color: #cbd5f5;
+}
+
+.payload-block {
+  display: block;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.45);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  color: #cbd5f5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-error-block {
+  margin-top: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.task-error-block label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+}
+
+.task-error-block p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #fca5a5;
+}
+
+.row-selected > td {
+  background: rgba(125, 211, 252, 0.07);
+}
+
+/* Settings/Security: compact filter rows. */
+.filter-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.filter-row .field {
+  flex: 1;
+  min-width: 220px;
+  margin-bottom: 0;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Tools: registry cards + schema disclosure. */
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.tool-schema {
+  margin-top: 10px;
+}
+
+.tool-schema summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #7dd3fc;
+}
+
+.tool-schema .payload-block {
+  margin-top: 8px;
+  max-height: 260px;
+  overflow: auto;
+}

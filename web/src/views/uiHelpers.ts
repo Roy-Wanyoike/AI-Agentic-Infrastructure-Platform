@@ -17,19 +17,23 @@ export const navItems = [
   'Knowledge',
   'Memory',
   'Analytics',
+  'Ops',
   'Policies',
   'Schedules',
   'Webhooks',
   'Marketplace',
   'Connectors',
+  'Tools',
   'Secrets',
+  'Security',
   'Settings',
 ] as const
 
 export type ViewName = (typeof navItems)[number]
 
 /**
- * Sidebar glyphs (issue #53 added Billing/Marketplace/Connectors/Secrets).
+ * Sidebar glyphs (issue #53 added Billing/Marketplace/Connectors/Secrets;
+ * issue #81 adds Ops/Tools/Security and fills the Settings placeholder).
  * Monochrome symbols matching the existing text-first design language.
  */
 export const navIcons: Record<ViewName, string> = {
@@ -45,12 +49,15 @@ export const navIcons: Record<ViewName, string> = {
   Knowledge: '❖',
   Memory: '≡',
   Analytics: '◫',
+  Ops: '▦',
   Policies: '⛨',
   Schedules: '⏱',
   Webhooks: '⇄',
   Marketplace: '⇪',
   Connectors: '⇋',
+  Tools: '⚒',
   Secrets: '✷',
+  Security: '§',
   Settings: '⚙',
 }
 
