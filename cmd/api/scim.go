@@ -5,15 +5,18 @@ package main
 // Endpoints (registered on apiMux by registerScimRoutes; served under BOTH
 // /v1 and /api/v1):
 //
-//	POST /scim/tokens              -> mint a SCIM bearer credential
-//	                                  (session/API-key auth + organization.manage
-//	                                  = OWNER only); plaintext shown ONCE
-//	GET   /scim/v2/Users?filter=   -> SCIM 2.0 ListResponse
-//	                                  (filter=userName eq "..." supported)
-//	POST  /scim/v2/Users           -> JIT-provision one identity (201)
-//	GET   /scim/v2/Users/{id}      -> point read (404 without existence leak)
-//	PUT   /scim/v2/Users/{id}      -> full replace (userName immutable)
-//	PATCH /scim/v2/Users/{id}      -> replace active (deprovisioning)
+//      POST /scim/tokens              -> mint a SCIM bearer credential
+//                                        (session/API-key auth + organization.manage
+//                                        = OWNER only); plaintext shown ONCE
+//      DELETE /scim/tokens/{id}       -> revoke one credential (session/API-key
+//                                        auth + users.manage = OWNER/ADMIN,
+//                                        issue #79); 204, org-scoped, audited
+//      GET   /scim/v2/Users?filter=   -> SCIM 2.0 ListResponse
+//                                        (filter=userName eq "..." supported)
+//      POST  /scim/v2/Users           -> JIT-provision one identity (201)
+//      GET   /scim/v2/Users/{id}      -> point read (404 without existence leak)
+//      PUT   /scim/v2/Users/{id}      -> full replace (userName immutable)
+//      PATCH /scim/v2/Users/{id}      -> replace active (deprovisioning)
 //
 // The four /scim/v2/Users endpoints are guarded by scim.RequireSCIMToken —
 // they accept ONLY a dedicated scim_ bearer credential (hashed at rest like
@@ -29,6 +32,7 @@ import (
 	"strings"
 
 	"agentos/internal/apikeys"
+	"agentos/internal/audit"
 	"agentos/internal/auth"
 	"agentos/internal/scim"
 )
@@ -109,6 +113,62 @@ func createSCIMTokenHandler(svc *scim.Service) http.HandlerFunc {
 			},
 			"secret": secret,
 		})
+	}
+}
+
+// revokeSCIMTokenHandler serves DELETE /scim/tokens/{id} (issue #79). The
+// tenant comes exclusively from the auth claims; the store re-checks
+// organization_id on the revoke itself, so unknown and foreign ids collapse
+// into one 404 with no existence leak across tenants.
+//
+// Permission: users.manage (matrix exactly OWNER/ADMIN, per issue #79).
+// Minting stays organization.manage (OWNER only) — creating directory
+// credentials is owner-level — while retiring an existing one follows the
+// api-keys revoke precedent (agents.write, OWNER/ADMIN): credential
+// lifecycle management, not tenant administration.
+//
+// Semantics: success is 204 No Content and the revoked secret authenticates
+// as nothing at all (bearer plane unchanged — SCIM tokens remain distinct
+// from session tokens and API keys). Idempotency mirrors the existing
+// scim.Service.RevokeToken behavior, which is reused verbatim: the
+// in-memory store re-confirms an already-revoked id as 204, while the
+// Postgres store's org-guarded UPDATE only matches live rows (revoked_at IS
+// NULL), so a repeated DELETE of an already-revoked id 404s there — revoked
+// and never-existed are deliberately indistinguishable, mirroring the
+// bearer plane where a revoked credential is simply invalid. Neither path
+// can ever un-revoke. The audit row carries no credential material (neither
+// the plaintext secret nor the stored hash).
+func revokeSCIMTokenHandler(svc *scim.Service, auditSvc *audit.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeSsoError(w, http.StatusServiceUnavailable, "SCIM_UNAVAILABLE", "scim service not available")
+			return
+		}
+		claims, err := auth.ExtractClaims(r.Context())
+		if err != nil || strings.TrimSpace(claims.OrganizationID) == "" {
+			writeSsoError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing organization claim")
+			return
+		}
+		id := r.PathValue("id")
+		if strings.TrimSpace(id) == "" {
+			writeSsoError(w, http.StatusNotFound, "SCIM_TOKEN_NOT_FOUND", "scim token not found")
+			return
+		}
+		if err := svc.RevokeToken(r.Context(), claims.OrganizationID, id); err != nil {
+			if errors.Is(err, scim.ErrTokenNotFound) {
+				writeSsoError(w, http.StatusNotFound, "SCIM_TOKEN_NOT_FOUND", "scim token not found")
+				return
+			}
+			writeSsoError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "scim token revocation failed")
+			return
+		}
+		if auditSvc != nil {
+			// Best-effort audit trail entry (tenant-scoped insert; no
+			// credential material). Mirrors the api_key.revoked pattern.
+			_, _ = auditSvc.LogCtx(r.Context(), claims.UserID, "scim_token.revoked",
+				claims.OrganizationID, "scim/tokens/"+id, nil)
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
@@ -211,14 +271,27 @@ func patchSCIMUserHandler(svc *scim.Service) http.HandlerFunc {
 	}
 }
 
-// registerScimRoutes mounts the token-minting route (platform OWNER surface)
-// and the SCIM 2.0 protocol endpoints (dedicated bearer-token surface).
-func registerScimRoutes(apiMux *http.ServeMux, svc *scim.Service, authSvc *auth.Service, apiKeysSvc *apikeys.Service) {
+// registerScimRoutes mounts the token-minting route (platform OWNER surface),
+// the token-revocation route (issue #79, OWNER/ADMIN) and the SCIM 2.0
+// protocol endpoints (dedicated bearer-token surface).
+//
+// auditSvc is optional (variadic) so the legacy 4-argument call sites (e.g.
+// the issue #29 tests in scim_test.go) keep compiling; cmd/api/main.go passes
+// a.auditSvc, so the production DELETE route writes its scim_token.revoked
+// row (issue #79). Without it the route still mounts and only skips the
+// audit entry.
+func registerScimRoutes(apiMux *http.ServeMux, svc *scim.Service, authSvc *auth.Service, apiKeysSvc *apikeys.Service, auditSvc ...*audit.Service) {
 	if apiMux == nil {
 		return
 	}
+	var audits *audit.Service
+	if len(auditSvc) > 0 {
+		audits = auditSvc[0]
+	}
 	apiMux.Handle("POST /scim/tokens", auth.RequireAuthOrAPIKey(authSvc, apiKeysSvc)(
 		auth.RequirePermission(authSvc, auth.PermissionOrgManage)(http.HandlerFunc(createSCIMTokenHandler(svc)))))
+	apiMux.Handle("DELETE /scim/tokens/{id}", auth.RequireAuthOrAPIKey(authSvc, apiKeysSvc)(
+		auth.RequirePermission(authSvc, auth.PermissionUsersManage)(http.HandlerFunc(revokeSCIMTokenHandler(svc, audits)))))
 
 	guard := scim.RequireSCIMToken(svc)
 	apiMux.Handle("GET /scim/v2/Users", guard(http.HandlerFunc(listSCIMUsersHandler(svc))))

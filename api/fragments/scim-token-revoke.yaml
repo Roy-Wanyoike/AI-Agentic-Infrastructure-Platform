@@ -1,0 +1,163 @@
+# AgentOS API — OpenAPI 3.1 fragment for the SCIM token revocation endpoint
+# (issue #79).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). The minting operation (createScimToken) and the SCIM 2.0
+# protocol surface live in api/fragments/sso.yaml (issue #29 track); this
+# fragment adds ONLY the DELETE lifecycle operation on the minted
+# credentials. Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/scim-token-revoke.yaml`
+# passes. Components carry the track-unique `ScimTokenRevoke` prefix to avoid
+# collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey — the PLATFORM session/API-key surface,
+#     exactly like the sibling POST /scim/tokens. The dedicated scim_ bearer
+#     plane (/scim/v2/Users) is deliberately NOT accepted here: revocation is
+#     an administrative act, not a directory-sync capability, and the bearer
+#     plane separation (issue #29) is untouched — a SCIM token still can
+#     never double as a session credential and vice versa.
+#   * x-required-permission documents the RBAC permission per operation.
+#     No new permission enum was introduced; the strictest EXISTING grant
+#     whose role matrix matches the issue #79 contract (OWNER/ADMIN) is
+#     reused: users.manage (same matrix as org-member add/remove,
+#     cmd/api/organization.go; minting remains organization.manage = exactly
+#     OWNER — creating directory credentials is owner-level, retiring one is
+#     credential lifecycle management like the api-keys revoke).
+#   * structured error model {"error":{"code","message"}} (the shared
+#     writeSsoError envelope used by the SCIM token endpoints).
+#
+# SECURITY: the response never carries credential material — the plaintext
+# scim_ secret exists only in the minting response (exactly once) and only
+# the SHA-256 hash is persisted; the scim_token.revoked audit row records
+# actor/organization/resource only.
+openapi: 3.1.0
+info:
+  title: AgentOS — SCIM token revocation (issue #79 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the SCIM bearer-credential lifecycle added by
+  issue #79. SCIM tokens minted by POST /scim/tokens (issue #29) can now be
+  retired: DELETE /scim/tokens/{id} revokes one credential within the
+  caller's organization (OWNER/ADMIN via users.manage) and writes a
+  scim_token.revoked audit row. Revocation is immediate — the secret stops
+  authenticating on the very next request (the store resolves by hash and a
+  revoked row authenticates as nothing at all). The org guard lives in the
+  store's UPDATE itself, so unknown and foreign-organization ids surface as
+  404 with no existence leak across tenants. Idempotency follows the
+  existing scim.Service.RevokeToken behavior: the in-memory store
+  re-confirms an already-revoked id as 204, while the Postgres store's
+  org-guarded UPDATE only matches live rows (revoked_at IS NULL), so a
+  repeated DELETE of an already-revoked id 404s there — revoked and
+  never-existed are deliberately indistinguishable. Neither path can ever
+  un-revoke.
+paths:
+  /scim/tokens/{id}:
+    delete:
+      operationId: revokeScimToken
+      summary: Revoke one SCIM bearer credential (immediate; org-scoped)
+      description: |
+        Write operation (users.manage, OWNER/ADMIN). Revokes the SCIM bearer
+        credential identified by `id` within the CALLER's organization — the
+        tenant comes from the auth claims, never from the request. Success
+        is 204 No Content; the revoked secret fails scim.Service.Authenticate
+        (and therefore every /scim/v2/Users request) immediately. Unknown or
+        foreign-organization ids surface as 404 SCIM_TOKEN_NOT_FOUND with no
+        existence leak across tenants. The revocation is audit-logged as
+        `scim_token.revoked` (resource scim/tokens/{id}; no secret or hash
+        material).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/ScimTokenRevokeID'
+      responses:
+        '204':
+          description: |
+            Credential revoked (in the in-memory store also the idempotent
+            answer for an already-revoked id). No response body.
+        '401':
+          $ref: '#/components/responses/ScimTokenRevokeUnauthorized'
+        '403':
+          $ref: '#/components/responses/ScimTokenRevokeForbidden'
+        '404':
+          description: |
+            No live credential with this id within the caller's organization
+            (error.code SCIM_TOKEN_NOT_FOUND). Covers unknown ids and
+            cross-tenant ids without an existence leak; in the Postgres
+            store it also covers already-revoked ids (the org-guarded UPDATE
+            only matches revoked_at IS NULL rows).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScimTokenRevokeErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScimTokenRevokeErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    ScimTokenRevokeID:
+      name: id
+      in: path
+      required: true
+      description: SCIM token id (UUID, as returned by the mint operation createScimToken).
+      schema:
+        type: string
+        minLength: 1
+      example: 3f6c1a5e-8e2b-4c1d-9a7b-2f0d5e6a1b2c
+  responses:
+    ScimTokenRevokeUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ScimTokenRevokeErrorEnvelope'
+    ScimTokenRevokeForbidden:
+      description: |
+        Authenticated but lacking the required permission (users.manage =
+        exactly OWNER/ADMIN). No revocation happens and nothing is audited.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ScimTokenRevokeErrorEnvelope'
+  schemas:
+    ScimTokenRevokeErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of SCIM_TOKEN_NOT_FOUND, SCIM_UNAVAILABLE, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - SCIM_TOKEN_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error

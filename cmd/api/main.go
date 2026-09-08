@@ -375,7 +375,8 @@ func (a *app) routes() http.Handler {
 	registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #29: OIDC SSO browser flow + SCIM 2.0 provisioning
 	registerSsoRoutes(apiMux, a.ssoSvc)
-	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc)
+	// issue #79: SCIM token revocation is audited (scim_token.revoked)
+	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #52: organizations & membership management (last-owner guarded)
 	registerOrganizationRoutes(apiMux, a.orgsSvc, a.identities, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #28: agent marketplace
