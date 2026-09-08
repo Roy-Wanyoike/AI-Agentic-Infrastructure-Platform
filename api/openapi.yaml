@@ -216,28 +216,47 @@ paths:
       tags:
       - agents
       summary: Update an agent's draft fields (merge; immutable fields rejected explicitly)
-      description: |
-        Write operation (agents.write, exactly OWNER/ADMIN). Merges the
+      description: 'Write operation (agents.write, exactly OWNER/ADMIN). Merges the
+
         provided DRAFT fields onto the live agent row: name, description,
-        instructions (the system prompt) and model. The version contract's
+
+        instructions (the system prompt) and model. The version contract''s
+
         canonical `system_prompt` key is accepted as an alias of
+
         `instructions`; supplying both with conflicting values is a 400.
+
         Only provided fields change (merge semantics); provided
+
         name/instructions/model must be non-blank strings.
 
+
         IMMUTABILITY: any other request key — e.g. tools, config,
+
         temperature, params, status, version, id, organization_id,
+
         created_at, updated_at — is governed by the immutable published
+
         version snapshots (or identity bookkeeping) and is REJECTED with 400
+
         IMMUTABLE_FIELDS listing the offending keys. Fields are never
+
         silently dropped; publish/rollback mutate those values through the
+
         version lifecycle, not through this endpoint.
 
+
         The tenant comes from the auth claims; cross-organization agents
+
         surface as 404 (no existence leak). Success writes an `agent.updated`
+
         audit entry (metadata carries the changed field names) and returns
+
         the updated agent in the same representation as GET /agents/{id}
+
         (the legacy PascalCase Agent encoding).
+
+        '
       x-required-permission: agents.write
       security:
       - bearerToken: []
@@ -263,12 +282,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/AglAgent'
         '400':
-          description: |
-            Malformed JSON body (INVALID_REQUEST), conflicting
+          description: 'Malformed JSON body (INVALID_REQUEST), conflicting
+
             instructions/system_prompt values (INVALID_REQUEST), or the body
+
             contains immutable/unsupported fields outside the draft update
+
             surface (IMMUTABLE_FIELDS — the message enumerates every
+
             rejected key).
+
+            '
           content:
             application/json:
               schema:
@@ -284,9 +308,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/AglErrorEnvelope'
         '422':
-          description: |
-            Validation error (VALIDATION_ERROR): blank name/instructions/model
+          description: 'Validation error (VALIDATION_ERROR): blank name/instructions/model
+
             when provided, non-string values, or no updatable field present.
+
+            '
           content:
             application/json:
               schema:
@@ -297,31 +323,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AglErrorEnvelope'
-
     delete:
       operationId: deleteAgent
       tags:
       - agents
       summary: Delete an agent (hard delete, guarded by run references)
-      description: |
-        Write operation (agents.write, exactly OWNER/ADMIN). Performs a HARD
-        delete of the agent row within the caller's tenant — there is no
+      description: 'Write operation (agents.write, exactly OWNER/ADMIN). Performs a HARD
+
+        delete of the agent row within the caller''s tenant — there is no
+
         soft-delete: a successful delete removes the agents row and
+
         subsequent GETs 404. Agent config versions, deployments (including
+
         canary rows), schedules and memory snippets are removed by their
+
         ON DELETE CASCADE foreign keys.
 
+
         REFERENCE GUARD: runs.agent_id (migration 001, fk_runs_agent) has no
+
         ON DELETE action, so the durable store itself refuses the delete
+
         while runs still reference the agent. The endpoint checks first and
+
         answers 409 AGENT_HAS_RUNS (message carries the run count) instead
+
         of surfacing a raw foreign-key 500; the agent remains untouched and
+
         no audit entry is written for a guarded delete. Delete the runs (or
+
         reassign them) before deleting the agent.
 
+
         The tenant comes from the auth claims; cross-organization or unknown
+
         agents surface as 404 (no existence leak, zero writes). Success
+
         writes an `agent.deleted` audit entry.
+
+        '
       x-required-permission: agents.write
       security:
       - bearerToken: []
@@ -346,10 +387,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/AglErrorEnvelope'
         '409':
-          description: |
-            The agent still has runs referencing it (AGENT_HAS_RUNS); the
+          description: 'The agent still has runs referencing it (AGENT_HAS_RUNS); the
+
             delete was refused and the agent is unchanged. This mirrors the
+
             durable runs FK (no ON DELETE action).
+
+            '
           content:
             application/json:
               schema:
@@ -360,7 +404,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AglErrorEnvelope'
-
   /agents/{id}/rollback:
     post:
       operationId: rollbackAgent
@@ -730,6 +773,142 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke the presented session token server-side (idempotent)
+      description: 'Invalidates the presented HMAC session token immediately and
+
+        server-side. The token''s revocation reference lands on the deny
+
+        list with a TTL equal to the token''s remaining lifetime, so the
+
+        entry self-expires when the token would have expired anyway; every
+
+        subsequent request with the same token fails (401, "token has been
+
+        revoked") on any protected endpoint. Idempotent: logging out an
+
+        already-revoked or already-expired token answers 204 again. The
+
+        credential is the presented bearer token only — no body, and API
+
+        keys are not accepted (machine credentials are revoked through
+
+        DELETE /api-keys/{id}). A successful logout is audit-logged
+
+        (auth.logout) with the token reference, never token material.
+
+        Tokens minted before issue #76 (no jti claim) are revoked under the
+
+        SHA-256 of their full token string and are equally killable.
+
+        '
+      security:
+      - bearerToken: []
+      responses:
+        '204':
+          description: 'Token revoked (or already revoked/expired — idempotent). No
+
+            response body. The token is dead on every protected endpoint
+
+            from this moment.
+
+            '
+        '401':
+          description: 'Missing or malformed Authorization header (error.code
+
+            UNAUTHORIZED), or the presented credential is not a validly
+
+            signed session token at all (error.code TOKEN_INVALID). Logout
+
+            of a merely expired or already-revoked token is NOT this case —
+
+            it answers 204.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleErrorEnvelope'
+  /auth/refresh:
+    post:
+      operationId: refresh
+      summary: Exchange a valid session token for a fresh one (single-use rotation)
+      description: 'Rotates the presented session token: the old token is revoked
+
+        server-side and a fresh token (rotated jti, full new 24h window,
+
+        sliding session) is returned. Single-use by construction — the old
+
+        token is revoked BEFORE the new one is minted, so replaying it (for
+
+        another refresh or any protected endpoint) answers 401
+
+        TOKEN_REVOKED; a rotation can never leave two live tokens. The
+
+        fresh claims are re-derived from the user''s CURRENT stored identity
+
+        row, so SCIM deprovisioning (active=false) and role changes apply
+
+        exactly as they do at password login: a deprovisioned user is
+
+        refused with 401 ACCOUNT_DISABLED (and no rotation happens — the
+
+        old token''s validity is untouched by a failed refresh), and an
+
+        identity that can no longer be resolved is refused with 401
+
+        TOKEN_INVALID. A deny-list backend outage also fails closed (401).
+
+        Successful rotations are audit-logged (auth.refresh) with the old
+
+        and new token references, never token material.
+
+        '
+      security:
+      - bearerToken: []
+      responses:
+        '200':
+          description: 'Rotation complete. The old token is already dead server-side;
+
+            the response carries the only live credential.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleRefreshResponse'
+        '401':
+          description: 'The presented token is invalid, malformed, expired, revoked
+
+            (error.code TOKEN_INVALID or TOKEN_REVOKED — a revoked token is
+
+            reported distinctly so single-use replay is observable), or the
+
+            account has been deprovisioned (error.code ACCOUNT_DISABLED).
+
+            UNAUTHORIZED is used when the Authorization header is missing
+
+            or not a bearer token.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLifecycleErrorEnvelope'
   /deployments:
     get:
       operationId: listDeployments
@@ -1213,6 +1392,260 @@ paths:
               schema:
                 type: string
                 example: ok
+  /marketplace/keys:
+    post:
+      operationId: registerMarketplaceSigningKey
+      summary: Register a publisher signing key (public half)
+      description: 'Registers the PUBLIC half of an Ed25519 keypair for the caller''s
+
+        organization. The private half NEVER leaves the publisher''s client:
+
+        sign the canonical manifest bytes locally (detached signature, base64)
+
+        and pass it on publish. Duplicate (organization, public_key) pairs are
+
+        rejected with 409. Audited (marketplace.key_registered, no key
+
+        material in the audit row beyond the fingerprint).
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MktSigRegisterRequest'
+      responses:
+        '201':
+          description: Key registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigKeyEnvelope'
+        '400':
+          description: Invalid request body or key material
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '403':
+          description: Authenticated principal lacks agents.write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '409':
+          description: The org already registered this public key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+    get:
+      operationId: listMarketplaceSigningKeys
+      summary: List the caller org's registered signing keys
+      description: 'Org-scoped listing, oldest first. Foreign keys are never visible.
+
+        Revoked keys remain listed (status "revoked") for auditability; they
+
+        cannot sign new publishes and block installs of listings they signed.
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: agents.read (all roles)
+      responses:
+        '200':
+          description: Keys (possibly empty)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigKeyListEnvelope'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+  /marketplace/keys/{keyId}:
+    delete:
+      operationId: revokeMarketplaceSigningKey
+      summary: Revoke a publisher signing key (idempotent)
+      description: 'Flips the key to revoked. Future publishes referencing it fail and
+
+        installs of listings signed by it are blocked (unknown_signing_key);
+
+        agents already installed are unaffected. Unknown AND foreign ids are
+
+        the same 404 (no existence leak). Audited (marketplace.key_revoked).
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      parameters:
+      - name: keyId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Revocation applied (idempotent)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigRevokedEnvelope'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '403':
+          description: Authenticated principal lacks agents.write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '404':
+          description: Unknown or foreign key id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+  /marketplace/listings/{slug}/provenance:
+    get:
+      operationId: getMarketplaceListingProvenance
+      summary: Verifiable origin document of a listing
+      description: 'Returns the provenance record of a listing: publisher org, signing key
+
+        id and fingerprint, algorithm, signed-at timestamp and the
+
+        content-addressed manifest hash recorded at publish time. Visibility
+
+        follows the listing''s rules (published = global read; draft/unlisted =
+
+        publisher org only). Unsigned/legacy listings read back with
+
+        signed=false and empty provenance fields.
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: agents.read (all roles)
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Provenance document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigProvenanceEnvelope'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '404':
+          description: Unknown slug (or not visible to the caller's org)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+  /marketplace/settings:
+    get:
+      operationId: getMarketplaceSettings
+      summary: Read the caller org's marketplace install policy
+      description: 'Returns the org-level install policy. allow_unsigned defaults to
+
+        false — installs of unsigned new listings are blocked (default:
+
+        verify). Legacy listings created before signing shipped are always
+
+        installable (grandfathered).
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: agents.read (all roles)
+      responses:
+        '200':
+          description: Org install policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigSettingsEnvelope'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+    put:
+      operationId: setMarketplaceSettings
+      summary: Update the caller org's marketplace install policy
+      description: 'Sets allow_unsigned for the caller''s organization. true permits
+
+        installs of unsigned NEW listings into this org; false (default)
+
+        requires a valid publisher signature. Audited.
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MktSigSettingsUpdate'
+      responses:
+        '200':
+          description: Updated policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigSettingsEnvelope'
+        '400':
+          description: Missing allow_unsigned (boolean required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
+        '403':
+          description: Authenticated principal lacks agents.write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MktSigError'
   /metrics:
     get:
       operationId: getMetrics
@@ -1250,6 +1683,134 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /notifications/subscriptions:
+    get:
+      operationId: listNotificationSubscriptions
+      tags:
+      - notifications
+      summary: List the tenant's notification subscriptions
+      description: 'Returns all operational alert subscriptions of the authenticated
+
+        organization, newest first.
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: notifications.read
+      responses:
+        '200':
+          description: Array of subscriptions (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubSubscriptionList'
+        '401':
+          $ref: '#/components/responses/NsubUnauthorized'
+        '403':
+          $ref: '#/components/responses/NsubForbidden'
+        '500':
+          description: Unexpected store failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
+    post:
+      operationId: createNotificationSubscription
+      tags:
+      - notifications
+      summary: Subscribe an existing webhook to operational event types
+      description: "Creates a subscription routing the given event types to one existing\nwebhook of the SAME organization.\
+        \ Validation:\n  * every `event_types` entry must be one of the pinned contract event\n    types (run.failed, approval.requested,\
+        \ deployment.failed, …) —\n    unknown types return 400 and the message lists all valid types;\n  * at least one event\
+        \ type is required (explicit alert semantics;\n    use the webhooks API directly for wildcard sinks);\n  * `webhook_id`\
+        \ must resolve within the caller's organization —\n    unknown or foreign-tenant ids return 404 (no existence leak).\n\
+        Duplicate event types are de-duplicated silently.\n"
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: notifications.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NsubCreateSubscriptionRequest'
+      responses:
+        '201':
+          description: Subscription created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubCreateSubscriptionResponse'
+        '400':
+          description: 'Validation failure (malformed JSON body, unknown event type, empty
+
+            event type list, missing webhook_id). The message lists the valid
+
+            event types where applicable (error.code VALIDATION_ERROR or
+
+            INVALID_REQUEST).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
+        '401':
+          $ref: '#/components/responses/NsubUnauthorized'
+        '403':
+          $ref: '#/components/responses/NsubForbidden'
+        '404':
+          description: Target webhook does not exist within the caller's organization (error.code WEBHOOK_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
+        '500':
+          description: Unexpected store failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
+  /notifications/subscriptions/{id}:
+    delete:
+      operationId: deleteNotificationSubscription
+      tags:
+      - notifications
+      summary: Delete a notification subscription
+      description: 'Removes the subscription. Deleting an unknown or foreign-tenant id
+
+        returns 404 (existence is not leaked across tenants). The bound
+
+        webhook is untouched; deleting the webhook elsewhere cascades the
+
+        subscription away (FK ON DELETE CASCADE).
+
+        '
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: notifications.write
+      parameters:
+      - $ref: '#/components/parameters/NsubSubscriptionID'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubDeleteResponse'
+        '401':
+          $ref: '#/components/responses/NsubUnauthorized'
+        '403':
+          $ref: '#/components/responses/NsubForbidden'
+        '404':
+          description: Subscription not found within the caller's organization (error.code SUBSCRIPTION_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
   /policies:
     get:
       operationId: listPolicies
@@ -1544,6 +2105,224 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /queue/tasks:
+    get:
+      operationId: listQueueTasks
+      summary: List the org's task-queue records (keyset-paginated, newest first)
+      description: 'Returns one page of the caller''s organization''s task records, newest
+
+        enqueue first, with an opaque next_cursor for keyset continuation.
+
+        Use `limit` to size the page (clamped server-side to [1, 200];
+
+        default 50) and pass `cursor` back unchanged to fetch the next page.
+
+        `status` filters to exactly one engine state (queued | running |
+
+        dead_letter | completed); an unknown value answers 400. Unscoped
+
+        legacy tasks (predating org stamping) never match a scoped listing.
+
+        '
+      x-required-permission: runs.read (OWNER/ADMIN/MEMBER/VIEWER)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: status
+        in: query
+        schema:
+          type: string
+          enum:
+          - queued
+          - running
+          - dead_letter
+          - completed
+        description: Exact engine-state filter. Omit to list every status.
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+        description: Page size (clamped server-side; values <= 0 are a 400).
+      - name: cursor
+        in: query
+        schema:
+          type: string
+        description: Opaque keyset cursor from the previous response's next_cursor. Malformed cursors answer 400 INVALID_CURSOR.
+      responses:
+        '200':
+          description: One keyset page of task records (newest enqueue first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtTaskListResponse'
+              examples:
+                firstPage:
+                  summary: Latest page (next_cursor empty when exhausted)
+                  value:
+                    tasks:
+                    - id: agent.run-2026-09-10T12-00-00-000000000Z
+                      type: agent.run
+                      status: dead_letter
+                      attempts: 4
+                      requeues: 0
+                      last_error: agent timeout
+                      payload:
+                        organization_id: 6f1c9e52-1c76-4a2f-9a86-9f6d4d3e8a01
+                        run_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                      created_at: '2026-09-10T12:00:00Z'
+                      updated_at: '2026-09-10T12:04:00Z'
+                    next_cursor: ''
+        '400':
+          description: Malformed cursor or invalid status/limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtErrorEnvelope'
+        '401':
+          description: Missing or invalid credentials.
+  /queue/tasks/{id}:
+    get:
+      operationId: getQueueTask
+      summary: Inspect one task (attempts, last error, timestamps)
+      description: 'Returns the caller''s organization''s record for one task, including
+
+        the attempt counter, the requeues counter, the last handler error and
+
+        the created/updated/requeued timestamps. Unknown AND foreign-
+
+        organization ids answer the same 404 (no existence leak).
+
+        '
+      x-required-permission: runs.read (OWNER/ADMIN/MEMBER/VIEWER)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/QtTaskId'
+      responses:
+        '200':
+          description: The task record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtTask'
+        '404':
+          description: Unknown or foreign-organization task id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtErrorEnvelope'
+        '401':
+          description: Missing or invalid credentials.
+  /queue/tasks/{id}/requeue:
+    post:
+      operationId: requeueQueueTask
+      summary: Requeue a dead-lettered task (OWNER/ADMIN)
+      description: 'Revives a dead_letter task: attempts reset to 0, last_error cleared,
+
+        the requeues counter incremented, requeued_at stamped and created_at
+
+        preserved; the task is appended back to the work list so workers pick
+
+        it up. Attempt bookkeeping restarts from zero (a fresh retry budget),
+
+        while the requeues counter keeps the operator-visible history.
+
+        Requeueing a task in any other state (queued, running, completed) is
+
+        409 CONFLICT — transient failures already requeue themselves inside
+
+        the engine, so only the terminal dead_letter state is operator-
+
+        requeueable. Unknown and foreign-organization ids are the same 404.
+
+        Every successful requeue writes a queue.task_requeued audit row;
+
+        refused operations write nothing. The operation is serialized per
+
+        backend, so concurrent requeues yield exactly one work-list entry and
+
+        one 409.
+
+        '
+      x-required-permission: queue.manage (OWNER/ADMIN; MEMBER/VIEWER denied 403)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/QtTaskId'
+      responses:
+        '200':
+          description: The requeued task record (status queued, attempts 0).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtTask'
+              example:
+                id: agent.run-2026-09-10T12-00-00-000000000Z
+                type: agent.run
+                status: queued
+                attempts: 0
+                requeues: 1
+                payload:
+                  organization_id: 6f1c9e52-1c76-4a2f-9a86-9f6d4d3e8a01
+                  run_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                created_at: '2026-09-10T12:00:00Z'
+                updated_at: '2026-09-10T12:10:00Z'
+                requeued_at: '2026-09-10T12:10:00Z'
+        '404':
+          description: Unknown or foreign-organization task id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtErrorEnvelope'
+        '409':
+          description: The task is not in the requeueable dead_letter state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtErrorEnvelope'
+        '401':
+          description: Missing or invalid credentials.
+        '403':
+          description: Caller lacks queue.manage (MEMBER/VIEWER). Body is the middleware's plain-text "forbidden".
+  /queue/stats:
+    get:
+      operationId: getQueueStats
+      summary: Queue depth by status for the org
+      description: 'Returns the caller''s organization''s task depth for each of the four
+
+        engine states (all keys always present, zero included) plus the
+
+        total number of tracked tasks. Other organizations'' tasks never
+
+        count.
+
+        '
+      x-required-permission: runs.read (OWNER/ADMIN/MEMBER/VIEWER)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Per-status depth and total.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtStatsResponse'
+              example:
+                stats:
+                  queued: 2
+                  running: 1
+                  dead_letter: 1
+                  completed: 7
+                total: 11
+        '401':
+          description: Missing or invalid credentials.
   /readyz:
     get:
       operationId: getReadiness
@@ -1566,10 +2345,8 @@ paths:
       tags:
       - runs
       summary: List runs
-      description: 'Returns an envelope `{"runs":[...]}` scoped to the caller''s
-        organization (claims-derived tenant guard; cross-org ids are not
-        visible). Unpaginated today.
-        '
+      description: 'Returns an envelope `{"runs":[...]}` scoped to the caller''s organization (claims-derived tenant guard;
+        cross-org ids are not visible). Unpaginated today. '
       x-required-permission: runs.read
       x-unpaginated: true
       responses:
@@ -1598,13 +2375,49 @@ paths:
       tags:
       - runs
       summary: Create and enqueue a run
-      description: 'Creates a run (status `QUEUED`) and enqueues an `agent.run` task.
+      description: 'Creates a run and enqueues an `agent.run` task. Responds 201 with the
 
-        Responds 201 with the run ID and `status: "queued"`. Actual execution
+        run ID and `status: "queued"`; actual execution happens in the worker.
 
-        happens in the worker; watch `GET /runs/{id}/events` (SSE) for
 
-        `status.changed` events.
+        Governance enforcement (issue #75): when AGENTOS_POLICY_ENFORCEMENT is
+
+        enabled (default ON), matching policies of the caller''s organization
+
+        are evaluated AFTER RBAC and BEFORE the quota gate and any run row is
+
+        created. A deny decision answers 403 `policy_denied` with the decision
+
+        reason and leaves no run behind (audit action `run.policy_denied`). An
+
+        allow decision carrying `require_approval` parks the run in
+
+        WAITING_APPROVAL, files an approval for the operators and answers 202
+
+        INSTEAD of enqueueing execution (audit action `run.approval_required`);
+
+        approving the linked approval resumes and re-enqueues the run. An
+
+        allowed run records the verdict on its timeline (step_type `policy`,
+
+        see GET /runs/{id}/steps). A failing policy source answers 503
+
+        `policy_unavailable` (fail closed; audit action
+
+        `run.policy_unavailable`). Organizations with no matching policy are
+
+        unaffected (default allow).
+
+
+        The optional `environment` request field scopes environment-conditional
+
+        policies (default `production`) and is stamped onto the queue task so
+
+        the worker''s tool-level checks evaluate the same scope. The optional
+
+        `estimated_cost_cents` feeds the `max_cost_cents` budget-guard
+
+        condition (a deny rule with the cap matches over-budget requests).
 
         '
       x-required-permission: runs.execute
@@ -1642,9 +2455,13 @@ paths:
         '402':
           $ref: '#/components/responses/QuotaPaymentRequired'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/PolEnfPolicyDenied'
         '503':
-          $ref: '#/components/responses/QuotaBillingUnavailable'
+          $ref: '#/components/responses/PolEnfPolicyUnavailable'
+        '202':
+          $ref: '#/components/responses/PolEnfWaitingApproval'
+        '405':
+          description: Method not allowed (the endpoint is POST-only).
   /runs/{id}:
     get:
       operationId: getRun
@@ -1903,15 +2720,21 @@ paths:
       tags:
       - runs
       summary: List the execution steps (trace) of a run
-      description: 'Returns the recorded execution timeline for a run: one entry per model
+      description: 'Returns the run''s execution timeline. Issue #75 adds the step_type
 
-        call and tool invocation, captured by the worker''s runtime step
+        `policy`: one row per policy evaluation that shaped the run, with
 
-        recorder and persisted as `run_steps`. Each step carries its type,
+        output_meta carrying `policy_id`, `decision`, `reason`,
 
-        status, input/output metadata, error, token usage and timestamps.
+        `require_approval` and the evaluation inputs (`action`, `agent_id`,
 
-        Steps are tenant-scoped: the org is derived from the run row.
+        `environment`, `estimated_cost_cents`). Tool steps blocked by policy
+
+        keep their step_type `tool` with status `failed`, an error carrying
+
+        the `policy_denied` (or `policy_unavailable`) code prefix, the denial
+
+        observation as output, and the policy verdict in the step record.
 
         '
       x-required-permission: runs.read
@@ -3106,17 +3929,27 @@ paths:
     post:
       operationId: setDeploymentCanary
       summary: Attach or replace the canary version and/or move the traffic split
-      description: |
-        Restatement of the issue-#13 operation with the issue-#51 addition:
+      description: 'Restatement of the issue-#13 operation with the issue-#51 addition:
+
         the body gains the optional `canary_policy` object (the eval-gated
+
         promotion policy; `null` clears a configured policy). Attaching or
+
         replacing a canary version opens a FRESH evaluation window and voids
+
         any prior automatic decision; the policy itself is a standing rule of
+
         the row and survives attach/replace. At least one body field is
+
         required; a canary_policy-only body requires an already-attached
+
         canary (409 otherwise). All other semantics — existing versions only,
+
         weight 0-100 rejected-not-clamped, healthy rows only — are unchanged
+
         (see api/fragments/canary.yaml).
+
+        '
       x-required-permission: deployments.deploy
       security:
       - bearerToken: []
@@ -3153,20 +3986,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/CnpErrorEnvelope'
         '409':
-          description: |
-            State conflict: canary_policy-only body without an attached canary,
-            weight moved without a canary, or the row is not the environment's
+          description: 'State conflict: canary_policy-only body without an attached canary,
+
+            weight moved without a canary, or the row is not the environment''s
+
             healthy deployment (error.code INVALID_STATE).
+
+            '
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CnpErrorEnvelope'
         '422':
-          description: |
-            Validation error: empty body, out-of-domain canary_policy values
+          description: 'Validation error: empty body, out-of-domain canary_policy values
+
             (min_pass_rate outside [0,1] or a negative threshold — rejected,
+
             not clamped), canary_weight outside 0-100, unknown/cross-agent
+
             canary version (error.code VALIDATION_ERROR).
+
+            '
           content:
             application/json:
               schema:
@@ -3177,25 +4017,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CnpErrorEnvelope'
-
   /agents/{agentId}/canary/status:
     get:
       operationId: getCanaryStatus
       tags:
       - deployments
       summary: Read the eval-gated canary promotion state for one agent
-      description: |
-        Additive read-only endpoint (issue #51; runs.read — all roles). Serves
-        the operator's view for one agent+environment: the current traffic
+      description: 'Additive read-only endpoint (issue #51; runs.read — all roles). Serves
+
+        the operator''s view for one agent+environment: the current traffic
+
         split, the promotion policy in effect (a standing rule that survives
+
         abort and re-attach), the last automatic decision with its reason and
+
         sample stats, and — while the canary is ACTIVE — fresh statistics of
+
         the completed eval runs inside the window (runs counted, case-weighted
+
         pass rate, nearest-rank p95 latency, average cost per run). With no
+
         sample source wired (or no active canary) `stats` is omitted; with no
+
         configured policy `policy`/`window_start`/`decision` are omitted. The
+
         tenant comes from the auth claims; foreign agents surface as 404 (no
+
         existence leak).
+
+        '
       x-required-permission: runs.read
       security:
       - bearerToken: []
@@ -3236,10 +4086,13 @@ paths:
         '401':
           $ref: '#/components/responses/CnpUnauthorized'
         '404':
-          description: |
-            No healthy deployment serves this agent+environment for the
-            caller's organization, or the agent is unknown/foreign
+          description: 'No healthy deployment serves this agent+environment for the
+
+            caller''s organization, or the agent is unknown/foreign
+
             (error.code NOT_FOUND).
+
+            '
           content:
             application/json:
               schema:
@@ -3258,7 +4111,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CnpErrorEnvelope'
-
   /deployments/{id}/canary/promote:
     post:
       operationId: promoteCanaryDeployment
@@ -3365,18 +4217,29 @@ paths:
     get:
       operationId: listUsageMeters
       summary: Aggregated usage meters for the caller's organization
-      description: |
-        Read (runs.execute, MEMBER+). Aggregates the caller's organization's
+      description: 'Read (runs.execute, MEMBER+). Aggregates the caller''s organization''s
+
         metered activity over the half-open [from, to) window:
+
         runs_count (metered runs — the same runs.cost_cents aggregation that
+
         powers GET /usage/costs; only the counts are taken) and
-        tool_calls_count (executed tool steps, step_type='tool').
+
+        tool_calls_count (executed tool steps, step_type=''tool'').
+
         sandbox_seconds is intentionally absent: no durable sandbox-duration
+
         record exists today, and data is never invented.
+
         When STRIPE_API_KEY is configured, a successful read additionally
-        triggers an async, idempotent sync of these meters to Stripe's
+
+        triggers an async, idempotent sync of these meters to Stripe''s
+
         /v1/usage_records (see the fragment description); without the env key
+
         nothing leaves the process.
+
+        '
       x-required-permission: runs.execute
       security:
       - bearerToken: []
@@ -3402,9 +4265,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/SmMetersResponse'
         '400':
-          description: |
-            Unparsable or inverted window, or a window exceeding 366 days
+          description: 'Unparsable or inverted window, or a window exceeding 366 days
+
             (error.code INVALID_TIME_RANGE).
+
+            '
           content:
             application/json:
               schema:
@@ -3418,9 +4283,11 @@ paths:
         '500':
           $ref: '#/components/responses/SmInternal'
         '503':
-          description: |
-            The meter source is not wired in this deployment
+          description: 'The meter source is not wired in this deployment
+
             (error.code METER_SOURCE_UNAVAILABLE).
+
+            '
           content:
             application/json:
               schema:
@@ -3429,19 +4296,31 @@ paths:
     get:
       operationId: getBillingMargin
       summary: Cost basis vs plan price for the current subscription period
-      description: |
-        Owner-only read (organization.manage). Computes the margin of the
-        org's CURRENT subscription period: margin_cents = plan.price_cents −
+      description: 'Owner-only read (organization.manage). Computes the margin of the
+
+        org''s CURRENT subscription period: margin_cents = plan.price_cents −
+
         round(Σ usage cost over [period_start, period_end)), with the cost
+
         basis taken from the same ledger that prices invoice run lines
+
         (runs.cost_cents aggregates — it always reconciles with
+
         GET /usage/costs and the invoice of the same window). margin_percent
+
         = (1 − cost/price) × 100 and is OMITTED when price_cents is 0.
+
         Overage pricing is not folded into revenue; unlimited plans
+
         (included_quota 0) compute identically; a cost above the price yields
+
         a negative (unclamped) margin; zero usage yields the full price
-        (100%). For a canceled subscription the latest row's last period is
+
+        (100%). For a canceled subscription the latest row''s last period is
+
         reported.
+
+        '
       x-required-permission: organization.manage
       security:
       - bearerToken: []
@@ -3458,10 +4337,13 @@ paths:
         '403':
           $ref: '#/components/responses/SmForbidden'
         '404':
-          description: |
-            The organization never subscribed (error.code NO_SUBSCRIPTION) or
-            the subscription's plan no longer resolves (error.code
+          description: 'The organization never subscribed (error.code NO_SUBSCRIPTION) or
+
+            the subscription''s plan no longer resolves (error.code
+
             PLAN_NOT_FOUND — margin cannot exist without a price).
+
+            '
           content:
             application/json:
               schema:
@@ -3470,7 +4352,6 @@ paths:
           description: Method not allowed (the endpoint is GET-only).
         '500':
           $ref: '#/components/responses/SmInternal'
-
   /billing/plans:
     get:
       operationId: listBillingPlans
@@ -3763,17 +4644,27 @@ paths:
     post:
       operationId: createApiKey
       summary: Mint a new API key for the caller's organization (value returned exactly once)
-      description: |
-        Write operation (agents.write, OWNER/ADMIN). Body carries the key
+      description: 'Write operation (agents.write, OWNER/ADMIN). Body carries the key
+
         `name`; the server generates the secret (`ak_` + 32 random bytes),
+
         persists only its SHA-256 hash, and returns the plaintext `value`
+
         EXACTLY ONCE as the top-level sibling of the metadata object — this
+
         is the only response in the whole API that carries the key. The
+
         plaintext cannot be retrieved again afterwards. The key
+
         authenticates immediately (X-API-Key header) as an OWNER identity
-        of the caller's organization. The tenant is derived from the auth
+
+        of the caller''s organization. The tenant is derived from the auth
+
         claims — any client-supplied organization id is ignored. Minting is
+
         audit-logged (`api_key.created`, no key material in metadata).
+
+        '
       x-required-permission: agents.write
       security:
       - bearerToken: []
@@ -3786,10 +4677,13 @@ paths:
               $ref: '#/components/schemas/ApiKeyCreateRequest'
       responses:
         '201':
-          description: |
-            Key minted. The metadata object never contains the value or the
+          description: 'Key minted. The metadata object never contains the value or the
+
             hash; `value` (the plaintext credential) is returned exactly once
+
             and must be stored by the client now.
+
+            '
           content:
             application/json:
               schema:
@@ -3805,9 +4699,11 @@ paths:
         '403':
           $ref: '#/components/responses/ApiKeyForbidden'
         '422':
-          description: |
-            Validation error: missing or blank key name (error.code
+          description: 'Validation error: missing or blank key name (error.code
+
             VALIDATION_ERROR).
+
+            '
           content:
             application/json:
               schema:
@@ -3821,19 +4717,31 @@ paths:
     get:
       operationId: listApiKeys
       summary: List API key metadata for the caller's organization (never values or hashes)
-      description: |
-        Read operation (runs.execute, MEMBER+ — viewers are excluded because
+      description: 'Read operation (runs.execute, MEMBER+ — viewers are excluded because
+
         credential inventories are sensitive). Returns metadata only: id,
+
         name, the display `prefix` (`ak_` + the first 8 secret characters,
+
         kept for identification; the server only ever matches the SHA-256
+
         hash of the FULL value, so the prefix authenticates nothing),
+
         created_by, created_at and the revoked flag. The response schema has
+
         no value field and no full hash, and the server never includes them.
+
         Results are ordered newest first. Revoked keys remain listed with
+
         "revoked": true. Note: the api_keys table also tracks last_used_at
+
         and the revocation timestamp, but the service model does not project
+
         them yet — they are therefore absent from this contract until the
+
         service exposes them (deliberate omission, not an accident).
+
+        '
       x-required-permission: runs.execute
       security:
       - bearerToken: []
@@ -3859,13 +4767,19 @@ paths:
     delete:
       operationId: revokeApiKey
       summary: Revoke one API key (immediate; idempotent on already-revoked keys)
-      description: |
-        Write operation (agents.write, OWNER/ADMIN). Revocation is immediate:
+      description: 'Write operation (agents.write, OWNER/ADMIN). Revocation is immediate:
+
         the key stops authenticating on the very next request (it is resolved
+
         by hash and rejected once revoked). Re-revoking an already-revoked
+
         key is idempotent and stays 200; unknown or foreign-organization ids
+
         surface as 404 with no existence leak across tenants. Revocation is
+
         audit-logged (`api_key.revoked`).
+
+        '
       x-required-permission: agents.write
       security:
       - bearerToken: []
@@ -3895,17 +4809,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiKeyErrorEnvelope'
-
   /organization:
     get:
       operationId: getCurrentOrganization
       summary: Show the caller's current organization and the caller's platform role
-      description: |
-        Read operation (runs.read — all roles). Returns the tenant the
+      description: 'Read operation (runs.read — all roles). Returns the tenant the
+
         caller authenticated into (derived from the auth claims, never from
-        client input) plus the caller's role as embedded in the session/API
+
+        client input) plus the caller''s role as embedded in the session/API
+
         key context. 404 ORGANIZATION_NOT_FOUND when the organization
-        directory does not know the caller's tenant.
+
+        directory does not know the caller''s tenant.
+
+        '
       x-required-permission: runs.read
       security:
       - bearerToken: []
@@ -3935,16 +4853,25 @@ paths:
     get:
       operationId: listOrganizationMembers
       summary: List the members of the caller's organization (id, email, name, role, joined_at)
-      description: |
-        Read operation (runs.execute, MEMBER+ — viewers are excluded, same
+      description: 'Read operation (runs.execute, MEMBER+ — viewers are excluded, same
+
         convention as the api-keys list). Returns the membership rows of the
-        caller's tenant joined with the identity directory, ordered oldest
+
+        caller''s tenant joined with the identity directory, ordered oldest
+
         member first. `name` is a display fallback derived from the email
+
         local part — the platform identity model has no display-name column
+
         (the SCIM 2.0 resource omits the attribute for the same reason), so
-        no profile data is invented. `joined_at` is the membership row's
+
+        no profile data is invented. `joined_at` is the membership row''s
+
         creation timestamp. A membership row without a matching identity row
+
         projects empty email/name rather than being silently dropped.
+
+        '
       x-required-permission: runs.execute
       security:
       - bearerToken: []
@@ -3969,20 +4896,33 @@ paths:
     post:
       operationId: addOrganizationMember
       summary: Add an existing platform user (by email) to the caller's organization
-      description: |
-        Write operation (users.manage, OWNER/ADMIN). Resolves the user by
+      description: 'Write operation (users.manage, OWNER/ADMIN). Resolves the user by
+
         email through the identity directory — only EXISTING users can be
+
         invited (unknown emails are 404 USER_NOT_FOUND; the API never
+
         creates accounts or sends invitations). The membership is created in
-        the CALLER's tenant with the requested role (case-insensitive,
+
+        the CALLER''s tenant with the requested role (case-insensitive,
+
         normalized). Duplicates are 409 ALREADY_MEMBER. Roles use the
+
         OWNER/ADMIN/MEMBER/VIEWER enum; anything else is 422
+
         VALIDATION_ERROR. Adding a user as OWNER creates an additional
+
         owner (the last-owner guard then protects the pair). A removed
+
         member can be re-invited: re-adding reactivates their login through
+
         the same org-guarded store path SCIM uses for re-enabling. The
+
         tenant comes from the auth claims; the operation is audit-logged
+
         (organization.member_added).
+
+        '
       x-required-permission: users.manage
       security:
       - bearerToken: []
@@ -4011,10 +4951,13 @@ paths:
         '403':
           $ref: '#/components/responses/OrgForbidden'
         '404':
-          description: |
-            Unknown email (error.code USER_NOT_FOUND) or the organization
-            directory does not know the caller's tenant (error.code
+          description: 'Unknown email (error.code USER_NOT_FOUND) or the organization
+
+            directory does not know the caller''s tenant (error.code
+
             ORGANIZATION_NOT_FOUND).
+
+            '
           content:
             application/json:
               schema:
@@ -4041,16 +4984,25 @@ paths:
     patch:
       operationId: updateOrganizationMemberRole
       summary: Change a member's role (OWNER only; the last OWNER cannot be demoted)
-      description: |
-        Write operation (organization.manage — exactly OWNER, the same
+      description: 'Write operation (organization.manage — exactly OWNER, the same
+
         matrix as POST /scim/tokens: role changes are owner-level, which is
+
         why ADMINs — who can add and remove members — cannot change roles).
+
         The membership row is updated org-guarded: unknown and
+
         foreign-organization user ids are 404 MEMBER_NOT_FOUND with no
+
         existence leak. Demoting the last OWNER membership row of the tenant
+
         is rejected with 409 LAST_OWNER before anything is written.
+
         Re-asserting OWNER stays allowed. The operation is audit-logged
+
         (organization.member_role_updated, from_role/to_role metadata).
+
+        '
       x-required-permission: organization.manage
       security:
       - bearerToken: []
@@ -4111,17 +5063,27 @@ paths:
     delete:
       operationId: removeOrganizationMember
       summary: Remove a member (OWNER/ADMIN; the last OWNER cannot be removed; deactivates the member's login)
-      description: |
-        Write operation (users.manage, OWNER/ADMIN). Removes the membership
+      description: 'Write operation (users.manage, OWNER/ADMIN). Removes the membership
+
         row org-guarded (unknown/foreign ids are 404 MEMBER_NOT_FOUND) and
-        deactivates the member's login through the SAME org-guarded store
-        path the SCIM 2.0 service uses on deprovisioning — the member's next
+
+        deactivates the member''s login through the SAME org-guarded store
+
+        path the SCIM 2.0 service uses on deprovisioning — the member''s next
+
         password login fails with auth.ErrAccountDisabled until they are
+
         re-invited. Removing the last OWNER membership row is rejected with
+
         409 LAST_OWNER. For a cross-org invitee the org guard refuses the
+
         account deactivation (their login belongs to their home tenant) and
+
         only the membership row is removed. The operation is audit-logged
+
         (organization.member_removed, role-at-removal metadata).
+
+        '
       x-required-permission: users.manage
       security:
       - bearerToken: []
@@ -4157,29 +5119,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrgErrorEnvelope'
-
   /mcp:
     post:
       operationId: invokeMcpEndpoint
       summary: MCP JSON-RPC 2.0 endpoint (initialize / tools/list / tools/call / ping)
-      description: |
-        Single stateless JSON-RPC 2.0 endpoint. Exactly one request object
+      description: 'Single stateless JSON-RPC 2.0 endpoint. Exactly one request object
+
         per HTTP request; batches are rejected with -32600. Notifications
+
         (requests without an id) answer 204 No Content with no body.
 
+
         Method-level authorization is applied inside the endpoint:
+
         initialize and ping need only authentication, while tools/list and
+
         tools/call additionally require the runs.execute permission
+
         (OWNER/ADMIN/MEMBER). Viewers receive the in-band JSON-RPC error
+
         -32000 (HTTP 200) instead of an HTTP 403, so MCP clients surface a
+
         protocol-level error.
 
+
         tools/call executes through the existing internal/tools execution
+
         path — the same registry the agent runtime uses, so tool-side
-        validation (e.g. the calculator's expression grammar, the
-        http_request tool's SSRF protection) applies natively. Results are
+
+        validation (e.g. the calculator''s expression grammar, the
+
+        http_request tool''s SSRF protection) applies natively. Results are
+
         mapped to MCP content blocks: [{"type":"text","text":"<json or
+
         error>"}].
+
+        '
       x-required-permission: runs.execute
       security:
       - bearerToken: []
@@ -4194,25 +5170,25 @@ paths:
               initialize:
                 summary: Protocol handshake
                 value:
-                  jsonrpc: "2.0"
+                  jsonrpc: '2.0'
                   id: 1
                   method: initialize
                   params:
-                    protocolVersion: "2025-06-18"
+                    protocolVersion: '2025-06-18'
                     capabilities: {}
                     clientInfo:
                       name: claude
-                      version: "1.0"
+                      version: '1.0'
               toolsList:
                 summary: List the tenant-visible tools
                 value:
-                  jsonrpc: "2.0"
+                  jsonrpc: '2.0'
                   id: 2
                   method: tools/list
               toolsCall:
                 summary: Execute the calculator tool
                 value:
-                  jsonrpc: "2.0"
+                  jsonrpc: '2.0'
                   id: 3
                   method: tools/call
                   params:
@@ -4222,46 +5198,58 @@ paths:
               ping:
                 summary: Liveness probe
                 value:
-                  jsonrpc: "2.0"
+                  jsonrpc: '2.0'
                   id: 4
                   method: ping
       responses:
         '200':
-          description: |
-            JSON-RPC response (success result, or an in-band error: -32601
+          description: 'JSON-RPC response (success result, or an in-band error: -32601
+
             method not found, -32602 invalid params / unknown tool, -32603
+
             internal, -32000 forbidden for the tool surface).
+
+            '
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/McpJSONRPCResponse'
         '204':
-          description: |
-            Notification accepted (request without id): no response body by
+          description: 'Notification accepted (request without id): no response body by
+
             the JSON-RPC spec.
+
+            '
         '400':
-          description: |
-            Transport-level JSON-RPC rejection: -32700 parse error or
+          description: 'Transport-level JSON-RPC rejection: -32700 parse error or
+
             -32600 invalid request (including batch bodies). The body is
+
             still a JSON-RPC error envelope with id null.
+
+            '
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/McpJSONRPCResponse'
         '401':
-          description: |
-            Missing or invalid credentials. The platform auth middleware
+          description: 'Missing or invalid credentials. The platform auth middleware
+
             answers a plain-text 401 (no JSON-RPC envelope), consistent
+
             with every other authenticated route.
+
+            '
         '413':
-          description: |
-            Request body exceeds the 1 MiB cap; body is a JSON-RPC error
+          description: 'Request body exceeds the 1 MiB cap; body is a JSON-RPC error
+
             envelope (-32600) with id null.
+
+            '
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/McpJSONRPCResponse'
-
   /secrets:
     post:
       operationId: createSecret
@@ -4498,43 +5486,61 @@ paths:
     get:
       operationId: listEvents
       summary: List the org's domain event stream (activity feed)
-      description: |
-        Returns one page of the caller's organization's events, newest first,
+      description: 'Returns one page of the caller''s organization''s events, newest first,
+
         with an opaque next_cursor for keyset continuation. Use `limit` to
+
         size the page (clamped server-side to [1, 200]; default 50) and pass
+
         `cursor` back unchanged to fetch the next page. Filters narrow the
+
         stream to one event `type` and/or one entity (`entity_type` +
+
         `entity_id`) and/or everything after `since` (RFC3339, inclusive).
+
         Requires MEMBER+ (runs.execute): VIEWER roles are denied 403.
+
+        '
       x-required-permission: runs.execute (MEMBER+ — OWNER/ADMIN/MEMBER; VIEWER denied)
       security:
-        - bearerToken: []
-        - apiKey: []
+      - bearerToken: []
+      - apiKey: []
       parameters:
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
-          description: Page size (clamped server-side; values <= 0 are a 400).
-        - name: cursor
-          in: query
-          schema: { type: string }
-          description: Opaque keyset cursor from the previous response's next_cursor. Malformed cursors answer 400 INVALID_CURSOR.
-        - name: type
-          in: query
-          schema: { type: string }
-          description: Exact contract event type, e.g. run.failed, agent.created. Unknown types answer 400 INVALID_REQUEST (the vocabulary is pinned).
-        - name: entity_type
-          in: query
-          schema: { type: string }
-          description: Exact resource_type match (the domain object the event is about, e.g. "run", "agent", "webhook").
-        - name: entity_id
-          in: query
-          schema: { type: string }
-          description: Exact resource_id match.
-        - name: since
-          in: query
-          schema: { type: string, format: date-time }
-          description: RFC3339 inclusive lower bound on the event timestamp.
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+        description: Page size (clamped server-side; values <= 0 are a 400).
+      - name: cursor
+        in: query
+        schema:
+          type: string
+        description: Opaque keyset cursor from the previous response's next_cursor. Malformed cursors answer 400 INVALID_CURSOR.
+      - name: type
+        in: query
+        schema:
+          type: string
+        description: Exact contract event type, e.g. run.failed, agent.created. Unknown types answer 400 INVALID_REQUEST (the
+          vocabulary is pinned).
+      - name: entity_type
+        in: query
+        schema:
+          type: string
+        description: Exact resource_type match (the domain object the event is about, e.g. "run", "agent", "webhook").
+      - name: entity_id
+        in: query
+        schema:
+          type: string
+        description: Exact resource_id match.
+      - name: since
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: RFC3339 inclusive lower bound on the event timestamp.
       responses:
         '200':
           description: One keyset page of events (newest first).
@@ -4547,21 +5553,22 @@ paths:
                   summary: Latest page (next_cursor empty when exhausted)
                   value:
                     events:
-                      - id: 6f1c9e52-1c76-4a2f-9a86-9f6d4d3e8a01
-                        type: run.failed
-                        entity_type: run
-                        entity_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
-                        payload:
-                          reason: quota_exceeded
-                        timestamp: 2025-06-01T12:03:00Z
-                      - id: 0d3a7c44-9f10-4b6e-9db2-2f8c5a1b7e02
-                        type: agent.created
-                        entity_type: agent
-                        entity_id: a1b2c3d4-0000-4000-8000-000000000000
-                        timestamp: 2025-06-01T12:01:00Z
+                    - id: 6f1c9e52-1c76-4a2f-9a86-9f6d4d3e8a01
+                      type: run.failed
+                      entity_type: run
+                      entity_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                      payload:
+                        reason: quota_exceeded
+                      timestamp: 2025-06-01 12:03:00+00:00
+                    - id: 0d3a7c44-9f10-4b6e-9db2-2f8c5a1b7e02
+                      type: agent.created
+                      entity_type: agent
+                      entity_id: a1b2c3d4-0000-4000-8000-000000000000
+                      timestamp: 2025-06-01 12:01:00+00:00
                     next_cursor: ''
         '400':
-          description: Invalid query parameter (error.code INVALID_REQUEST for a non-positive/non-integer limit, unknown event type or malformed since; INVALID_CURSOR for a malformed/stale cursor).
+          description: Invalid query parameter (error.code INVALID_REQUEST for a non-positive/non-integer limit, unknown event
+            type or malformed since; INVALID_CURSOR for a malformed/stale cursor).
           content:
             application/json:
               schema:
@@ -4582,7 +5589,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EvErrorEnvelope'
-
   /audit-events:
     get:
       operationId: listAuditEvents
@@ -5254,6 +6260,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SsoError'
+  /scim/tokens/{id}:
+    delete:
+      operationId: revokeScimToken
+      summary: Revoke one SCIM bearer credential (immediate; org-scoped)
+      description: 'Write operation (users.manage, OWNER/ADMIN). Revokes the SCIM bearer
+
+        credential identified by `id` within the CALLER''s organization — the
+
+        tenant comes from the auth claims, never from the request. Success
+
+        is 204 No Content; the revoked secret fails scim.Service.Authenticate
+
+        (and therefore every /scim/v2/Users request) immediately. Unknown or
+
+        foreign-organization ids surface as 404 SCIM_TOKEN_NOT_FOUND with no
+
+        existence leak across tenants. The revocation is audit-logged as
+
+        `scim_token.revoked` (resource scim/tokens/{id}; no secret or hash
+
+        material).
+
+        '
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/ScimTokenRevokeID'
+      responses:
+        '204':
+          description: 'Credential revoked (in the in-memory store also the idempotent
+
+            answer for an already-revoked id). No response body.
+
+            '
+        '401':
+          $ref: '#/components/responses/ScimTokenRevokeUnauthorized'
+        '403':
+          $ref: '#/components/responses/ScimTokenRevokeForbidden'
+        '404':
+          description: 'No live credential with this id within the caller''s organization
+
+            (error.code SCIM_TOKEN_NOT_FOUND). Covers unknown ids and
+
+            cross-tenant ids without an existence leak; in the Postgres
+
+            store it also covers already-revoked ids (the org-guarded UPDATE
+
+            only matches revoked_at IS NULL rows).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScimTokenRevokeErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScimTokenRevokeErrorEnvelope'
   /scim/v2/Users:
     get:
       operationId: listScimUsers
@@ -5495,7 +6563,6 @@ paths:
                 $ref: '#/components/schemas/ScimError'
 components:
   parameters:
-
     ApiKeysID:
       name: id
       in: path
@@ -5655,7 +6722,6 @@ components:
         type: string
         minLength: 1
       example: 5f0c1a5e-8e2b-4c1d-9a7b-2f0d5e6a1b2c
-
     CnpDeploymentID:
       name: id
       in: path
@@ -5675,9 +6741,11 @@ components:
       name: environment
       in: query
       required: false
-      description: |
-        Target environment of the canary (default: production). One of
+      description: 'Target environment of the canary (default: production). One of
+
         development|staging|production.
+
+        '
       schema:
         type: string
         enum:
@@ -5685,7 +6753,6 @@ components:
         - staging
         - production
         default: production
-
     AglAgentID:
       name: id
       in: path
@@ -5695,7 +6762,31 @@ components:
         type: string
         minLength: 1
       example: 8f2b6f4a-2c1d-4e8a-9b3c-5d7e1f0a2b3c
-
+    ScimTokenRevokeID:
+      name: id
+      in: path
+      required: true
+      description: SCIM token id (UUID, as returned by the mint operation createScimToken).
+      schema:
+        type: string
+        minLength: 1
+      example: 3f6c1a5e-8e2b-4c1d-9a7b-2f0d5e6a1b2c
+    QtTaskId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The queue task identifier (as returned by the listing or by runs/create).
+    NsubSubscriptionID:
+      name: id
+      in: path
+      required: true
+      description: Subscription id (UUID, as returned by the create operation).
+      schema:
+        type: string
+        minLength: 1
+      example: 8b2f0d5e-1a7b-4c3d-9e2f-5a6b7c8d9e0f
   securitySchemes:
     bearerToken:
       type: http
@@ -5736,7 +6827,6 @@ components:
 
         '
   responses:
-
     ApiKeyUnauthorized:
       description: Missing or invalid credentials.
       content:
@@ -5961,12 +7051,17 @@ components:
           schema:
             $ref: '#/components/schemas/ConErrorEnvelope'
     QuotaPaymentRequired:
-      description: |
-        The organization's monthly run budget is exceeded and enforcement is
+      description: 'The organization''s monthly run budget is exceeded and enforcement is
+
         enabled (AGENTOS_BILLING_ENFORCEMENT). NO run row was created and NO
+
         agent.run task was enqueued; the denial is audit-logged as
+
         run.quota_denied. Upgrade the plan, wait for the period reset, or
+
         disable enforcement.
+
+        '
       content:
         application/json:
           schema:
@@ -5974,18 +7069,22 @@ components:
           example:
             error:
               code: quota_exceeded
-              message: 'monthly run quota exceeded: included 10 runs, consumed 11 runs for the current billing period; upgrade the plan or wait for the period to reset'
+              message: 'monthly run quota exceeded: included 10 runs, consumed 11 runs for the current billing period; upgrade
+                the plan or wait for the period to reset'
     QuotaBillingUnavailable:
-      description: |
-        Enforcement is enabled (AGENTOS_BILLING_ENFORCEMENT) but the billing
+      description: 'Enforcement is enabled (AGENTOS_BILLING_ENFORCEMENT) but the billing
+
         service is not wired into the API process. Fail-closed on purpose:
+
         the misconfiguration must surface rather than silently bypass the
+
         quota (error.code billing_unavailable).
+
+        '
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/QuotaErrorEnvelope'
-
     OrgUnauthorized:
       description: Missing or invalid credentials.
       content:
@@ -5998,7 +7097,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/OrgErrorEnvelope'
-
     CnpUnauthorized:
       description: Missing or invalid credentials.
       content:
@@ -6006,12 +7104,12 @@ components:
           schema:
             $ref: '#/components/schemas/CnpErrorEnvelope'
     CnpForbidden:
-      description: Authenticated but lacking the required permission (writes are deployments.deploy — OWNER/ADMIN; the status read is runs.read — all roles).
+      description: Authenticated but lacking the required permission (writes are deployments.deploy — OWNER/ADMIN; the status
+        read is runs.read — all roles).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/CnpErrorEnvelope'
-
     AglUnauthorized:
       description: Missing or invalid credentials.
       content:
@@ -6024,7 +7122,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/AglErrorEnvelope'
-
     EvUnauthorized:
       description: Missing or invalid credentials
       content:
@@ -6037,7 +7134,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/EvErrorEnvelope'
-
     SmUnauthorized:
       description: Missing or invalid credentials.
       content:
@@ -6045,10 +7141,13 @@ components:
           schema:
             $ref: '#/components/schemas/SmErrorEnvelope'
     SmForbidden:
-      description: |
-        Authenticated but the role lacks the required permission (meters need
+      description: 'Authenticated but the role lacks the required permission (meters need
+
         MEMBER+ via runs.execute; margin is OWNER-only via
+
         organization.manage).
+
+        '
       content:
         application/json:
           schema:
@@ -6059,33 +7158,141 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/SmErrorEnvelope'
+    ScimTokenRevokeUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ScimTokenRevokeErrorEnvelope'
+    ScimTokenRevokeForbidden:
+      description: 'Authenticated but lacking the required permission (users.manage =
 
+        exactly OWNER/ADMIN). No revocation happens and nothing is audited.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ScimTokenRevokeErrorEnvelope'
+    NsubUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NsubError'
+    NsubForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NsubError'
+    PolEnfWaitingApproval:
+      description: 'A winning allow policy carried require_approval (issue #75): the run
+
+        was created and parked in WAITING_APPROVAL, a pending approval was
+
+        filed for the operators (existing approvals flow) and NO execution
+
+        was enqueued (audit action run.approval_required). Approving the
+
+        linked approval resumes the run and re-enqueues its agent.run task;
+
+        rejecting it leaves the run parked.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PolEnfWaitingApprovalResponse'
+          example:
+            run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+            status: waiting_approval
+            approval_id: 8f14e45f-ceea-467a-9e51-b0c0a8a4b331
+            policy:
+              policy_id: b7a1c3e0-5f4e-4a3d-8c2b-9d1e0f4a5b6c
+              decision: allow
+              reason: allow by policy "approve production runs" (priority 3); approval required before execution
+              require_approval: true
+    PolEnfPolicyUnavailable:
+      description: 'Fail-closed misconfiguration or outage (issue #75): enforcement is
+
+        enabled but the policy decision source failed (503
+
+        policy_unavailable), or a require_approval policy matched while the
+
+        approvals service is not wired. Nothing executes and nothing is
+
+        enqueued; the failing-source case is audit-logged as
+
+        run.policy_unavailable.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PolEnfErrorEnvelope'
+          example:
+            error:
+              code: policy_unavailable
+              message: policy store unavailable
+    PolEnfPolicyDenied:
+      description: 'A matching policy denied the action (issue #75). NO run row was
+
+        created and NO agent.run task was enqueued; the denial is audit-logged
+
+        as run.policy_denied with the matched policy id and reason. The error
+
+        message carries the machine decision reason, e.g.
+
+        ''run denied by policy: deny by policy "block production runs"
+
+        (priority 10)''.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PolEnfErrorEnvelope'
+          example:
+            error:
+              code: policy_denied
+              message: 'run denied by policy: deny by policy "block production runs" (priority 10)'
   schemas:
-
     QuotaErrorEnvelope:
       type: object
-      required: [error]
+      required:
+      - error
       properties:
         error:
           type: object
-          required: [code, message]
+          required:
+          - code
+          - message
           properties:
             code:
               type: string
-              description: |
-                Machine code: quota_exceeded (402 — monthly run budget
+              description: 'Machine code: quota_exceeded (402 — monthly run budget
+
                 exceeded while AGENTOS_BILLING_ENFORCEMENT is on),
+
                 billing_unavailable (503 — enforcement on but the billing
+
                 service is not wired), INTERNAL_ERROR (500 — the quota or
+
                 metering read failed; availability is never faked).
+
+                '
             message:
               type: string
-              description: |
-                Human-readable detail. For quota_exceeded it carries the
+              description: 'Human-readable detail. For quota_exceeded it carries the
+
                 deterministic summary "monthly run quota exceeded: included N
+
                 runs, consumed M runs ..." so clients can render the budget
+
                 state without a second call.
 
+                '
     ApiKeyCreateRequest:
       type: object
       description: Mint payload. Only the display name is supplied; the secret itself is generated server-side.
@@ -6100,11 +7307,15 @@ components:
       - name
     ApiKeyMetadata:
       type: object
-      description: |
-        Credential-free metadata projection. This is the ONLY shape list
+      description: 'Credential-free metadata projection. This is the ONLY shape list
+
         endpoints return; the plaintext value and the persisted SHA-256 hash
+
         are structurally absent (no `value` and no `hash` property exists on
+
         this schema).
+
+        '
       properties:
         id:
           type: string
@@ -6113,9 +7324,11 @@ components:
           type: string
         prefix:
           type: string
-          description: |
-            Display prefix ("ak_" + the first 8 secret characters) for
+          description: 'Display prefix ("ak_" + the first 8 secret characters) for
+
             identification in dashboards; authenticates nothing by itself.
+
+            '
           examples:
           - ak_1a2b3c4d
         created_by:
@@ -6136,16 +7349,19 @@ components:
       - revoked
     ApiKeyCreatedResponse:
       type: object
-      description: |
-        Mint response. `api_key` is metadata-only; `value` is the plaintext
+      description: 'Mint response. `api_key` is metadata-only; `value` is the plaintext
+
         credential and appears EXACTLY HERE and EXACTLY ONCE — the service
+
         stores only the hash and can never return the value again.
+
+        '
       properties:
         api_key:
           $ref: '#/components/schemas/ApiKeyMetadata'
         value:
           type: string
-          pattern: '^ak_[0-9a-f]{64}$'
+          pattern: ^ak_[0-9a-f]{64}$
           description: The plaintext API key. Appears exactly here and exactly once.
       required:
       - api_key
@@ -6537,6 +7753,23 @@ components:
           description: Prompt/task input handed to the agent.
           examples:
           - What is 2+2?
+        environment:
+          type: string
+          description: 'Governance scope for environment-conditional policies (issue #75);
+
+            blank defaults to production. Stamped onto the queue task so the
+
+            worker''s tool-level checks evaluate the same environment.
+
+            '
+        estimated_cost_cents:
+          type: integer
+          format: int64
+          description: 'Optional estimated cost feeding the max_cost_cents budget-guard
+
+            condition (issue #75).
+
+            '
       required:
       - agent_id
       - input
@@ -9326,6 +10559,16 @@ components:
           type: array
           items:
             type: string
+        signature:
+          type: string
+          format: byte
+          description: Base64 detached Ed25519 signature over the canonical manifest bytes (see GET /marketplace/listings/{slug}/provenance).
+            Required together with signing_key_id for a signed publish; both omitted = legacy unsigned publish (install-time
+            policy applies).
+        signing_key_id:
+          type: string
+          description: A signing key registered via POST /marketplace/keys of the publisher org. Required together with signature
+            for a signed publish.
     MktListing:
       type: object
       properties:
@@ -9971,12 +11214,17 @@ components:
       - role
     OrgMember:
       type: object
-      description: |
-        One membership row joined with the identity directory. `name` is a
+      description: 'One membership row joined with the identity directory. `name` is a
+
         display fallback derived from the email local part (the identity
+
         model has no display-name column — same deliberate omission as the
+
         SCIM 2.0 resource); a membership row without a matching identity row
+
         projects empty email/name.
+
+        '
       properties:
         id:
           type: string
@@ -10017,10 +11265,13 @@ components:
       - members
     OrgMemberAddRequest:
       type: object
-      description: |
-        Invite payload. Only email + role are supplied; the tenant comes
+      description: 'Invite payload. Only email + role are supplied; the tenant comes
+
         from the auth claims and the user must already exist on the
+
         platform (unknown emails are 404, never auto-registered).
+
+        '
       properties:
         email:
           type: string
@@ -10077,7 +11328,8 @@ components:
           properties:
             code:
               type: string
-              description: One of ORGANIZATION_NOT_FOUND, USER_NOT_FOUND, MEMBER_NOT_FOUND, ALREADY_MEMBER, LAST_OWNER, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              description: One of ORGANIZATION_NOT_FOUND, USER_NOT_FOUND, MEMBER_NOT_FOUND, ALREADY_MEMBER, LAST_OWNER, VALIDATION_ERROR,
+                INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
               examples:
               - LAST_OWNER
             message:
@@ -10087,17 +11339,19 @@ components:
           - message
       required:
       - error
-
     McpJSONRPCRequest:
       type: object
-      description: |
-        One JSON-RPC 2.0 request object. `id` may be a string, number or
+      description: 'One JSON-RPC 2.0 request object. `id` may be a string, number or
+
         null; a request WITHOUT `id` is a notification (204, no body).
+
         Batches (top-level arrays) are rejected with -32600.
+
+        '
       properties:
         jsonrpc:
           type: string
-          const: "2.0"
+          const: '2.0'
           description: Must be exactly "2.0".
         id:
           oneOf:
@@ -10117,22 +11371,23 @@ components:
           oneOf:
           - $ref: '#/components/schemas/McpInitializeParams'
           - $ref: '#/components/schemas/McpCallToolParams'
-          description: |
-            Method parameters (initialize and tools/call take params;
+          description: 'Method parameters (initialize and tools/call take params;
+
             tools/list and ping take none in stateless v1).
+
+            '
       required:
       - jsonrpc
       - method
     McpInitializeParams:
       type: object
-      description: initialize parameters. Unsupported protocol versions are
-        answered with the server's latest ("2025-06-18").
+      description: initialize parameters. Unsupported protocol versions are answered with the server's latest ("2025-06-18").
       properties:
         protocolVersion:
           type: string
           description: Client's requested MCP spec revision.
           examples:
-          - "2025-06-18"
+          - '2025-06-18'
         capabilities:
           type: object
           description: Client capabilities (ignored by this server in v1).
@@ -10157,20 +11412,24 @@ components:
         arguments:
           type: object
           additionalProperties: true
-          description: |
-            Tool input object. JSON null behaves like an empty object;
+          description: 'Tool input object. JSON null behaves like an empty object;
+
             anything else that is not an object is -32602.
+
+            '
       required:
       - name
     McpJSONRPCResponse:
       type: object
-      description: |
-        One JSON-RPC 2.0 response object: exactly one of result / error.
+      description: 'One JSON-RPC 2.0 response object: exactly one of result / error.
+
         `id` echoes the request id, or null when the id was undetectable.
+
+        '
       properties:
         jsonrpc:
           type: string
-          const: "2.0"
+          const: '2.0'
         id:
           oneOf:
           - type: string
@@ -10191,17 +11450,21 @@ components:
       properties:
         code:
           type: integer
-          description: |
-            -32700 parse error | -32600 invalid request (incl. batches) |
+          description: '-32700 parse error | -32600 invalid request (incl. batches) |
+
             -32601 method not found | -32602 invalid params / unknown tool |
+
             -32603 internal | -32000 forbidden (server-defined, reserved
+
             implementation range).
+
+            '
           examples:
           - -32601
         message:
           type: string
           examples:
-          - method not found: "resources/list"
+          - method not found: resources/list
         data:
           description: Optional structured error detail (unused in v1).
       required:
@@ -10222,8 +11485,8 @@ components:
       - version
     McpToolsCapability:
       type: object
-      description: tools feature advertisement. listChanged is false — the
-        stateless v1 endpoint never pushes registry-change notifications.
+      description: tools feature advertisement. listChanged is false — the stateless v1 endpoint never pushes registry-change
+        notifications.
       properties:
         listChanged:
           type: boolean
@@ -10244,12 +11507,15 @@ components:
       properties:
         protocolVersion:
           type: string
-          description: |
-            The negotiated spec revision: the client's version when the
-            server supports it ("2025-06-18"), otherwise the server's
+          description: 'The negotiated spec revision: the client''s version when the
+
+            server supports it ("2025-06-18"), otherwise the server''s
+
             latest.
+
+            '
           examples:
-          - "2025-06-18"
+          - '2025-06-18'
         capabilities:
           $ref: '#/components/schemas/McpServerCapabilities'
         serverInfo:
@@ -10260,11 +11526,15 @@ components:
       - serverInfo
     McpToolDescriptor:
       type: object
-      description: |
-        One tools/list entry. description and inputSchema are omitted for
+      description: 'One tools/list entry. description and inputSchema are omitted for
+
         tools that publish no catalog metadata. The catalog is a
+
         process-wide runtime surface: it carries no organization fields and
+
         is identical for every tenant.
+
+        '
       properties:
         name:
           type: string
@@ -10282,8 +11552,7 @@ components:
       - name
     McpToolsListResult:
       type: object
-      description: tools/list payload. nextCursor is deliberately absent
-        (no pagination in stateless v1).
+      description: tools/list payload. nextCursor is deliberately absent (no pagination in stateless v1).
       properties:
         tools:
           type: array
@@ -10300,22 +11569,31 @@ components:
           const: text
         text:
           type: string
-          description: |
-            Tool observation as text: the tool's result map rendered as
+          description: 'Tool observation as text: the tool''s result map rendered as
+
             compact JSON, or "error: <reason>" for in-band execution
+
             failures.
+
+            '
       required:
       - type
       - text
     McpCallToolResult:
       type: object
-      description: |
-        tools/call payload. Tool EXECUTION failures are reported here with
+      description: 'tools/call payload. Tool EXECUTION failures are reported here with
+
         isError=true (MCP contract) — they are never JSON-RPC errors.
+
         Protocol failures (unknown tool, malformed params) are JSON-RPC
+
         -32602 instead. Every call (executed, denied or unknown tool) also
+
         writes an audit row with the "mcp" channel marker; arguments are
+
         never logged.
+
+        '
       properties:
         content:
           type: array
@@ -10332,31 +11610,39 @@ components:
       type: object
       description: ping payload — the empty object, per the MCP spec.
       additionalProperties: false
-
     CnpPromotionPolicy:
       type: object
-      description: |
-        The eval-gated promotion policy (standing rule of the deployment row;
+      description: 'The eval-gated promotion policy (standing rule of the deployment row;
+
         survives abort and canary re-attach — re-attaching a canary opens a
+
         fresh evaluation window under the same policy). Out-of-domain values
+
         are REJECTED, not clamped.
+
+        '
       properties:
         min_pass_rate:
           type: number
           format: double
           minimum: 0
           maximum: 1
-          description: Minimum case-weighted pass rate across the sampled eval runs required to promote; a sample below it rolls back.
+          description: Minimum case-weighted pass rate across the sampled eval runs required to promote; a sample below it
+            rolls back.
           examples:
           - 0.8
         min_canary_runs:
           type: integer
           minimum: 0
-          description: |
-            Evidence gate: minimum completed eval runs inside the canary window
+          description: 'Evidence gate: minimum completed eval runs inside the canary window
+
             before ANY decision is made. 0 (or a negative value, rejected at
+
             validation) disables the policy entirely — the engine never decides
+
             on an empty sample.
+
+            '
           examples:
           - 3
         max_p95_latency_ms:
@@ -10378,56 +11664,73 @@ components:
       - max_cost_per_run_cents
     CnpCanaryConfigRequest:
       type: object
-      description: |
-        Canary configuration patch (the issue-#13 body extended with the
+      description: 'Canary configuration patch (the issue-#13 body extended with the
+
         issue-#51 policy field). At least one property is required; omitted
+
         properties keep their current value.
+
+        '
       properties:
         canary_version:
           type: integer
           minimum: 1
-          description: |
-            Canary target version (issue #13 semantics unchanged). Must be an
+          description: 'Canary target version (issue #13 semantics unchanged). Must be an
+
             existing version of the SAME agent (any publication status) and
-            differ from the deployment's stable version. Attaching/replacing
+
+            differ from the deployment''s stable version. Attaching/replacing
+
             it opens a FRESH evaluation window and voids any prior decision.
+
+            '
           examples:
           - 3
         canary_weight:
           type: integer
           minimum: 0
           maximum: 100
-          description: Percentage of traffic routed to the canary (0-100). Requires an attached canary. Moving the split does NOT affect the evaluation window.
+          description: Percentage of traffic routed to the canary (0-100). Requires an attached canary. Moving the split does
+            NOT affect the evaluation window.
           examples:
           - 50
         canary_policy:
-          description: |
-            The eval-gated promotion policy (issue #51). Attach/replace with an
+          description: 'The eval-gated promotion policy (issue #51). Attach/replace with an
+
             object — this opens a fresh evaluation window and clears any prior
+
             decision; clear with `null`. Requires an attached canary (attach
+
             canary_version in the same body, before the policy is applied).
+
+            '
           nullable: true
           allOf:
           - $ref: '#/components/schemas/CnpPromotionPolicy'
       minProperties: 1
     CnpCanaryDecision:
       type: object
-      description: |
-        The single immutable automatic decision recorded per canary window
+      description: 'The single immutable automatic decision recorded per canary window
+
         (never rewritten; manual promote/abort preempt the engine). Reason
+
         format: "<metric> <observed> <op> <threshold> → <action>".
+
+        '
       properties:
         action:
           type: string
           enum:
           - promote
           - rollback
-          description: promote = manual-promote semantics (canary becomes stable); rollback = manual-abort semantics (canary cleared, stable serves 100%).
+          description: promote = manual-promote semantics (canary becomes stable); rollback = manual-abort semantics (canary
+            cleared, stable serves 100%).
         reason:
           type: string
-          description: Deterministic decision reason, e.g. "pass_rate 0.62 < 0.80 → rollback" or "p95_latency_ms 300 > 100 → rollback".
+          description: Deterministic decision reason, e.g. "pass_rate 0.62 < 0.80 → rollback" or "p95_latency_ms 300 > 100
+            → rollback".
           examples:
-          - 'pass_rate 0.62 < 0.80 → rollback'
+          - pass_rate 0.62 < 0.80 → rollback
         decided_at:
           type: string
           format: date-time
@@ -10458,10 +11761,13 @@ components:
       - policy
     CnpSampleStats:
       type: object
-      description: |
-        Fresh aggregates of the completed eval runs inside the canary window
+      description: 'Fresh aggregates of the completed eval runs inside the canary window
+
         (surfaced only while the canary is active and a sample source is
-        wired — the "why hasn't it promoted yet" view).
+
+        wired — the "why hasn''t it promoted yet" view).
+
+        '
       properties:
         runs_counted:
           type: integer
@@ -10486,12 +11792,17 @@ components:
       - avg_cost_cents
     CnpCanaryStatus:
       type: object
-      description: |
-        Read model of GET /agents/{agentId}/canary/status. policy /
+      description: 'Read model of GET /agents/{agentId}/canary/status. policy /
+
         window_start / decision appear only when a promotion policy is
+
         configured (window_start is stamped at canary attach/replace);
+
         stats appears only while the canary is active with a sample source
+
         wired.
+
+        '
       properties:
         agent_id:
           type: string
@@ -10551,11 +11862,13 @@ components:
       - canary_status
     CnpDeploymentResponse:
       type: object
-      description: The updated deployment (base Deployment shape; the promotion state additionally surfaces on the status endpoint).
+      description: The updated deployment (base Deployment shape; the promotion state additionally surfaces on the status
+        endpoint).
       properties:
         deployment:
           type: object
-          description: Base Deployment view (see api/fragments/canary.yaml for the authoritative full shape); this fragment only documents the response envelope.
+          description: Base Deployment view (see api/fragments/canary.yaml for the authoritative full shape); this fragment
+            only documents the response envelope.
           additionalProperties: true
       required:
       - deployment
@@ -10568,12 +11881,17 @@ components:
           properties:
             code:
               type: string
-              description: |
-                One of DEPLOYMENT_NOT_FOUND (404), NOT_FOUND (404, status
+              description: 'One of DEPLOYMENT_NOT_FOUND (404), NOT_FOUND (404, status
+
                 endpoint), INVALID_STATE (409), VALIDATION_ERROR (422 —
+
                 includes out-of-domain canary_policy values), INVALID_REQUEST
+
                 (400), UNAUTHORIZED (401), FORBIDDEN (403), INTERNAL_ERROR
+
                 (500).
+
+                '
               examples:
               - VALIDATION_ERROR
             message:
@@ -10583,15 +11901,19 @@ components:
           - message
       required:
       - error
-
     AglUpdateAgentRequest:
       type: object
-      description: |
-        Merge-update payload for the agent's draft fields. Only the four
+      description: 'Merge-update payload for the agent''s draft fields. Only the four
+
         draft-updatable keys are accepted; every other key is rejected with
+
         400 IMMUTABLE_FIELDS (never silently dropped). system_prompt is an
+
         accepted alias of instructions. Leave a field absent to keep its
+
         current value.
+
+        '
       properties:
         name:
           type: string
@@ -10609,7 +11931,8 @@ components:
         system_prompt:
           type: string
           minLength: 1
-          description: Alias of instructions (the version contract's canonical key); must agree with instructions when both are present.
+          description: Alias of instructions (the version contract's canonical key); must agree with instructions when both
+            are present.
         model:
           type: string
           minLength: 1
@@ -10619,10 +11942,13 @@ components:
       additionalProperties: false
     AglAgent:
       type: object
-      description: |
-        Agent representation — identical to the base spec's Agent schema and
+      description: 'Agent representation — identical to the base spec''s Agent schema and
+
         the GET /agents/{id} response (legacy PascalCase encoding of the
+
         internal agents.Agent struct, unchanged by this fragment).
+
+        '
       properties:
         ID:
           type: string
@@ -10678,7 +12004,8 @@ components:
           properties:
             code:
               type: string
-              description: One of AGENT_NOT_FOUND, IMMUTABLE_FIELDS, AGENT_HAS_RUNS, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              description: One of AGENT_NOT_FOUND, IMMUTABLE_FIELDS, AGENT_HAS_RUNS, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED,
+                FORBIDDEN, INTERNAL_ERROR.
               examples:
               - AGENT_HAS_RUNS
             message:
@@ -10688,17 +12015,20 @@ components:
           - message
       required:
       - error
-
     EvEvent:
       type: object
-      required: [id, type, timestamp]
+      required:
+      - id
+      - type
+      - timestamp
       properties:
         id:
           type: string
           description: Event id (UUID; also the keyset tiebreaker).
         type:
           type: string
-          description: Contract event type (run.started, run.completed, run.failed, run.cancelled, step.started, step.completed, agent.created, agent.updated, approval.requested, approval.decided, deployment.completed, deployment.failed, webhook.received).
+          description: Contract event type (run.started, run.completed, run.failed, run.cancelled, step.started, step.completed,
+            agent.created, agent.updated, approval.requested, approval.decided, deployment.completed, deployment.failed, webhook.received).
         entity_type:
           type: string
           description: resource_type of the domain object the event is about (flattened Resource; omitted when absent).
@@ -10721,7 +12051,9 @@ components:
           description: Event creation time (RFC3339, UTC); the keyset ordering key.
     EvEventListResponse:
       type: object
-      required: [events, next_cursor]
+      required:
+      - events
+      - next_cursor
       properties:
         events:
           type: array
@@ -10732,44 +12064,64 @@ components:
           description: Opaque keyset cursor for the next page; empty string when the stream is exhausted.
     EvErrorEnvelope:
       type: object
-      required: [error]
+      required:
+      - error
       properties:
         error:
           type: object
-          required: [code, message]
+          required:
+          - code
+          - message
           properties:
             code:
               type: string
-              enum: [INVALID_REQUEST, INVALID_CURSOR, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR, EVENTS_UNAVAILABLE]
+              enum:
+              - INVALID_REQUEST
+              - INVALID_CURSOR
+              - UNAUTHORIZED
+              - FORBIDDEN
+              - INTERNAL_ERROR
+              - EVENTS_UNAVAILABLE
             message:
               type: string
-
     SmMeters:
       type: object
-      required: [runs_count, tool_calls_count]
+      required:
+      - runs_count
+      - tool_calls_count
       properties:
         runs_count:
           type: integer
           format: int64
           minimum: 0
-          description: |
-            Metered runs of the organization inside the window (the run-count
+          description: 'Metered runs of the organization inside the window (the run-count
+
             side of the GET /usage/costs aggregation).
+
+            '
         tool_calls_count:
           type: integer
           format: int64
           minimum: 0
-          description: |
-            Executed tool steps (run_steps with step_type='tool') of the
+          description: 'Executed tool steps (run_steps with step_type=''tool'') of the
+
             organization inside the window.
+
+            '
       additionalProperties: false
-      description: |
-        The meters contract is closed on purpose: sandbox_seconds is absent
+      description: 'The meters contract is closed on purpose: sandbox_seconds is absent
+
         because the platform records no durable sandbox execution duration
+
         (never-invented-data rule). It will be added when a meter exists.
+
+        '
     SmMetersResponse:
       type: object
-      required: [from, to, meters]
+      required:
+      - from
+      - to
+      - meters
       properties:
         from:
           type: string
@@ -10783,7 +12135,13 @@ components:
           $ref: '#/components/schemas/SmMeters'
     SmMarginPlan:
       type: object
-      required: [id, name, price_cents, currency, included_quota, unlimited]
+      required:
+      - id
+      - name
+      - price_cents
+      - currency
+      - included_quota
+      - unlimited
       properties:
         id:
           type: string
@@ -10819,7 +12177,11 @@ components:
           type: string
         status:
           type: string
-          enum: [trial, active, past_due, canceled]
+          enum:
+          - trial
+          - active
+          - past_due
+          - canceled
           description: Status of the subscription row whose period is reported.
         period_start:
           type: string
@@ -10843,30 +12205,528 @@ components:
         margin_percent:
           type: number
           format: double
-          description: |
-            (1 − cost/price) × 100. OMITTED when price_cents is 0 — a
+          description: '(1 − cost/price) × 100. OMITTED when price_cents is 0 — a
+
             percentage of zero revenue is undefined, never fabricated.
+
+            '
         plan:
           $ref: '#/components/schemas/SmMarginPlan'
     SmMarginResponse:
       type: object
-      required: [margin]
+      required:
+      - margin
       properties:
         margin:
           $ref: '#/components/schemas/SmMarginReport'
     SmErrorEnvelope:
       type: object
-      required: [error]
+      required:
+      - error
       properties:
         error:
           type: object
-          required: [code, message]
+          required:
+          - code
+          - message
           properties:
             code:
               type: string
-              description: Machine-readable code (INVALID_TIME_RANGE, METER_SOURCE_UNAVAILABLE, NO_SUBSCRIPTION, PLAN_NOT_FOUND, …).
+              description: Machine-readable code (INVALID_TIME_RANGE, METER_SOURCE_UNAVAILABLE, NO_SUBSCRIPTION, PLAN_NOT_FOUND,
+                …).
             message:
               type: string
+    ScimTokenRevokeErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of SCIM_TOKEN_NOT_FOUND, SCIM_UNAVAILABLE, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - SCIM_TOKEN_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    AuthLifecycleRefreshResponse:
+      type: object
+      description: 'Fresh session token (rotated jti, full new 24h window). Same shape
 
+        as the POST /auth/login response. The replaced token is already
+
+        revoked server-side when this response is emitted.
+
+        '
+      properties:
+        token:
+          type: string
+          minLength: 1
+          description: The new HMAC session token. Store it; the old one is dead.
+      required:
+      - token
+    AuthLifecycleErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: 'One of UNAUTHORIZED (missing/non-bearer credential),
+
+                TOKEN_INVALID (not a validly signed token, expired, or
+
+                unresolvable identity), TOKEN_REVOKED (deny-listed: logged
+
+                out or rotated away — single-use replay is observable),
+
+                ACCOUNT_DISABLED (SCIM deprovisioned or otherwise inactive
+
+                identity).
+
+                '
+              examples:
+              - TOKEN_REVOKED
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    QtTask:
+      type: object
+      description: 'Introspection record of one queue task. organization_id is never
+
+        rendered — the tenant is implied by the caller''s claims (the payload
+
+        may legitimately echo the caller''s own organization_id inside its
+
+        keys).
+
+        '
+      required:
+      - id
+      - type
+      - status
+      - attempts
+      - requeues
+      - created_at
+      - updated_at
+      properties:
+        id:
+          type: string
+          description: Stable task identifier (preserved across requeues).
+        type:
+          type: string
+          description: Task type, e.g. agent.run or a workflow node type.
+        status:
+          type: string
+          enum:
+          - queued
+          - running
+          - dead_letter
+          - completed
+          description: Current engine state. Dequeued-but-not-started tasks still report queued.
+        attempts:
+          type: integer
+          format: int64
+          description: Delivery attempts since the last (re)queue. Reset to 0 by a requeue.
+        requeues:
+          type: integer
+          format: int64
+          description: API-initiated requeue counter; survives the attempt reset and later transitions.
+        last_error:
+          type: string
+          description: Last handler error; empty after a successful requeue.
+        payload:
+          type: object
+          additionalProperties: true
+          description: The task payload as enqueued (organization_id, run_id, input, ...).
+        created_at:
+          type: string
+          format: date-time
+          description: Original enqueue time (preserved across requeues).
+        updated_at:
+          type: string
+          format: date-time
+          description: Last transition time.
+        requeued_at:
+          type: string
+          format: date-time
+          description: Timestamp of the most recent API requeue; absent when never requeued.
+    QtTaskListResponse:
+      type: object
+      required:
+      - tasks
+      - next_cursor
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/QtTask'
+          description: One keyset page, newest enqueue first.
+        next_cursor:
+          type: string
+          description: Opaque cursor for the next page; "" when the listing is exhausted.
+    QtStatsResponse:
+      type: object
+      required:
+      - stats
+      - total
+      properties:
+        stats:
+          type: object
+          required:
+          - queued
+          - running
+          - dead_letter
+          - completed
+          additionalProperties: false
+          properties:
+            queued:
+              type: integer
+              format: int64
+            running:
+              type: integer
+              format: int64
+            dead_letter:
+              type: integer
+              format: int64
+            completed:
+              type: integer
+              format: int64
+          description: Depth per engine state for the caller's organization.
+        total:
+          type: integer
+          format: int64
+          description: Total number of the organization's tracked tasks.
+    QtErrorEnvelope:
+      type: object
+      description: Shared structured error envelope.
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              enum:
+              - NOT_FOUND
+              - CONFLICT
+              - INVALID_CURSOR
+              - INVALID_REQUEST
+              - UNAUTHORIZED
+              - INTERNAL_ERROR
+              - QUEUE_UNAVAILABLE
+            message:
+              type: string
+    NsubSubscription:
+      type: object
+      description: 'One org-scoped routing rule: deliver the listed operational event
+
+        types to an existing webhook endpoint of the same organization.
+
+        Deliveries reuse the signed webhooks pipeline and appear in
+
+        GET /webhooks/{id}/deliveries.
+
+        '
+      required:
+      - id
+      - webhook_id
+      - event_types
+      - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        webhook_id:
+          type: string
+          format: uuid
+          description: Target webhook endpoint (must exist in the same organization).
+        event_types:
+          type: array
+          items:
+            type: string
+          description: 'Pinned event types delivered to the webhook, e.g. "run.failed"
+
+            (run failure), "approval.requested" (approval required),
+
+            "deployment.failed" (canary/deployment failure + rollback).
+
+            '
+          minItems: 1
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC.
+    NsubSubscriptionList:
+      type: object
+      required:
+      - subscriptions
+      properties:
+        subscriptions:
+          type: array
+          description: Subscriptions ordered newest first; empty when none exist.
+          items:
+            $ref: '#/components/schemas/NsubSubscription'
+    NsubCreateSubscriptionRequest:
+      type: object
+      required:
+      - webhook_id
+      - event_types
+      properties:
+        webhook_id:
+          type: string
+          format: uuid
+          description: Existing webhook endpoint of the caller's organization.
+        event_types:
+          type: array
+          items:
+            type: string
+          description: 'Event types to subscribe to; every entry must be a valid contract
+
+            event type and at least one is required. Duplicates are removed.
+
+            '
+          minItems: 1
+    NsubCreateSubscriptionResponse:
+      type: object
+      required:
+      - subscription
+      properties:
+        subscription:
+          $ref: '#/components/schemas/NsubSubscription'
+    NsubDeleteResponse:
+      type: object
+      required:
+      - deleted
+      properties:
+        deleted:
+          type: boolean
+          enum:
+          - true
+    NsubError:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              enum:
+              - INVALID_REQUEST
+              - VALIDATION_ERROR
+              - WEBHOOK_NOT_FOUND
+              - SUBSCRIPTION_NOT_FOUND
+              - METHOD_NOT_ALLOWED
+              - INTERNAL
+              description: One of the notifications error codes.
+            message:
+              type: string
+              description: 'Human-readable detail; for unknown event types the message
+
+                enumerates every valid event type.
+
+                '
+    MktSigRegisterRequest:
+      type: object
+      required:
+      - public_key
+      properties:
+        public_key:
+          type: string
+          format: byte
+          description: Base64-encoded Ed25519 PUBLIC key material.
+        alg:
+          type: string
+          default: ed25519
+          description: Signature algorithm (currently only "ed25519").
+    MktSigKey:
+      type: object
+      properties:
+        id:
+          type: string
+        organization_id:
+          type: string
+        public_key:
+          type: string
+          format: byte
+        alg:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - revoked
+        fingerprint:
+          type: string
+          description: Short SHA-256 fingerprint of the public key material.
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          description: RFC3339 timestamp, empty when active.
+    MktSigKeyEnvelope:
+      type: object
+      required:
+      - key
+      properties:
+        key:
+          $ref: '#/components/schemas/MktSigKey'
+    MktSigKeyListEnvelope:
+      type: object
+      required:
+      - keys
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/MktSigKey'
+    MktSigRevokedEnvelope:
+      type: object
+      required:
+      - revoked
+      properties:
+        revoked:
+          type: boolean
+    MktSigProvenance:
+      type: object
+      properties:
+        slug:
+          type: string
+        publisher_org_id:
+          type: string
+        signing_key_id:
+          type: string
+          description: Empty for unsigned (legacy) listings.
+        fingerprint:
+          type: string
+          description: Fingerprint of the signing key; empty when unsigned.
+        alg:
+          type: string
+        signed:
+          type: boolean
+        signed_at:
+          type: string
+          description: RFC3339 timestamp of the publish-time signature; empty when unsigned.
+        manifest_hash:
+          type: string
+          description: Content-addressed SHA-256 of the canonical manifest; empty when unsigned.
+    MktSigProvenanceEnvelope:
+      type: object
+      required:
+      - provenance
+      properties:
+        provenance:
+          $ref: '#/components/schemas/MktSigProvenance'
+    MktSigSettings:
+      type: object
+      required:
+      - allow_unsigned
+      properties:
+        allow_unsigned:
+          type: boolean
+          description: When true, installs of unsigned new listings are permitted for this org.
+    MktSigSettingsEnvelope:
+      type: object
+      required:
+      - settings
+      properties:
+        settings:
+          $ref: '#/components/schemas/MktSigSettings'
+    MktSigSettingsUpdate:
+      type: object
+      required:
+      - allow_unsigned
+      properties:
+        allow_unsigned:
+          type: boolean
+    MktSigError:
+      type: object
+      description: Structured error envelope (mirrors the base spec error model).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: 'Machine-readable code, e.g. SIGNING_KEY_NOT_FOUND, SIGNATURE_INVALID, UNSIGNED_LISTING, SNAPSHOT_TAMPERED,
+                UNKNOWN_SIGNING_KEY, SIGNATURE_INCOMPLETE.
+
+                '
+            message:
+              type: string
+    PolEnfWaitingApprovalResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          const: waiting_approval
+        approval_id:
+          type: string
+          description: The pending approval filed for the operators.
+        policy:
+          type: object
+          properties:
+            policy_id:
+              type: string
+            decision:
+              type: string
+              const: allow
+            reason:
+              type: string
+            require_approval:
+              type: boolean
+              const: true
+      required:
+      - run_id
+      - status
+      - policy
+    PolEnfErrorEnvelope:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              description: 'Machine code: policy_denied (403 — a matching policy denied
+
+                the action), policy_unavailable (503 — fail-closed outage or
+
+                unwired approvals flow for a require_approval decision).
+
+                '
+            message:
+              type: string
+              description: Human-readable detail carrying the decision reason.
   requestBodies: {}
   headers: {}
