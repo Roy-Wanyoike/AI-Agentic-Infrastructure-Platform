@@ -1,0 +1,371 @@
+# AgentOS API — OpenAPI 3.1 fragment for the MCP server registry (issue #82).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1). The CONSUMING side: org-scoped registration of EXTERNAL MCP
+# servers whose tools become invocable by the org's agents. The inbound MCP
+# server endpoint (AgentOS AS an MCP server) is documented in the base spec
+# (/mcp, issue #50).
+#
+# Standalone-valid: every local $ref resolves inside this fragment
+# (McpReg* schema prefix is track-unique; operationIds verified unique).
+#
+# Contract notes:
+#   * Registration runs the initialize handshake + tools/list against the
+#     endpoint; an unreachable server is 422 MCP_SERVER_UNREACHABLE unless
+#     ?force=true (stored as status "unreachable", no cached tools).
+#   * Tool cache: refreshed at registration and on every re-test/update; the
+#     worker exposes cached tools of servers with status "ok" to that org's
+#     agents as native tools (governed by the same policy engine).
+#   * SECRET HANDLING: only the secret_ref NAME is accepted/returned; the
+#     VALUE is resolved per call through the secrets service.
+#   * RBAC mirrors connectors: writes (POST/PUT/DELETE/test) agents.write
+#     OWNER/ADMIN, reads agents.read all roles.
+paths:
+  /mcp-servers:
+    post:
+      operationId: registerMCPServer
+      summary: Register an external MCP server (health-checked)
+      description: |
+        Registers an org-scoped MCP server and immediately probes it: the
+        registry performs the MCP initialize handshake and tools/list over
+        streamable HTTP, caching the negotiated protocol version and the
+        remote tool catalog. Unreachable endpoints are rejected with 422
+        unless `force=true` (stores status "unreachable" so the operator can
+        fix and re-test later). Audited (mcp.server_registered).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      parameters:
+        - name: force
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Register even when the health check fails (status "unreachable").
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpRegServerInput'
+      responses:
+        '201':
+          description: Server registered and reachable (tools cached)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegServerEnvelope'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegError'
+        '401':
+          $ref: '#/components/responses/McpRegUnauthorized'
+        '403':
+          $ref: '#/components/responses/McpRegForbidden'
+        '409':
+          description: A server with this name already exists in the org
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegError'
+        '422':
+          description: Unreachable endpoint (without force) or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegError'
+    get:
+      operationId: listMCPServers
+      summary: List the caller org's registered MCP servers
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.read (all roles)
+      responses:
+        '200':
+          description: Servers ordered by name (possibly empty)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegServerListEnvelope'
+        '401':
+          $ref: '#/components/responses/McpRegUnauthorized'
+  /mcp-servers/{id}:
+    get:
+      operationId: getMCPServer
+      summary: Get one registered MCP server
+      description: Unknown and foreign-tenant ids are the same 404 (no existence leak).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.read (all roles)
+      parameters:
+        - $ref: '#/components/parameters/McpRegServerID'
+      responses:
+        '200':
+          description: The server record (incl. cached tool catalog)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegServerEnvelope'
+        '401':
+          $ref: '#/components/responses/McpRegUnauthorized'
+        '404':
+          description: Unknown or foreign id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegError'
+    put:
+      operationId: updateMCPServer
+      summary: Update an MCP server (re-checked)
+      description: |
+        Replaces the endpoint/secret configuration and re-runs the health
+        check, refreshing the tool cache. Unreachable results are 422 unless
+        `force=true` (status "unreachable"). Audited (mcp.server_updated).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      parameters:
+        - $ref: '#/components/parameters/McpRegServerID'
+        - name: force
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpRegServerInput'
+      responses:
+        '200':
+          description: Updated record (post re-check)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegServerEnvelope'
+        '401':
+          $ref: '#/components/responses/McpRegUnauthorized'
+        '403':
+          $ref: '#/components/responses/McpRegForbidden'
+        '404':
+          description: Unknown or foreign id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegError'
+        '422':
+          description: Unreachable endpoint (without force) or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegError'
+    delete:
+      operationId: deleteMCPServer
+      summary: Delete an MCP server
+      description: |
+        Removes the registration; its tools stop being exposed to the org's
+        agents on the next runner build. Audited (mcp.server_deleted).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      parameters:
+        - $ref: '#/components/parameters/McpRegServerID'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegDeletedEnvelope'
+        '401':
+          $ref: '#/components/responses/McpRegUnauthorized'
+        '403':
+          $ref: '#/components/responses/McpRegForbidden'
+        '404':
+          description: Unknown or foreign id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegError'
+  /mcp-servers/{id}/test:
+    post:
+      operationId: testMCPServer
+      summary: Re-run the health check and refresh the tool cache
+      description: |
+        Explicit re-test: initialize handshake + tools/list. Updates status
+        (ok/unreachable), last_check_at, protocol_version and the cached tool
+        catalog. Audited (mcp.server_tested).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      parameters:
+        - $ref: '#/components/parameters/McpRegServerID'
+      responses:
+        '200':
+          description: Post-check record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegServerEnvelope'
+        '401':
+          $ref: '#/components/responses/McpRegUnauthorized'
+        '403':
+          $ref: '#/components/responses/McpRegForbidden'
+        '404':
+          description: Unknown or foreign id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpRegError'
+components:
+  # own components.securitySchemes (api/fragments/apikeys.yaml pattern) so
+  # this fragment validates standalone; the merge target already declares the
+  # identical pair and deduplicates on merge.
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    McpRegServerID:
+      name: id
+      in: path
+      required: true
+      description: MCP server id (UUID, as returned at registration).
+      schema:
+        type: string
+  responses:
+    McpRegUnauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/McpRegError'
+    McpRegForbidden:
+      description: Authenticated principal lacks the required permission
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/McpRegError'
+  schemas:
+    McpRegServerInput:
+      type: object
+      required: [name, endpoint_url]
+      properties:
+        name:
+          type: string
+          description: Org-unique display name; tool names derive from it.
+        endpoint_url:
+          type: string
+          format: uri
+          description: Full URL the JSON-RPC 2.0 streamable-HTTP POSTs go to.
+        secret_ref:
+          type: string
+          description: >
+            Optional NAME reference into the org's secrets store; the resolved
+            value is injected per call into auth_header. Never accepted or
+            returned as a value.
+        auth_header:
+          type: string
+          default: Authorization
+          description: Header the resolved secret is injected into.
+    McpRegRemoteTool:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        input_schema:
+          type: object
+          description: The remote tools/list inputSchema, cached at last check.
+    McpRegServer:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        endpoint_url:
+          type: string
+        secret_ref:
+          type: string
+          description: Name reference only (empty when anonymous).
+        auth_header:
+          type: string
+        status:
+          type: string
+          enum: [ok, unreachable, disabled]
+        last_check_at:
+          type: string
+          format: date-time
+          nullable: true
+        protocol_version:
+          type: string
+          description: Negotiated MCP protocol version from the last successful handshake; empty otherwise.
+        tools:
+          type: array
+          description: Cached remote tool catalog from the last successful check.
+          items:
+            $ref: '#/components/schemas/McpRegRemoteTool'
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    McpRegServerEnvelope:
+      type: object
+      required: [mcp_server]
+      properties:
+        mcp_server:
+          $ref: '#/components/schemas/McpRegServer'
+    McpRegServerListEnvelope:
+      type: object
+      required: [mcp_servers]
+      properties:
+        mcp_servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpRegServer'
+    McpRegDeletedEnvelope:
+      type: object
+      required: [deleted, id]
+      properties:
+        deleted:
+          type: boolean
+        id:
+          type: string
+    McpRegError:
+      type: object
+      description: Structured error envelope (mirrors the base spec error model).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: >
+                Machine-readable code, e.g. MCP_SERVER_NOT_FOUND,
+                MCP_SERVER_ALREADY_EXISTS, MCP_SERVER_UNREACHABLE,
+                VALIDATION_ERROR.
+            message:
+              type: string

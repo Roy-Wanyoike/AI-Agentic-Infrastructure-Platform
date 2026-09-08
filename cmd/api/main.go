@@ -31,6 +31,7 @@ import (
 	"agentos/internal/knowledge"
 	"agentos/internal/logger"
 	"agentos/internal/marketplace"
+	"agentos/internal/mcp"
 	"agentos/internal/memory"
 	"agentos/internal/models"
 	"agentos/internal/notifications"
@@ -98,6 +99,7 @@ type app struct {
 	scimSvc        *scim.Service
 	mktSvc         *marketplace.Service
 	connSvc        *connectors.Service
+	mcpRegSvc      *mcp.Registry
 	whSvc          *webhooks.Service
 	notifSvc       *notifications.Service
 	publisher      events.Publisher
@@ -181,6 +183,16 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 			os.Exit(1)
 		}
 		a.connSvc = connSvc
+		// issue #82: org-scoped MCP server registry (the CONSUMING side; the
+		// inbound MCP server endpoint is mcp.go). Secret refs resolve through
+		// the same secrets service as connectors.
+		mcpReg, merr := mcp.NewRegistryWithStore(mcp.NewPostgresStore(db), mcp.SecretResolverFunc(a.secretsSvc.Resolve))
+		if merr != nil {
+			logr.Error("mcp registry init failed", "error", merr)
+			os.Exit(1)
+		}
+		mcpReg.SetAuditor(a.auditSvc)
+		a.mcpRegSvc = mcpReg
 		a.logr.Info("postgres stores enabled")
 	} else {
 		a.authSvc = auth.NewService(jwtSecretVar)
@@ -212,6 +224,11 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		// issue #28/#30: zero-infrastructure marketplace + connectors
 		a.mktSvc = marketplace.NewService(a.agentsSvc)
 		a.connSvc = connectors.NewService()
+		// issue #82: MCP server registry (in-memory mode; no secret resolver
+		// until the secrets service exists below — servers with secret_refs
+		// surface ErrSecretResolverRequired per the registry contract)
+		a.mcpRegSvc = mcp.NewRegistry()
+		a.mcpRegSvc.SetAuditor(a.auditSvc)
 		// create a dev API key for local worker polling convenience (only
 		// possible in-memory: the api_keys FK requires a real organization row)
 		if key, err := a.apiKeysSvc.Create("org-demo", "dev-user", "dev-key"); err != nil {
@@ -406,6 +423,10 @@ func (a *app) routes() http.Handler {
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks
 	registerConnectorsRoutes(apiMux, a.connSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	// issue #82: MCP server registry (org-scoped; connectors RBAC matrix)
+	if a.mcpRegSvc != nil {
+		registerMcpRegistryRoutes(apiMux, a.mcpRegSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	}
 	// issue #48: API keys management (mint once / metadata list / revoke)
 	registerAPIKeysRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #50: MCP server endpoint (JSON-RPC 2.0) — tenant tools over MCP

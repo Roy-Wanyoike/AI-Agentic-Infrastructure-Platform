@@ -223,6 +223,22 @@ func main() {
 	// decision source follows the process mode (pull -> API evaluate
 	// endpoint, Postgres -> durable policy records, else in-process state).
 	wirePolicyEnforcer(runner, logr, quotaDB)
+
+	// issue #82: per-org runners (built-ins + the org's MCP tool adapters)
+	// and the worker-side MCP registry. The audit seam exists only when a
+	// DSN is configured (mcp.tool_call rows are durable like every audit row).
+	var workerAudit *audit.Service
+	if quotaDB != nil {
+		workerAudit = audit.NewServiceWithStore(audit.NewPostgresStore(quotaDB))
+	}
+	var sbExec tools.SandboxExecutor
+	if sb, ok := sandbox.RunnerFromEnv(logr); ok {
+		sbExec = sb
+	}
+	orgRunners := newOrgRunnerCache(agentsvc, provider,
+		stepRecorderAdapter(runsService, agentsvc), metricsSvc,
+		workerPolicyEnforcer(logr, quotaDB), sbExec,
+		workerMCPRegistry(quotaDB, workerAudit, logr), logr)
 	recoveryCtx, recoveryStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer recoveryStop()
 	go func() {
@@ -291,7 +307,7 @@ func main() {
 		// runtime tool seam evaluates the right organization's policies;
 		// a blank environment keeps the platform default (production).
 		environment, _ := task.Payload["environment"].(string)
-		run, rerr := runner.RunWithID(runScopeContext(ctx, orgID, environment), runID, agentID, input)
+		run, rerr := orgRunners.forOrg(ctx, orgID).RunWithID(runScopeContext(ctx, orgID, environment), runID, agentID, input)
 		if rerr != nil {
 			_ = runsService.UpdateStatus(runID, runs.StatusFailed, "")
 			go func() {
