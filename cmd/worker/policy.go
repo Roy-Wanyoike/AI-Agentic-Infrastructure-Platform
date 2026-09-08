@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 
+	"agentos/internal/apikeys"
 	"agentos/internal/policies"
 	"agentos/internal/runtime"
 )
@@ -76,4 +77,20 @@ func runScopeContext(ctx context.Context, orgID, environment string) context.Con
 		OrganizationID: orgID,
 		Environment:    environment,
 	})
+}
+
+// agentKeyContext stamps the agent-key least-privilege identity (wave-8,
+// agent identity v1) onto the execution context. The create-run handler
+// records the caller's agent-key claims (key id, agent id, tool allow-list)
+// on the task payload; the runtime tool seam reads them through
+// apikeys.AgentKeyClaimsFromContext and refuses tools outside the key's
+// allow-list (nil allow-list = all tools). A payload without an agent_key
+// object — every human/user-key initiated run — reads as nil claims and
+// passes the seam unchanged.
+func agentKeyContext(ctx context.Context, payload map[string]any) context.Context {
+	claims := apikeys.AgentKeyClaimsFromPayload(payload)
+	if claims == nil {
+		return ctx
+	}
+	return apikeys.WithAgentKeyClaims(ctx, claims)
 }

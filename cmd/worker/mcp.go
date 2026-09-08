@@ -43,14 +43,15 @@ type orgRunnerCache struct {
 	mu      sync.Mutex
 	runners map[string]*runtime.Runner
 
-	agentsvc *agents.Service
-	provider models.Provider
-	recorder runtime.StepRecorder
-	metrics  *observability.Metrics
-	enforcer *policies.Enforcer
-	sandbox  tools.SandboxExecutor
-	mcpReg   *mcp.Registry
-	logr     *slog.Logger
+	agentsvc      *agents.Service
+	provider      models.Provider
+	recorder      runtime.StepRecorder
+	metrics       *observability.Metrics
+	enforcer      *policies.Enforcer
+	agentKeyAudit *audit.Service // wave-8: agent-key tool-denial audit sink (nil-safe)
+	sandbox       tools.SandboxExecutor
+	mcpReg        *mcp.Registry
+	logr          *slog.Logger
 }
 
 // newOrgRunnerCache wires the cache. sandbox may be nil (in-process tool
@@ -120,6 +121,7 @@ func (c *orgRunnerCache) forOrg(ctx context.Context, orgID string) *runtime.Runn
 		runtime.WithMetrics(c.metrics),
 	)
 	runner.SetPolicyEnforcer(c.enforcer)
+	runner.SetAgentKeyAudit(c.agentKeyAudit) // wave-8: best-effort agentkey.tool_denied rows
 	c.runners[orgID] = runner
 	return runner
 }
@@ -145,4 +147,13 @@ func workerMCPRegistry(db *sql.DB, auditSvc *audit.Service, logr *slog.Logger) *
 	}
 	reg.SetAuditor(auditSvc)
 	return reg
+}
+
+// setAgentKeyAudit wires the agent-key tool-denial audit sink for every
+// runner built by this cache (wave-8). Called once at startup before task
+// consumption; guarded by the cache mutex for safety.
+func (c *orgRunnerCache) setAgentKeyAudit(svc *audit.Service) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.agentKeyAudit = svc
 }

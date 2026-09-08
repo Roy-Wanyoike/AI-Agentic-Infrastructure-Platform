@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"agentos/internal/apikeys"
 	"agentos/internal/approvals"
 	"agentos/internal/audit"
 	"agentos/internal/auth"
@@ -372,6 +373,19 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.Hand
 			// issue #75: the worker stamps the tool-policy scope
 			// from this field; blank keeps the platform default.
 			payload["environment"] = env
+		}
+		// wave-8 agent identity: when the caller authenticated with an agent
+		// key, its least-privilege identity rides the task payload so the
+		// worker can stamp the agent-key claims (tool allow-list) onto the
+		// execution context for the runtime tool seam. Non-agent-key callers
+		// leave this absent, which the worker reads as "not an agent key".
+		if claims, claimsErr := auth.ExtractClaims(r.Context()); claimsErr == nil && claims.AgentKeyID != "" {
+			payload["agent_key"] = apikeys.AgentKeyClaimsPayload(&apikeys.AgentKeyClaims{
+				KeyID:          claims.AgentKeyID,
+				AgentID:        claims.AgentID,
+				OrganizationID: claims.OrganizationID,
+				ToolAllowList:  claims.ToolAllowList,
+			})
 		}
 		task := workQueue.Enqueue("agent.run", payload)
 		if task == nil {

@@ -239,6 +239,10 @@ func main() {
 		stepRecorderAdapter(runsService, agentsvc), metricsSvc,
 		workerPolicyEnforcer(logr, quotaDB), sbExec,
 		workerMCPRegistry(quotaDB, workerAudit, logr), logr)
+	// wave-8: best-effort agentkey.tool_denied audit rows at the runtime tool
+	// seam (durable when a DSN is configured; nil = disabled in-memory mode).
+	orgRunners.setAgentKeyAudit(workerAudit)
+	runner.SetAgentKeyAudit(workerAudit)
 	recoveryCtx, recoveryStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer recoveryStop()
 	go func() {
@@ -306,8 +310,12 @@ func main() {
 		// issue #75: stamp the run scope (tenant + environment) so the
 		// runtime tool seam evaluates the right organization's policies;
 		// a blank environment keeps the platform default (production).
+		// wave-8: also stamp the agent-key least-privilege identity when the
+		// run was initiated by an agent key (tool allow-list enforcement at
+		// the runtime tool seam; absent for every other caller type).
 		environment, _ := task.Payload["environment"].(string)
-		run, rerr := orgRunners.forOrg(ctx, orgID).RunWithID(runScopeContext(ctx, orgID, environment), runID, agentID, input)
+		execCtx := agentKeyContext(runScopeContext(ctx, orgID, environment), task.Payload)
+		run, rerr := orgRunners.forOrg(ctx, orgID).RunWithID(execCtx, runID, agentID, input)
 		if rerr != nil {
 			_ = runsService.UpdateStatus(runID, runs.StatusFailed, "")
 			go func() {

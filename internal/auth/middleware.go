@@ -18,6 +18,21 @@ type UserClaims struct {
 	OrganizationID string
 	Email          string
 	Role           string
+	// Agent-key identity (wave-8, agent identity v1) — ADDITIVE fields, zero
+	// for every human/JWT/user-key authentication path. When the presented
+	// credential is an agent key ("ag_" namespace): UserID is the AGENT (the
+	// subject of the principal, not a user), Role is AgentRole, and the three
+	// fields below identify the credential and carry its tool allow-list to
+	// the runtime tool-execution seam (apikeys.AuthorizeAgentKeyTool).
+	AgentKeyID    string
+	AgentID       string
+	ToolAllowList []string
+}
+
+// IsAgentKey reports whether the claims originate from an agent-scoped key
+// (non-human principal) rather than a user session or user API key.
+func (c UserClaims) IsAgentKey() bool {
+	return c.AgentKeyID != ""
 }
 
 func RequireAuth(service *Service) func(http.Handler) http.Handler {
@@ -86,6 +101,40 @@ func RequirePermission(service *Service, permission Permission) func(http.Handle
 	}
 }
 
+// requireAPIKey authenticates one presented API-key value and stamps the
+// matching principal claims. The dispatch is on the prefix namespace: "ag_"
+// values resolve as agent keys (wave-8) whose subject is the AGENT with the
+// least-privilege AgentRole, everything else resolves as a user API key
+// authenticating as OWNER (the platform-wide model). Expiry/revocation are
+// enforced at auth time by ValidateAgentKeyCtx.
+func requireAPIKey(ctx context.Context, keyService *apikeys.Service, value string) (context.Context, bool) {
+	if apikeys.IsAgentKeyValue(value) {
+		key, ok := keyService.ValidateAgentKeyCtx(ctx, value)
+		if !ok || key == nil {
+			return nil, false
+		}
+		return context.WithValue(ctx, userContextKey, UserClaims{
+			UserID:         key.AgentID, // subject = the agent principal
+			OrganizationID: key.OrganizationID,
+			Email:          "", // non-human identity: no login identity
+			Role:           AgentRole,
+			AgentKeyID:     key.ID,
+			AgentID:        key.AgentID,
+			ToolAllowList:  key.ToolAllowList,
+		}), true
+	}
+	key, ok := keyService.ValidateCtx(ctx, value)
+	if !ok || key == nil {
+		return nil, false
+	}
+	return context.WithValue(ctx, userContextKey, UserClaims{
+		UserID:         key.UserID,
+		OrganizationID: key.OrgID,
+		Email:          key.UserID,
+		Role:           "OWNER",
+	}), true
+}
+
 func RequireAuthOrAPIKey(service *Service, keyService *apikeys.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,17 +144,11 @@ func RequireAuthOrAPIKey(service *Service, keyService *apikeys.Service) func(htt
 					http.Error(w, "missing api key service", http.StatusUnauthorized)
 					return
 				}
-				key, ok := keyService.Validate(apiKey)
-				if !ok || key == nil {
+				ctx, ok := requireAPIKey(r.Context(), keyService, apiKey)
+				if !ok {
 					http.Error(w, "invalid api key", http.StatusUnauthorized)
 					return
 				}
-				ctx := context.WithValue(r.Context(), userContextKey, UserClaims{
-					UserID:         key.UserID,
-					OrganizationID: key.OrgID,
-					Email:          key.UserID,
-					Role:           "OWNER",
-				})
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -135,17 +178,11 @@ func RequireAuthOrAPIKey(service *Service, keyService *apikeys.Service) func(htt
 					http.Error(w, "missing api key service", http.StatusUnauthorized)
 					return
 				}
-				key, ok := keyService.Validate(apiKey)
-				if !ok || key == nil {
+				ctx, ok := requireAPIKey(r.Context(), keyService, apiKey)
+				if !ok {
 					http.Error(w, "invalid api key", http.StatusUnauthorized)
 					return
 				}
-				ctx := context.WithValue(r.Context(), userContextKey, UserClaims{
-					UserID:         key.UserID,
-					OrganizationID: key.OrgID,
-					Email:          key.UserID,
-					Role:           "OWNER",
-				})
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}

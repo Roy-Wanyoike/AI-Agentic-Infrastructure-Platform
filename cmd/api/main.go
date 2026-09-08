@@ -135,6 +135,7 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.orgsSvc = organizations.NewServiceWithStore(organizations.NewPostgresStore(db))
 		a.auditSvc = audit.NewServiceWithStore(audit.NewPostgresStore(db))
 		a.agentsSvc = agents.NewServiceWithStore(agents.NewPostgresStore(db))
+		a.apiKeysSvc.SetAgentChecker(a.agentsSvc) // wave-8: agent-membership seam for agent keys
 		a.runsSvc = runs.NewServiceWithStore(runs.NewPostgresStore(db))
 		a.wfSvc = workflows.NewServiceWithOptions(workflows.NewPostgresStore(db),
 			workflows.WithStaleAfter(workflows.StaleAfterFromEnv()),
@@ -200,6 +201,7 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.orgsSvc = organizations.NewService()
 		a.auditSvc = audit.NewService()
 		a.agentsSvc = agents.NewService()
+		a.apiKeysSvc.SetAgentChecker(a.agentsSvc) // wave-8: agent-membership seam for agent keys
 		a.runsSvc = runs.NewService()
 		a.wfSvc = workflows.NewServiceWithOptions(nil, workflows.WithStaleAfter(workflows.StaleAfterFromEnv()))
 		a.apSvc = approvals.NewService()
@@ -429,6 +431,8 @@ func (a *app) routes() http.Handler {
 	}
 	// issue #48: API keys management (mint once / metadata list / revoke)
 	registerAPIKeysRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	// wave-8: agent-scoped keys with tool allow-lists (agent identity v1)
+	registerAgentKeyRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #50: MCP server endpoint (JSON-RPC 2.0) — tenant tools over MCP
 	registerMcpRoutes(apiMux, a.authSvc, a.apiKeysSvc, a.auditSvc)
 

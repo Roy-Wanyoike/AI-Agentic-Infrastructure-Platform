@@ -50,17 +50,31 @@ type Service struct {
 	mu    sync.Mutex
 	keys  map[string]*APIKey
 	store Store
+	// Agent-scoped keys (wave-8, agent identity v1). agentStore is the
+	// durable AgentKeyStore; NewServiceWithStore adopts it automatically when
+	// the passed store implements the second interface (the Postgres store
+	// implements both), so Postgres wiring needs no extra call. agentChecker
+	// is the agent-membership seam (SetAgentChecker); nil disables the check.
+	agentKeys    map[string]*AgentKey
+	agentStore   AgentKeyStore
+	agentChecker AgentExistenceChecker
 }
 
 func NewService() *Service {
-	return &Service{keys: make(map[string]*APIKey)}
+	return &Service{keys: make(map[string]*APIKey), agentKeys: make(map[string]*AgentKey)}
 }
 
 // NewServiceWithStore returns a service backed by a durable store; the store
 // is the source of truth and the in-memory map acts as a write-through cache.
+// When the store also implements AgentKeyStore (the Postgres store does), the
+// same handle serves the agent-key surface; stores that do not leave agent
+// keys running in-memory-only.
 func NewServiceWithStore(store Store) *Service {
 	s := NewService()
 	s.store = store
+	if agentStore, ok := store.(AgentKeyStore); ok {
+		s.agentStore = agentStore
+	}
 	return s
 }
 

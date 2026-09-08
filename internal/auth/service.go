@@ -63,6 +63,14 @@ const (
 	PermissionOrgManage   Permission = "organization.manage"
 )
 
+// AgentRole is the non-human principal role agent-scoped API keys
+// authenticate with (wave-8, agent identity v1). It is deliberately NOT in
+// the OWNER/ADMIN/MEMBER/VIEWER user hierarchy: an agent principal gets
+// exactly the permissions an agent needs to run (runs.read, runs.execute)
+// and nothing else — least privilege for non-human identity, so a leaked
+// agent credential can neither manage agents nor read org membership.
+const AgentRole = "AGENT"
+
 var rolePermissions = map[string][]Permission{
 	"OWNER": {
 		PermissionAgentsRead,
@@ -87,6 +95,13 @@ var rolePermissions = map[string][]Permission{
 	"VIEWER": {
 		PermissionAgentsRead,
 		PermissionRunsRead,
+	},
+	// Agent keys (wave-8): the agent principal can execute runs (and read
+	// their own runs' state) and nothing else. Additive: existing roles are
+	// unchanged.
+	AgentRole: {
+		PermissionRunsRead,
+		PermissionRunsExecute,
 	},
 }
 
@@ -460,7 +475,7 @@ func (s *Service) RefreshCtx(ctx context.Context, token string) (*RefreshResult,
 
 func normalizeRole(role string) string {
 	switch strings.ToUpper(strings.TrimSpace(role)) {
-	case "OWNER", "ADMIN", "MEMBER", "VIEWER":
+	case "OWNER", "ADMIN", "MEMBER", "VIEWER", AgentRole:
 		return strings.ToUpper(strings.TrimSpace(role))
 	default:
 		return "VIEWER"
