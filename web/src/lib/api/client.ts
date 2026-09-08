@@ -223,3 +223,53 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   return body as T
 }
+
+// ---------------------------------------------------------------------------
+// Non-throwing endpoint probe (issue #81: SSO configured-state check)
+// ---------------------------------------------------------------------------
+
+/** Result of a non-throwing GET probe against one API endpoint. */
+export type ApiProbeResult = {
+  /** HTTP status; 0 when the browser reduced a 3xx to an opaque redirect or the network failed. */
+  status: number
+  /** Parsed JSON body when one was readable, else the raw text, else null. */
+  body: unknown
+  /** True when the server answered with a redirect (browser hid it behind redirect: 'manual'). */
+  redirected: boolean
+  /** True when the request never reached the API (network/CORS failure). */
+  unreachable: boolean
+}
+
+/**
+ * GET probe that never throws and never follows redirects — used for status
+ * surfaces whose contract is a redirect (GET /auth/sso/{slug}/login answers
+ * 302 when SSO is configured and a JSON 404 envelope when it is not). All
+ * auth headers are attached like every other client call; unauthenticated
+ * endpoints simply ignore them.
+ */
+export async function probeApiEndpoint(path: string): Promise<ApiProbeResult> {
+  const headers = new Headers()
+  headers.set('Accept', 'application/json')
+  applyAuthHeaders(headers)
+
+  let response: Response
+  try {
+    response = await fetch(apiUrl(path), { method: 'GET', redirect: 'manual', headers })
+  } catch {
+    return { status: 0, body: null, redirected: false, unreachable: true }
+  }
+  if (response.type === 'opaqueredirect' || (response.status === 0 && response.ok === false)) {
+    return { status: 0, body: null, redirected: true, unreachable: false }
+  }
+
+  const text = await response.text()
+  let body: unknown = null
+  if (text) {
+    try {
+      body = JSON.parse(text)
+    } catch {
+      body = text
+    }
+  }
+  return { status: response.status, body, redirected: false, unreachable: false }
+}

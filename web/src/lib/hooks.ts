@@ -15,6 +15,10 @@
 //   ['marketplace', …]  — global listing catalog (query/tags/cursor)
 //   ['connectors']      — connector registry
 //   ['events', cursor]  — org event stream page (activity feed, keyset)
+//   ['canaryStatus', …] — canary split/policy/decision read model (polled)
+//   ['queue', …]        — queue stats + task pages (ops view, 404-tolerant)
+//   ['tools']           — runtime tool registry catalog
+//   ['auditEvents', …]  — audit trail page per cursor+filters (OWNER/ADMIN)
 
 import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -85,6 +89,16 @@ import type { BrowseListingsInput, PublishListingInput } from './api/marketplace
 import type { ListEventsInput } from './api/events'
 import type { CreateConnectorInput } from './api/connectors'
 import type { CreateSecretInput } from './api/secrets'
+// Issue #81 dashboard parity: canary controls, identity admin, queue ops,
+// tools registry, audit trail.
+import { abortCanary, getCanaryStatus, promoteCanary, setDeploymentCanary } from './api/canary'
+import { mintScimToken, probeSsoLogin, revokeScimToken } from './api/identity'
+import { getQueueStats, getQueueTask, listQueueTasks, requeueTask } from './api/queue'
+import { listTools } from './api/tools'
+import { listAuditEvents } from './api/auditEvents'
+import type { ListQueueTasksInput } from './api/queue'
+import type { ListAuditEventsInput } from './api/auditEvents'
+import type { SetCanaryInput } from './api/canary'
 
 export function useAgents() {
   return useQuery({ queryKey: ['agents'], queryFn: listAgents })
@@ -783,5 +797,136 @@ export function useEvents(input: ListEventsInput = {}, options: { enabled?: bool
     queryKey: ['events', cursor],
     queryFn: () => listEvents(input),
     enabled: options.enabled ?? true,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Canary controls (issue #81: start/weight/promote/abort + live status poll;
+// writes mirror deployments.deploy = OWNER/ADMIN, the status read is runs.read)
+// ---------------------------------------------------------------------------
+
+export function useCanaryStatus(agentId: string | null | undefined, environment: string, options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ['canaryStatus', agentId, environment],
+    queryFn: () => getCanaryStatus(agentId as string, environment),
+    enabled: Boolean(agentId) && (options.enabled ?? true),
+    // Live status poll: split %, eval stats and the auto-decision land
+    // server-side (engine + eval runs), so the operator view refreshes itself.
+    refetchInterval: 5000,
+    // 404 NOT_FOUND (no healthy deployment) is a documented empty state.
+    retry: false,
+  })
+}
+
+function useInvalidateCanary(agentId: string | null | undefined, environment: string) {
+  const queryClient = useQueryClient()
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: ['canaryStatus', agentId, environment] })
+    void queryClient.invalidateQueries({ queryKey: ['deployments'] })
+  }
+}
+
+export type SetDeploymentCanaryInput = SetCanaryInput & { deploymentId: string }
+
+export function useSetDeploymentCanary(agentId: string | null | undefined, environment: string) {
+  const invalidate = useInvalidateCanary(agentId, environment)
+  return useMutation({
+    mutationFn: (input: SetDeploymentCanaryInput) =>
+      setDeploymentCanary(input.deploymentId, { canaryVersion: input.canaryVersion, canaryWeight: input.canaryWeight }),
+    onSuccess: invalidate,
+  })
+}
+
+export function usePromoteCanary(agentId: string | null | undefined, environment: string) {
+  const invalidate = useInvalidateCanary(agentId, environment)
+  return useMutation({
+    mutationFn: (deploymentId: string) => promoteCanary(deploymentId),
+    onSuccess: invalidate,
+  })
+}
+
+export function useAbortCanary(agentId: string | null | undefined, environment: string) {
+  const invalidate = useInvalidateCanary(agentId, environment)
+  return useMutation({
+    mutationFn: (deploymentId: string) => abortCanary(deploymentId),
+    onSuccess: invalidate,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Identity admin (issue #81 Settings surface: SCIM mint/revoke + SSO probe)
+// ---------------------------------------------------------------------------
+
+/** One-time scim_ secret. The caller owns the returned value's lifetime. */
+export function useMintScimToken() {
+  return useMutation({ mutationFn: () => mintScimToken() })
+}
+
+export function useRevokeScimToken() {
+  // No list endpoint exists (mint+revoke only), so there is nothing to
+  // invalidate — the view records the revocation outcome itself.
+  return useMutation({ mutationFn: (id: string) => revokeScimToken(id) })
+}
+
+/** Non-throwing SSO login-endpoint probe (302 = configured, 404 = not). */
+export function useSsoLoginProbe() {
+  return useMutation({ mutationFn: (orgSlug: string) => probeSsoLogin(orgSlug) })
+}
+
+// ---------------------------------------------------------------------------
+// Queue ops (issue #77 backend, issue #81 Ops view; 404-tolerant — the
+// surface may be absent in zero-infra mode)
+// ---------------------------------------------------------------------------
+
+export function useQueueStats() {
+  return useQuery({ queryKey: ['queue', 'stats'], queryFn: getQueueStats, retry: false })
+}
+
+export function useQueueTasks(input: ListQueueTasksInput = {}) {
+  const { status = '', cursor = '' } = input
+  return useQuery({
+    queryKey: ['queue', 'tasks', status, cursor],
+    queryFn: () => listQueueTasks(input),
+    retry: false,
+  })
+}
+
+export function useQueueTask(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['queue', 'task', id],
+    queryFn: () => getQueueTask(id as string),
+    enabled: Boolean(id),
+    retry: false,
+  })
+}
+
+export function useRequeueTask() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => requeueTask(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['queue'] })
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Tools registry (issue #81 Tools view; read-only, agents.read = all roles)
+// ---------------------------------------------------------------------------
+
+export function useTools() {
+  return useQuery({ queryKey: ['tools'], queryFn: listTools })
+}
+
+// ---------------------------------------------------------------------------
+// Audit trail (issue #81 Security view; audit.read = OWNER/ADMIN, one cache
+// entry per cursor+filters)
+// ---------------------------------------------------------------------------
+
+export function useAuditEvents(input: ListAuditEventsInput = {}) {
+  const { cursor = '', action = '', actor = '' } = input
+  return useQuery({
+    queryKey: ['auditEvents', cursor, action, actor],
+    queryFn: () => listAuditEvents(input),
   })
 }

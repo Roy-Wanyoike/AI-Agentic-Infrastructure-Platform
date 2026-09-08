@@ -33,7 +33,7 @@ export function ActivityFeedPanel({ canRead }: { canRead: boolean }) {
   const [older, setOlder] = useState<ActivityEvent[]>([])
   const feedQuery = useEvents({ cursor, limit: FEED_PAGE_SIZE }, { enabled: canRead })
 
-  const pageItems = feedQuery.data?.events ?? []
+  const pageItems = useMemo(() => feedQuery.data?.events ?? [], [feedQuery.data])
   const nextCursor = feedQuery.data?.nextCursor ?? ''
 
   const items = useMemo(() => {

@@ -59,15 +59,22 @@ import { BillingView } from './views/billing'
 import { SecretsView } from './views/secrets'
 import { MarketplaceView } from './views/marketplace'
 import { ConnectorsView } from './views/connectors'
+import { OpsView } from './views/ops'
+import { ToolsView } from './views/tools'
+import { SecurityView } from './views/security'
+import { SettingsView } from './views/settings'
 import {
   canDecide,
   canDeploy,
   canManageBilling,
   canManageConnectors,
+  canManageIdentity,
   canManagePolicies,
+  canManageQueueOps,
   canManageSecrets,
   canManageVersions,
   canPublishMarketplace,
+  canReadAudit,
   canReadEvents,
   canRevealSecrets,
   canWrite,
@@ -1264,6 +1271,11 @@ export default function App() {
   const canManageBillingRole = canManageBilling(auth.user?.role)
   // Issue #56: the Overview activity feed reads GET /events (MEMBER+).
   const canReadEventsRole = canReadEvents(auth.user?.role)
+  // Issue #81 views: queue requeue (OWNER/ADMIN), identity admin (OWNER),
+  // audit trail (audit.read = OWNER/ADMIN).
+  const canManageQueueOpsRole = canManageQueueOps(auth.user?.role)
+  const canManageIdentityRole = canManageIdentity(auth.user?.role)
+  const canReadAuditRole = canReadAudit(auth.user?.role)
 
   const navigateTo = (view: ViewName) => {
     setSelectedAgentId(null)
@@ -1285,12 +1297,16 @@ export default function App() {
         ['Knowledge', 'knowledge documents rag retrieval search embeddings'],
         ['Memory', 'memory snippets short term long term agent recall'],
         ['Analytics', 'analytics latency percentiles p50 p95 p99 counters queue costs'],
+        ['Ops', 'ops queue dlq dead letter requeue tasks backlog operations'],
         ['Policies', 'policies governance allow deny evaluate rbac'],
         ['Schedules', 'schedules cron automation recurring triggers'],
         ['Webhooks', 'webhooks events integrations deliveries secrets'],
         ['Marketplace', 'marketplace catalog listings publish install community agents'],
         ['Connectors', 'connectors integrations http webhook health check'],
+        ['Tools', 'tools registry calculator http request schema mcp'],
         ['Secrets', 'secrets vault credentials encrypted reveal api keys'],
+        ['Security', 'security audit trail events actor action log compliance'],
+        ['Settings', 'settings identity sso scim tokens organization admin'],
       ] as const
     ).map(([view, keywords]) => ({
       id: `nav-${view}`,
@@ -1359,16 +1375,18 @@ export default function App() {
         return <SchedulesView canWrite={canWriteRole} />
       case 'Webhooks':
         return <WebhooksView canWrite={canWriteRole} />
-      // Removed with the demo system: Tools / Security / Infrastructure had no
-      // backing endpoints, so their fake dashboards were deleted per the
-      // no-silent-mock rule. They return as real views once the API exposes
-      // /v1/tools and /v1/audit-events.
+      // History: Tools / Security were removed with the demo system (no
+      // backing endpoints; the no-silent-mock rule). The API now exposes
+      // /v1/tools and /v1/audit-events, so both are real views again
+      // (issue #81), alongside the new Ops and Settings surfaces.
       case 'Knowledge':
         return <KnowledgeView canWrite={canWriteRole} />
       case 'Memory':
         return <MemoryView canWrite={canWriteRole} />
       case 'Analytics':
         return <AnalyticsView />
+      case 'Ops':
+        return <OpsView canRequeue={canManageQueueOpsRole} />
       case 'Usage':
         return <UsageView />
       case 'Billing':
@@ -1379,6 +1397,17 @@ export default function App() {
         return <ConnectorsView canManage={canManageConnectorsRole} />
       case 'Secrets':
         return <SecretsView canManage={canManageSecretsRole} canReveal={canRevealSecretsRole} />
+      case 'Tools':
+        return <ToolsView />
+      case 'Security':
+        return <SecurityView canReadAudit={canReadAuditRole} />
+      case 'Settings':
+        return (
+          <SettingsView
+            canManageIdentity={canManageIdentityRole}
+            organizationName={auth.user?.organizationName ?? auth.user?.organization ?? ''}
+          />
+        )
       default:
         return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} canReadEvents={canReadEventsRole} />
     }

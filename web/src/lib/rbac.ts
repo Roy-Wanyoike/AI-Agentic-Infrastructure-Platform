@@ -86,3 +86,20 @@ export function canManageBilling(role?: string | null): boolean {
 export function canReadEvents(role?: string | null): boolean {
   return canWrite(role)
 }
+
+// --- issue #81 dashboard parity (ops / identity / audit) ---
+
+/** POST /queue/tasks/{id}/requeue — pinned OWNER/ADMIN by the queue-ops contract. */
+export function canManageQueueOps(role?: string | null): boolean {
+  return isOwnerOrAdmin(role)
+}
+
+/** organization.manage — SCIM token mint/revoke are owner-level credentials (matrix EXACTLY OWNER, like the one-time secret reveal). */
+export function canManageIdentity(role?: string | null): boolean {
+  return normalizeRole(role) === 'OWNER'
+}
+
+/** audit.read — the dedicated audit-trail permission (OWNER/ADMIN only; MEMBER/VIEWER locked out). */
+export function canReadAudit(role?: string | null): boolean {
+  return isOwnerOrAdmin(role)
+}
