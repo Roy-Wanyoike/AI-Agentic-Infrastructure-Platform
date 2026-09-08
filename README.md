@@ -17,7 +17,7 @@
 
 ---
 
-AgentOS is the control plane for running AI agents in production: a Go 1.25 modular monolith (40 internal packages, one deployable API process + one worker) with a React 19 dashboard, a 96-path OpenAPI 3.1 contract, and **dual-mode persistence** — the exact same binary runs against Postgres for production or fully in-memory with zero infrastructure for development and CI. Every tenant boundary, permission check, and retry path is enforced in code and exercised by tests, not promised in docs.
+AgentOS is the control plane for running AI agents in production: a Go 1.25 modular monolith (40 internal packages, one deployable API process + one worker) with a React 19 dashboard, a 112-path OpenAPI 3.1 contract, and **dual-mode persistence** — the exact same binary runs against Postgres for production or fully in-memory with zero infrastructure for development and CI. Every tenant boundary, permission check, and retry path is enforced in code and exercised by tests, not promised in docs.
 
 ![AgentOS dashboard — mission control](docs/images/dashboard-overview.png)
 
@@ -27,19 +27,19 @@ AgentOS is the control plane for running AI agents in production: a Go 1.25 modu
 |---|---|
 | **Agents & versions** | Agent CRUD (update/delete included), immutable config versions, publish/rollback, per-agent tool attachments |
 | **Deployments** | Promote/rollback **plus canary deployments** — weighted traffic split with deterministic per-agent stickiness (FNV-1a bucketing), now **eval-gated auto-promotion/rollback**: set pass-rate/p95/cost thresholds and the canary promotes or rolls itself back with an audited reason — CI/CD for agents |
-| **MCP gateway** | Every tenant's tool registry exposed over the **Model Context Protocol** (JSON-RPC 2.0, `POST /v1/mcp`) — connect Claude, Cursor, or any MCP client to a governed, permission-scoped, audit-logged tool surface in minutes |
+| **MCP gateway** | Bidirectional **Model Context Protocol**: every tenant's tool registry exposed over MCP (JSON-RPC 2.0, `POST /v1/mcp`) so Claude, Cursor, or any MCP client reaches a governed, permission-scoped, audit-logged tool surface — and an **org-scoped MCP client + registry** (`/v1/mcp-servers`) so your agents can *consume* external MCP servers: health-checked registration, cached tool catalogs, secret-ref auth by name, per-org runner isolation |
 | **Runs & runtime** | Bounded agent loop (max steps, wall-clock + per-tool timeouts, loop detection), OpenAI-compatible **model provider with failover**, offline deterministic mode for zero-infra dev |
 | **Tools & sandbox** | Tool registry with input schemas (`GET /v1/tools`), calculator + HTTP tools, opt-in **process-isolated sandbox execution** (rlimits, output caps, env scrubbing) |
 | **Workflows & approvals** | JSON-DSL multi-agent workflows, durable checkpointed node execution with recovery/watchdog, human-in-the-loop approval gates |
 | **Evaluations** | Datasets, scorers, eval runs with per-case **token usage & cost** via a model-pricing hook |
-| **Governance** | Policy engine (allow/deny with matched-policy reporting), Redis rate limiting, idempotency keys, org-scoped audit trail (`/v1/audit-events`), readable event stream (`/v1/events`) with dashboard activity feed, organization & member management (roles, last-owner guards, SCIM-consistent deactivation) |
+| **Governance** | **Enforced policy engine** — allow/deny decisions gate run creation AND every tool invocation at the runtime seam (deny → visible `policy_denied`, over-budget → blocked, `require_approval` → WAITING_APPROVAL; verdict recorded on the run timeline so the UI shows *why*); Redis rate limiting, idempotency keys, org-scoped audit trail (`/v1/audit-events`), readable event stream (`/v1/events`) with dashboard activity feed, organization & member management (roles, last-owner guards, SCIM-consistent deactivation), **token lifecycle**: logout, single-use refresh, server-side revocation deny-list (SCIM-deprovisioned users can't refresh) |
 | **Billing & secrets** | Plans, subscriptions, **enforced quota gates** (402 `quota_exceeded` at the run path when `AGENTOS_BILLING_ENFORCEMENT=on`), usage-derived invoices reconciled with the runs cost ledger, usage **meters + per-tenant margin**, optional idempotent **Stripe usage-record sync** (zero deps, no-op without a key); **AES-256-GCM encrypted secrets** with one-time reveal; self-service API keys (mint once, hash at rest) |
-| **Marketplace & connectors** | Publish/browse/install agent templates across organizations; external integrations with health checks and secret refs |
+| **Marketplace & connectors** | Publish/browse/install agent templates across organizations with **publisher provenance**: Ed25519 detached signatures over a canonical manifest, verified at publish AND at install (tampered snapshots and revoked keys are blocked; unsigned installs need an explicit per-org opt-in), verifiable `GET /marketplace/listings/{slug}/provenance`; external integrations with health checks and secret refs |
 | **SSO & SCIM** | OIDC browser login (manual JOSE, RS256 via stdlib) with JIT provisioning; **SCIM 2.0** user lifecycle with hashed provisioning tokens |
 | **Knowledge & memory** | RAG document store with chunking + semantic search, scoped agent memory snippets |
-| **Events & scheduling** | NATS JetStream event bus, webhook deliveries with retries, cron scheduler with catch-up |
-| **Observability** | Prometheus text `/metrics` (bucketed p50/p95/p99 histograms, run/tool counters), structured logging, health/readiness probes, SSE run-event streaming |
-| **Developer experience** | `agentosctl` CLI + typed Go SDK covering every vertical (billing, secrets, marketplace, connectors, SSO, API keys), seeded demo data, Makefile targets, GitHub Actions CI with gofmt/vet/test/build + **race-detector job** + web build gates |
+| **Events & scheduling** | NATS JetStream event bus, webhook deliveries with retries, **notification subscriptions** (org-scoped operational alerts for run failures / approvals / canary rollbacks over the signed webhook pipeline), **queue introspection + DLQ requeue** (list, inspect, and revive dead-lettered tasks — `queue.manage`), cron scheduler with catch-up |
+| **Observability** | Prometheus text `/metrics` (bucketed p50/p95/p99 histograms, run/tool counters), **OpenTelemetry distributed tracing** (`AGENTOS_TRACING_ENABLED`, default off with a byte-identical fast path; OTLP export, W3C propagation), a **measured load-test baseline** with a reproducible harness (`scripts/loadtest`), structured logging, health/readiness probes, SSE run-event streaming |
+| **Developer experience** | `agentosctl` CLI + typed Go SDK covering every vertical (billing, secrets, marketplace, connectors, SSO, API keys), seeded demo data, Makefile targets, GitHub Actions CI with gofmt/vet/test/build + **race-detector job** + web build gates; the dashboard covers every engine — canary controls, identity/SCIM admin, ops/DLQ panel, tools registry and the audit trail included |
 
 ## Architecture
 
@@ -76,7 +76,7 @@ cd web && npm install && npm run dev   # dashboard on :5173
 ```bash
 cp .env.example .env
 make docker-up      # Postgres, Redis, NATS
-make migrate-up     # apply the 20 migrations
+make migrate-up     # apply the 25 migrations
 make seed           # demo org + agents + workflow + runs
 make run-api        # API on :8080
 make run-worker     # run execution (second terminal)
@@ -141,7 +141,7 @@ run, _ := client.Runs().Create(ctx, agentID, "classify this ticket")
 
 ## Engineering discipline
 
-- **Contract-first**: the 96-path OpenAPI 3.1 spec is regression-tested by `internal/apispec` — a dangling `$ref`, duplicate `operationId`, or path without operations fails CI (mutation-verified).
+- **Contract-first**: the 112-path OpenAPI 3.1 spec (261 schemas) is regression-tested by `internal/apispec` — a dangling `$ref`, duplicate `operationId`, or path without operations fails CI (mutation-verified).
 - **Tenant isolation everywhere**: every Postgres query carries an `organization_id` guard; tenant identity comes from signed claims, never from client payloads.
 - **Security by default**: bcrypt passwords, HMAC-signed session tokens, hashed API keys and SCIM tokens, AES-256-GCM secrets at rest with key-versioned envelopes, OWNER-gated one-time secret reveal (audit-logged).
 - **Honest observability**: metrics are incremented at the point of truth (run terminal transitions, tool executions); the dashboard renders "not exposed by the API" rather than fake numbers — no silent mocking, as a product rule.
@@ -154,7 +154,7 @@ make lint && make verify    # gofmt + vet + build + test
 ## Project structure
 
 ```text
-├── api/openapi.yaml          # canonical OpenAPI 3.1 contract (96 paths)
+├── api/openapi.yaml          # canonical OpenAPI 3.1 contract (112 paths)
 ├── api/fragments/            # per-track spec fragments, merged into the main spec
 ├── cmd/
 │   ├── api/                  # HTTP process: routes, handlers, middleware wiring
