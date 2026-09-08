@@ -102,9 +102,12 @@ func (s *Service) PauseRun(ctx context.Context, orgID, id string) (*Run, error) 
 	return run, nil
 }
 
-// ResumeRun transitions a paused run back to pending so it can be re-enqueued
-// by the caller (idempotent for already-pending runs). Runs that are waiting
-// on an approval must be resumed through the approval decision instead.
+// ResumeRun transitions a paused or waiting_approval run back to pending so
+// it can be re-enqueued by the caller (idempotent for already-pending runs).
+// Waiting-approval runs are resumed through the approval decision: the
+// approvals service decides the linked approval and its RunController calls
+// this method (issue #75 completes that flow — policy-gated runs parked in
+// waiting_approval return to pending when the operator approves).
 func (s *Service) ResumeRun(ctx context.Context, orgID, id string) (*Run, error) {
 	run, err := s.GetRunCtx(ctx, orgID, id)
 	if err != nil {
@@ -114,7 +117,7 @@ func (s *Service) ResumeRun(ctx context.Context, orgID, id string) (*Run, error)
 	if current == StatusPending {
 		return run, nil
 	}
-	if current != StatusPaused {
+	if current != StatusPaused && current != StatusWaitingApproval {
 		return nil, ErrInvalidTransition
 	}
 	if err := s.UpdateStatusCtx(ctx, orgID, id, StatusPending, ""); err != nil {

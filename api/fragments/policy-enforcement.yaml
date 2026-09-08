@@ -1,0 +1,471 @@
+# AgentOS API — OpenAPI 3.1 fragment for governance policy enforcement on
+# run creation and tool execution (issue #75).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). The fragment RESTATES three existing operations so the merge can
+# fold the new behavior into them — the path keys and operationIds deliberately
+# match the base spec:
+#   * POST /runs             (createRun)        — new request fields, 202/403/503
+#   * POST /policies/evaluate (evaluatePolicies) — Decision gains require_approval
+#   * GET /runs/{id}/steps   (listRunSteps)     — new step_type "policy"
+# Paths are written WITHOUT the /api/v1 prefix, matching the existing spec
+# (routes mount on apiMux and are served under both /v1 and /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/quota-enforcement.yaml
+# pattern), so `python3 scripts/check_fragment_refs.py
+# api/fragments/policy-enforcement.yaml` passes. Components carry the
+# track-unique `PolEnf*` prefix to avoid collisions.
+#
+# Semantics (mirrored in internal/policies/enforcer.go, cmd/api/runs.go
+# enforceRunPolicy / parkRunForApproval / approvalRunController, and the
+# runtime tool seam in internal/runtime/runtime.go, issue #75):
+#   * the seams are controlled by AGENTOS_POLICY_ENFORCEMENT
+#     (strconv.ParseBool; DEFAULT ON — only 0/false/FALSE/... disable it,
+#     unreadable garbage is treated as ON so a typo can never silently open
+#     the governance gate)
+#   * run creation: matching policies are evaluated AFTER RBAC and BEFORE the
+#     quota gate and any run row exists. Decision matrix:
+#       - deny         -> 403 policy_denied carrying the decision reason; NO
+#                         run row, NO agent.run task; audited run.policy_denied
+#       - failing decision source -> 503 policy_unavailable (fail closed) +
+#                         audit entry run.policy_unavailable
+#       - allow + require_approval -> the run is created and parked in
+#                         WAITING_APPROVAL; a pending approval linked to the
+#                         run is filed for the operators (existing approvals
+#                         flow); NO execution is enqueued; answered 202 with
+#                         the policy verdict and the approval_id. An operator
+#                         approval resumes the run (pending) and re-enqueues
+#                         the agent.run task; a rejection leaves it parked.
+#                         Audited run.approval_required.
+#       - allow        -> the run proceeds; the verdict (policy id + decision
+#                         + reason) is recorded on the run timeline as a
+#                         step_type "policy" run_steps row
+#   * tool execution: every runtime tool invocation is evaluated BEFORE the
+#     tool is resolved or executed. A denied tool is NEVER invoked; the
+#     denial is visible on the recorded tool step (error code policy_denied
+#     prefix, output "tool denied by policy: <reason>", policy id + decision
+#     + reason) and the observation fed to the model states the denial. A
+#     require_approval match at tool level fails closed (mid-run approval
+#     pauses are not supported). A failing decision source fails closed
+#     (error code policy_unavailable); the worker resolves decisions from the
+#     API evaluate endpoint (pull mode), the durable policy records
+#     (Postgres) or process-local state (zero-infrastructure mode)
+#   * evaluation scope: only enabled policies of the caller's organization
+#     participate (tenant guard); organizations with NO matching policy keep
+#     the default-allow outcome, so no-policy deployments are unaffected
+#   * the evaluate endpoint (POST /policies/evaluate) is unchanged in
+#     contract except that the winning policy's require_approval annotation
+#     is surfaced on the Decision
+openapi: 3.1.0
+info:
+  title: AgentOS — governance policy enforcement (issue #75 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the governance enforcement behavior added by issue
+  #75: run creation evaluates matching policies before accepting a run (deny
+  -> 403 policy_denied with the decision reason, deny decisions audited),
+  require_approval decisions route runs into the existing approvals flow
+  (WAITING_APPROVAL), every tool invocation is policy-checked at the runtime
+  tool seam (denied tools are skipped visibly and never invoked), and the
+  evaluation result (policy id + decision + reason) is recorded on the run or
+  step. Controlled by AGENTOS_POLICY_ENFORCEMENT, which DEFAULTS ON.
+paths:
+  /runs:
+    post:
+      operationId: createRun
+      tags:
+      - runs
+      summary: Create and enqueue a run (policy-gated)
+      description: |
+        Creates a run and enqueues an `agent.run` task. Responds 201 with the
+        run ID and `status: "queued"`; actual execution happens in the worker.
+
+        Governance enforcement (issue #75): when AGENTOS_POLICY_ENFORCEMENT is
+        enabled (default ON), matching policies of the caller's organization
+        are evaluated AFTER RBAC and BEFORE the quota gate and any run row is
+        created. A deny decision answers 403 `policy_denied` with the decision
+        reason and leaves no run behind (audit action `run.policy_denied`). An
+        allow decision carrying `require_approval` parks the run in
+        WAITING_APPROVAL, files an approval for the operators and answers 202
+        INSTEAD of enqueueing execution (audit action `run.approval_required`);
+        approving the linked approval resumes and re-enqueues the run. An
+        allowed run records the verdict on its timeline (step_type `policy`,
+        see GET /runs/{id}/steps). A failing policy source answers 503
+        `policy_unavailable` (fail closed; audit action
+        `run.policy_unavailable`). Organizations with no matching policy are
+        unaffected (default allow).
+
+        The optional `environment` request field scopes environment-conditional
+        policies (default `production`) and is stamped onto the queue task so
+        the worker's tool-level checks evaluate the same scope. The optional
+        `estimated_cost_cents` feeds the `max_cost_cents` budget-guard
+        condition (a deny rule with the cap matches over-budget requests).
+      x-required-permission: runs.execute
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolEnfCreateRunRequest'
+            example:
+              agent_id: agent-1
+              input: What is 2+2?
+              environment: production
+              estimated_cost_cents: 250
+      responses:
+        '201':
+          description: Run created and task queued (policy allow, quota available).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolEnfCreateRunResponse'
+        '202':
+          $ref: '#/components/responses/PolEnfWaitingApproval'
+        '400':
+          description: Invalid body or missing agent_id.
+        '401':
+          $ref: '#/components/responses/PolEnfUnauthorized'
+        '402':
+          description: |
+            Quota gate (issue #47, evaluated after the policy gate): the
+            organization's monthly run budget is exceeded. See
+            api/fragments/quota-enforcement.yaml.
+        '403':
+          $ref: '#/components/responses/PolEnfPolicyDenied'
+        '405':
+          description: Method not allowed (the endpoint is POST-only).
+        '503':
+          $ref: '#/components/responses/PolEnfPolicyUnavailable'
+  /policies/evaluate:
+    post:
+      operationId: evaluatePolicies
+      tags:
+      - policies
+      summary: Evaluate policies against a request (dry-run)
+      description: |
+        Dry-run of the policy engine for the caller's organization: returns
+        the winning decision (highest priority wins, deny beats allow on
+        ties, default allow when nothing matches) without any side effect.
+        Issue #75 adds `require_approval` to the response: it mirrors the
+        winning policy's require_approval annotation, which the enforcement
+        seams use to route the action into the approvals flow.
+      x-required-permission: policies.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolEnfEvaluateRequest'
+      responses:
+        '200':
+          description: The engine's decision for the submitted request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolEnfDecision'
+        '401':
+          $ref: '#/components/responses/PolEnfUnauthorized'
+        '422':
+          description: The submitted policy request fails validation.
+  /runs/{id}/steps:
+    get:
+      operationId: listRunSteps
+      tags:
+      - runs
+      summary: List the execution steps of a run
+      description: |
+        Returns the run's execution timeline. Issue #75 adds the step_type
+        `policy`: one row per policy evaluation that shaped the run, with
+        output_meta carrying `policy_id`, `decision`, `reason`,
+        `require_approval` and the evaluation inputs (`action`, `agent_id`,
+        `environment`, `estimated_cost_cents`). Tool steps blocked by policy
+        keep their step_type `tool` with status `failed`, an error carrying
+        the `policy_denied` (or `policy_unavailable`) code prefix, the denial
+        observation as output, and the policy verdict in the step record.
+      x-required-permission: runs.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Run ID.
+      responses:
+        '200':
+          description: The run's steps, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolEnfRunStepsResponse'
+        '401':
+          $ref: '#/components/responses/PolEnfUnauthorized'
+        '404':
+          description: Run not found for the caller's organization (tenant guard).
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    PolEnfCreateRunRequest:
+      type: object
+      properties:
+        organization_id:
+          type: string
+          description: Optional; defaults to the authenticated principal's organization.
+        agent_id:
+          type: string
+        input:
+          type: string
+          description: Prompt/task input handed to the agent.
+        environment:
+          type: string
+          description: |
+            Governance scope for environment-conditional policies (issue #75);
+            blank defaults to production. Stamped onto the queue task so the
+            worker's tool-level checks evaluate the same environment.
+        estimated_cost_cents:
+          type: integer
+          format: int64
+          description: |
+            Optional estimated cost feeding the max_cost_cents budget-guard
+            condition (issue #75).
+      required:
+      - agent_id
+      - input
+    PolEnfCreateRunResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          const: queued
+      required:
+      - run_id
+      - status
+    PolEnfWaitingApprovalResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          const: waiting_approval
+        approval_id:
+          type: string
+          description: The pending approval filed for the operators.
+        policy:
+          type: object
+          properties:
+            policy_id:
+              type: string
+            decision:
+              type: string
+              const: allow
+            reason:
+              type: string
+            require_approval:
+              type: boolean
+              const: true
+      required:
+      - run_id
+      - status
+      - policy
+    PolEnfEvaluateRequest:
+      type: object
+      description: |
+        Same contract as the base spec's evaluate request (subject, action,
+        resource with type/id/tenant_id, context with estimated_cost_cents,
+        environment and tool). Restated here so the fragment is
+        standalone-valid.
+      properties:
+        subject:
+          type: object
+          properties:
+            user_id:
+              type: string
+            role:
+              type: string
+            api_key_id:
+              type: string
+        action:
+          type: string
+          description: 'runs.execute gates run creation; tools.call gates one tool invocation.'
+        resource:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [tool, agent, workflow, deployment, '*']
+            id:
+              type: string
+            tenant_id:
+              type: string
+        context:
+          type: object
+          properties:
+            estimated_cost_cents:
+              type: integer
+              format: int64
+            environment:
+              type: string
+            tool:
+              type: string
+              description: Overrides resource.id for tool_allowlist matching.
+    PolEnfDecision:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum: [allow, deny]
+          description: The engine's decision (default allow when no policy matches).
+        matched_policy_id:
+          type: string
+          description: ID of the winning policy (empty on the default-allow outcome).
+        reason:
+          type: string
+          description: |
+            Human-readable decision reason (policy name/priority plus the
+            matched condition context); surfaced verbatim in the 403
+            policy_denied message.
+        require_approval:
+          type: boolean
+          description: |
+            Mirrors the winning policy's require_approval annotation (issue
+            #75): enforcement seams route allow+require_approval decisions
+            into the approvals flow instead of executing.
+      required:
+      - decision
+      - reason
+    PolEnfRunStepsResponse:
+      type: object
+      description: Shape of the base spec's RunStepsResponse with the new
+        policy step type documented; restated for standalone validity.
+      properties:
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              step_type:
+                type: string
+                description: |
+                  model | tool | policy (issue #75: one policy row per
+                  evaluation that shaped the run).
+              status:
+                type: string
+              input_meta:
+                type: object
+                description: For policy steps, action/agent_id/environment/estimated_cost_cents.
+              output_meta:
+                type: object
+                description: |
+                  For policy steps, policy_id, decision, reason and
+                  require_approval. For tool steps blocked by governance, the
+                  denial observation; the step error carries the
+                  policy_denied / policy_unavailable code prefix.
+              error:
+                type: string
+              started_at:
+                type: string
+                format: date-time
+              completed_at:
+                type: string
+                format: date-time
+    PolEnfErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                Machine code: policy_denied (403 — a matching policy denied
+                the action), policy_unavailable (503 — fail-closed outage or
+                unwired approvals flow for a require_approval decision).
+            message:
+              type: string
+              description: Human-readable detail carrying the decision reason.
+  responses:
+    PolEnfUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PolEnfErrorEnvelope'
+    PolEnfPolicyDenied:
+      description: |
+        A matching policy denied the action (issue #75). NO run row was
+        created and NO agent.run task was enqueued; the denial is audit-logged
+        as run.policy_denied with the matched policy id and reason. The error
+        message carries the machine decision reason, e.g.
+        'run denied by policy: deny by policy "block production runs"
+        (priority 10)'.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PolEnfErrorEnvelope'
+          example:
+            error:
+              code: policy_denied
+              message: 'run denied by policy: deny by policy "block production runs" (priority 10)'
+    PolEnfPolicyUnavailable:
+      description: |
+        Fail-closed misconfiguration or outage (issue #75): enforcement is
+        enabled but the policy decision source failed (503
+        policy_unavailable), or a require_approval policy matched while the
+        approvals service is not wired. Nothing executes and nothing is
+        enqueued; the failing-source case is audit-logged as
+        run.policy_unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PolEnfErrorEnvelope'
+          example:
+            error:
+              code: policy_unavailable
+              message: policy store unavailable
+    PolEnfWaitingApproval:
+      description: |
+        A winning allow policy carried require_approval (issue #75): the run
+        was created and parked in WAITING_APPROVAL, a pending approval was
+        filed for the operators (existing approvals flow) and NO execution
+        was enqueued (audit action run.approval_required). Approving the
+        linked approval resumes the run and re-enqueues its agent.run task;
+        rejecting it leaves the run parked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PolEnfWaitingApprovalResponse'
+          example:
+            run_id: 3f6c2b62-2b57-4f8e-9e4e-2f4d3b6c9a10
+            status: waiting_approval
+            approval_id: 8f14e45f-ceea-467a-9e51-b0c0a8a4b331
+            policy:
+              policy_id: b7a1c3e0-5f4e-4a3d-8c2b-9d1e0f4a5b6c
+              decision: allow
+              reason: 'allow by policy "approve production runs" (priority 3); approval required before execution'
+              require_approval: true
+
