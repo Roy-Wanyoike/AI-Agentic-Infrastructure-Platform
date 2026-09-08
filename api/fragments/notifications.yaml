@@ -1,0 +1,285 @@
+# AgentOS API — OpenAPI 3.1 fragment for the notification subscriptions surface
+# (issue #83 — operational alerting: run failure, approval required, canary
+# rollback surfaced through the webhooks delivery pipeline).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/notifications.yaml`
+# passes. Component schemas carry the track-unique `Nsub` prefix to avoid
+# collisions.
+#
+# Semantics (cmd/api/notifications.go + internal/notifications):
+#   * A subscription binds an EXISTING webhook endpoint of the SAME
+#     organization (webhook_id must resolve in the caller's tenant —
+#     otherwise 404 WEBHOOK_NOT_FOUND) to a set of event types from the
+#     pinned contract (run.failed, approval.requested, deployment.failed, …).
+#   * Unknown event types are rejected with 400 and the message lists every
+#     valid type (events.AllEventTypes()).
+#   * When a matching event is published for the tenant, the notifications
+#     subscriber dispatches it to the webhook through the STANDARD signed
+#     webhooks delivery path (HMAC signature, retry/backoff, delivery status
+#     records). Delivery outcomes are observed via GET /webhooks/{id}/deliveries
+#     (main spec, webhooks fragment) — no separate notification delivery state.
+#   * Tenant scope: organization_id always derives from the auth claims.
+#
+# x-required-permission: notifications.read (OWNER/ADMIN/MEMBER/VIEWER) for
+# reads, notifications.write (OWNER/ADMIN/MEMBER) for writes.
+openapi: 3.1.0
+info:
+  title: AgentOS — notification subscriptions (issue #83 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the operational alert subscriptions added by issue
+  #83. Subscriptions are org-scoped routing rules that deliver pinned
+  operational events (run failures, approval requests, canary/deployment
+  failures) to an existing webhook endpoint through the signed webhooks
+  delivery pipeline. There is no email infrastructure: a notification IS an
+  org-scoped webhook delivery.
+paths:
+  /notifications/subscriptions:
+    get:
+      operationId: listNotificationSubscriptions
+      tags: [notifications]
+      summary: List the tenant's notification subscriptions
+      description: |
+        Returns all operational alert subscriptions of the authenticated
+        organization, newest first.
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: notifications.read
+      responses:
+        '200':
+          description: Array of subscriptions (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubSubscriptionList'
+        '401':
+          $ref: '#/components/responses/NsubUnauthorized'
+        '403':
+          $ref: '#/components/responses/NsubForbidden'
+        '500':
+          description: Unexpected store failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
+    post:
+      operationId: createNotificationSubscription
+      tags: [notifications]
+      summary: Subscribe an existing webhook to operational event types
+      description: |
+        Creates a subscription routing the given event types to one existing
+        webhook of the SAME organization. Validation:
+          * every `event_types` entry must be one of the pinned contract event
+            types (run.failed, approval.requested, deployment.failed, …) —
+            unknown types return 400 and the message lists all valid types;
+          * at least one event type is required (explicit alert semantics;
+            use the webhooks API directly for wildcard sinks);
+          * `webhook_id` must resolve within the caller's organization —
+            unknown or foreign-tenant ids return 404 (no existence leak).
+        Duplicate event types are de-duplicated silently.
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: notifications.write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NsubCreateSubscriptionRequest'
+      responses:
+        '201':
+          description: Subscription created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubCreateSubscriptionResponse'
+        '400':
+          description: |
+            Validation failure (malformed JSON body, unknown event type, empty
+            event type list, missing webhook_id). The message lists the valid
+            event types where applicable (error.code VALIDATION_ERROR or
+            INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
+        '401':
+          $ref: '#/components/responses/NsubUnauthorized'
+        '403':
+          $ref: '#/components/responses/NsubForbidden'
+        '404':
+          description: Target webhook does not exist within the caller's organization (error.code WEBHOOK_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
+        '500':
+          description: Unexpected store failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
+  /notifications/subscriptions/{id}:
+    delete:
+      operationId: deleteNotificationSubscription
+      tags: [notifications]
+      summary: Delete a notification subscription
+      description: |
+        Removes the subscription. Deleting an unknown or foreign-tenant id
+        returns 404 (existence is not leaked across tenants). The bound
+        webhook is untouched; deleting the webhook elsewhere cascades the
+        subscription away (FK ON DELETE CASCADE).
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: notifications.write
+      parameters:
+      - $ref: '#/components/parameters/NsubSubscriptionID'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubDeleteResponse'
+        '401':
+          $ref: '#/components/responses/NsubUnauthorized'
+        '403':
+          $ref: '#/components/responses/NsubForbidden'
+        '404':
+          description: Subscription not found within the caller's organization (error.code SUBSCRIPTION_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NsubError'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    NsubSubscriptionID:
+      name: id
+      in: path
+      required: true
+      description: Subscription id (UUID, as returned by the create operation).
+      schema:
+        type: string
+        minLength: 1
+      example: 8b2f0d5e-1a7b-4c3d-9e2f-5a6b7c8d9e0f
+  responses:
+    NsubUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NsubError'
+    NsubForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NsubError'
+  schemas:
+    NsubSubscription:
+      type: object
+      description: |
+        One org-scoped routing rule: deliver the listed operational event
+        types to an existing webhook endpoint of the same organization.
+        Deliveries reuse the signed webhooks pipeline and appear in
+        GET /webhooks/{id}/deliveries.
+      required: [id, webhook_id, event_types, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        webhook_id:
+          type: string
+          format: uuid
+          description: Target webhook endpoint (must exist in the same organization).
+        event_types:
+          type: array
+          items:
+            type: string
+          description: |
+            Pinned event types delivered to the webhook, e.g. "run.failed"
+            (run failure), "approval.requested" (approval required),
+            "deployment.failed" (canary/deployment failure + rollback).
+          minItems: 1
+        created_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC.
+    NsubSubscriptionList:
+      type: object
+      required: [subscriptions]
+      properties:
+        subscriptions:
+          type: array
+          description: Subscriptions ordered newest first; empty when none exist.
+          items:
+            $ref: '#/components/schemas/NsubSubscription'
+    NsubCreateSubscriptionRequest:
+      type: object
+      required: [webhook_id, event_types]
+      properties:
+        webhook_id:
+          type: string
+          format: uuid
+          description: Existing webhook endpoint of the caller's organization.
+        event_types:
+          type: array
+          items:
+            type: string
+          description: |
+            Event types to subscribe to; every entry must be a valid contract
+            event type and at least one is required. Duplicates are removed.
+          minItems: 1
+    NsubCreateSubscriptionResponse:
+      type: object
+      required: [subscription]
+      properties:
+        subscription:
+          $ref: '#/components/schemas/NsubSubscription'
+    NsubDeleteResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: boolean
+          enum: [true]
+    NsubError:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [INVALID_REQUEST, VALIDATION_ERROR, WEBHOOK_NOT_FOUND, SUBSCRIPTION_NOT_FOUND, METHOD_NOT_ALLOWED, INTERNAL]
+              description: One of the notifications error codes.
+            message:
+              type: string
+              description: |
+                Human-readable detail; for unknown event types the message
+                enumerates every valid event type.

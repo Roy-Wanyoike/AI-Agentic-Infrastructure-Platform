@@ -101,6 +101,26 @@ func NewWorker(svc *Service, subscriber events.Subscriber, client Doer, logr *sl
 	return w
 }
 
+// Deliver enqueues one event for delivery to ONE specific webhook through the
+// standard signed delivery path (the same deliverWithRetries code the
+// subscription fan-out uses: HMAC signing, retry/backoff, per-attempt delivery
+// status recording). It returns immediately — the delivery runs on its own
+// goroutine tracked by the worker's WaitGroup — so callers never block on HTTP.
+//
+// This is the delivery seam used by the notifications subscriber (issue #83)
+// to route subscription-targeted operational alerts into the webhooks pipeline
+// without forking delivery logic. No-op when the webhook is nil/unidentified.
+func (w *Worker) Deliver(ctx context.Context, wh *Webhook, ev events.Event) {
+	if w == nil || wh == nil || wh.ID == "" {
+		return
+	}
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		w.deliverWithRetries(ctx, wh, ev)
+	}()
+}
+
 // Run subscribes to ALL event types and delivers until ctx is cancelled or the
 // subscription channel closes. Returns ctx.Err() on shutdown.
 func (w *Worker) Run(ctx context.Context) error {
