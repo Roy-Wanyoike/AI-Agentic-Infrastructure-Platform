@@ -56,7 +56,15 @@ func newWorkerPolicyEvaluator(logr *slog.Logger, db *sql.DB) policies.Evaluator 
 // startup, before any task is consumed. The Enforcer evaluates
 // AGENTOS_POLICY_ENFORCEMENT at construction (default ON).
 func wirePolicyEnforcer(runner *runtime.Runner, logr *slog.Logger, db *sql.DB) {
-	runner.SetPolicyEnforcer(policies.NewEnforcerWithEvaluator(newWorkerPolicyEvaluator(logr, db)))
+	runner.SetPolicyEnforcer(workerPolicyEnforcer(logr, db))
+}
+
+// workerPolicyEnforcer builds the process-wide enforcer. It is stateless
+// with respect to organizations (the decision source reads the run scope
+// from the request context), so one instance is safely shared by the
+// per-org runners of the MCP tool wiring (issue #82, cmd/worker/mcp.go).
+func workerPolicyEnforcer(logr *slog.Logger, db *sql.DB) *policies.Enforcer {
+	return policies.NewEnforcerWithEvaluator(newWorkerPolicyEvaluator(logr, db))
 }
 
 // runScopeContext stamps the run scope (tenant + environment) the runtime

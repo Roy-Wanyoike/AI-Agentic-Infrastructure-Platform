@@ -162,10 +162,13 @@ type textContent struct {
 
 // callToolResult is the tools/call payload. Execution failures are
 // reported IN-BAND with isError true (MCP contract), never as JSON-RPC
-// errors.
+// errors. StructuredContent is consumed only by the OUTBOUND client
+// (issue #82): remote servers may answer with a structuredContent object
+// alongside the text blocks; the inbound server never sets it.
 type callToolResult struct {
-	Content []textContent `json:"content"`
-	IsError bool          `json:"isError"`
+	Content           []textContent  `json:"content"`
+	IsError           bool           `json:"isError"`
+	StructuredContent map[string]any `json:"structuredContent,omitempty"`
 }
 
 // pingResult is the ping payload: the empty object.
