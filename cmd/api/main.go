@@ -33,6 +33,7 @@ import (
 	"agentos/internal/marketplace"
 	"agentos/internal/memory"
 	"agentos/internal/models"
+	"agentos/internal/notifications"
 	"agentos/internal/observability"
 	"agentos/internal/organizations"
 	"agentos/internal/queue"
@@ -44,7 +45,6 @@ import (
 	"agentos/internal/sso"
 	"agentos/internal/streaming"
 	"agentos/internal/tools"
-	"agentos/internal/usage"
 	"agentos/internal/webhooks"
 	"agentos/internal/workflows"
 )
@@ -74,7 +74,6 @@ type app struct {
 	orgsSvc    *organizations.Service
 	identities auth.ProvisioningStore
 	auditSvc   *audit.Service
-	usageSvc   *usage.Service
 	agentsSvc  *agents.Service
 	runsSvc    *runs.Service
 	queueSvc   *queue.Queue
@@ -100,6 +99,7 @@ type app struct {
 	mktSvc         *marketplace.Service
 	connSvc        *connectors.Service
 	whSvc          *webhooks.Service
+	notifSvc       *notifications.Service
 	publisher      events.Publisher
 	eventsLister   events.PagedStore
 }
@@ -132,7 +132,6 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.apiKeysSvc = apikeys.NewServiceWithStore(apikeys.NewPostgresStore(db))
 		a.orgsSvc = organizations.NewServiceWithStore(organizations.NewPostgresStore(db))
 		a.auditSvc = audit.NewServiceWithStore(audit.NewPostgresStore(db))
-		a.usageSvc = usage.NewServiceWithStore(usage.NewPostgresStore(db))
 		a.agentsSvc = agents.NewServiceWithStore(agents.NewPostgresStore(db))
 		a.runsSvc = runs.NewServiceWithStore(runs.NewPostgresStore(db))
 		a.wfSvc = workflows.NewServiceWithOptions(workflows.NewPostgresStore(db),
@@ -186,7 +185,6 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.apiKeysSvc = apikeys.NewService()
 		a.orgsSvc = organizations.NewService()
 		a.auditSvc = audit.NewService()
-		a.usageSvc = usage.NewService()
 		a.agentsSvc = agents.NewService()
 		a.runsSvc = runs.NewService()
 		a.wfSvc = workflows.NewServiceWithOptions(nil, workflows.WithStaleAfter(workflows.StaleAfterFromEnv()))
@@ -285,6 +283,16 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 				logr.Warn("webhook delivery worker stopped", "error", err.Error())
 			}
 		}()
+		// issue #83: notification subscriptions — org-scoped operational
+		// alerts (run failure, approval required, canary rollback) routed
+		// through the signed webhook delivery path. The worker satisfies
+		// the notifications Dispatcher seam (Worker.Deliver).
+		a.notifSvc = notifications.NewService(sub, a.whSvc, whWorker)
+		go func() {
+			if err := a.notifSvc.Run(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+				logr.Warn("notifications subscriber stopped", "error", err.Error())
+			}
+		}()
 	}
 
 	// wire runs service to streaming service so run status updates are published
@@ -357,6 +365,12 @@ func (a *app) routes() http.Handler {
 	registerEvaluationsRoutes(apiMux, a.evalSvc, a.authSvc, a.apiKeysSvc)
 	registerSchedulesRoutes(apiMux, a.schedSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	registerWebhooksRoutes(apiMux, a.whSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	// issue #83: notification subscriptions (org-scoped alert routing over
+	// the signed webhook delivery path); nil when the event publisher does
+	// not support subscriptions
+	if a.notifSvc != nil {
+		registerNotificationsRoutes(apiMux, a.notifSvc, a.authSvc, a.apiKeysSvc)
+	}
 	registerPoliciesRoutes(apiMux, newPoliciesService(a.db), a.authSvc, a.apiKeysSvc)
 	// wave-3: cost report, knowledge/RAG, memory
 	registerUsageCostsRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)
