@@ -10,6 +10,26 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
+// Task states modeled by the engine. They are plain strings for backwards
+// compatibility (the JSON wire format and the pre-existing call sites use the
+// literals), but every producer/consumer should prefer these constants.
+const (
+	StatusQueued     = "queued"
+	StatusRunning    = "running"
+	StatusDeadLetter = "dead_letter"
+	StatusCompleted  = "completed"
+)
+
+// IsValidTaskStatus reports whether s is one of the four states the engine
+// models (issue #77 introspection filters accept exactly these).
+func IsValidTaskStatus(s string) bool {
+	switch s {
+	case StatusQueued, StatusRunning, StatusDeadLetter, StatusCompleted:
+		return true
+	}
+	return false
+}
+
 type Task struct {
 	ID        string
 	Type      string
@@ -19,16 +39,48 @@ type Task struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	LastError string
+	// OrganizationID is the tenant scope of the task (issue #77). Every
+	// producer stamps "organization_id" into the payload; Enqueue lifts it
+	// onto the task so introspection (GET /queue/tasks et al.) can scope
+	// listings to the caller's organization. Additive field: tasks encoded
+	// before this field existed simply decode with an empty scope and stay
+	// invisible to org-scoped listings (documented in ops.go).
+	OrganizationID string
+}
+
+// organizationFromPayload extracts the tenant scope every queue producer
+// stamps into the payload (create-run handler, workflow engine, scheduler).
+// A missing or non-string value yields "" (unscoped task).
+func organizationFromPayload(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	org, _ := payload["organization_id"].(string)
+	return org
 }
 
 type Queue struct {
 	mu    sync.Mutex
 	tasks []*Task
 	redis *RedisQueue // non-nil ⇒ redis-backed mode: operations delegate to Redis
+
+	// Introspection index (issue #77): a dedicated RWMutex-guarded registry of
+	// TaskRecord snapshots, one per task the queue has seen. Readers (GET
+	// /queue/tasks et al.) take recMu.RLock only, so listing never contends
+	// the work-list mutex; writers take recMu.Lock AFTER releasing mu (lock
+	// order: recMu before mu — the only nested acquisition is RequeueTask's
+	// recMu → mu, which every other path avoids by construction).
+	recMu   sync.RWMutex
+	records map[string]*TaskRecord
+	order   []*TaskRecord // append-ordered by Sequence (ascending); front = oldest
+	seq     int64         // last assigned enqueue sequence
 }
 
 func NewQueue() *Queue {
-	return &Queue{tasks: make([]*Task, 0)}
+	return &Queue{
+		tasks:   make([]*Task, 0),
+		records: make(map[string]*TaskRecord),
+	}
 }
 
 type RedisQueue struct {
@@ -77,13 +129,14 @@ func (q *RedisQueue) Enqueue(taskType string, payload map[string]any) *Task {
 	}
 
 	task := &Task{
-		ID:        taskType + "-" + time.Now().UTC().Format(time.RFC3339Nano),
-		Type:      taskType,
-		Payload:   payload,
-		Status:    "queued",
-		Attempts:  0,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		ID:             taskType + "-" + time.Now().UTC().Format(time.RFC3339Nano),
+		Type:           taskType,
+		Payload:        payload,
+		Status:         StatusQueued,
+		Attempts:       0,
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+		OrganizationID: organizationFromPayload(payload),
 	}
 
 	encoded, err := encodeTask(task)
@@ -93,6 +146,7 @@ func (q *RedisQueue) Enqueue(taskType string, payload map[string]any) *Task {
 	if err := q.client.RPush(context.Background(), q.key, encoded).Err(); err != nil {
 		return nil
 	}
+	q.recordEnqueue(task) // issue #77: register the task in the introspection records
 	return task
 }
 
@@ -134,8 +188,9 @@ func (q *RedisQueue) MarkStarted(task *Task) {
 		return
 	}
 	task.Attempts++
-	task.Status = "running"
+	task.Status = StatusRunning
 	task.UpdatedAt = time.Now().UTC()
+	q.recordTransition(task) // issue #77: mirror the state onto the task record
 }
 
 func (q *RedisQueue) MarkFailed(task *Task, errMsg string) {
@@ -145,49 +200,58 @@ func (q *RedisQueue) MarkFailed(task *Task, errMsg string) {
 	task.LastError = errMsg
 	task.UpdatedAt = time.Now().UTC()
 	if task.Attempts >= 4 {
-		task.Status = "dead_letter"
+		task.Status = StatusDeadLetter
+		q.recordTransition(task)
 		return
 	}
-	task.Status = "queued"
+	task.Status = StatusQueued
+	q.recordTransition(task)
 }
 
 func (q *RedisQueue) Ack(task *Task) {
 	if task == nil {
 		return
 	}
-	task.Status = "completed"
+	task.Status = StatusCompleted
 	task.UpdatedAt = time.Now().UTC()
+	q.recordTransition(task) // issue #77: mirror the state onto the task record
 }
 
 func (q *RedisQueue) Requeue(task *Task) {
 	if q == nil || q.client == nil || task == nil {
 		return
 	}
-	task.Status = "queued"
+	task.Status = StatusQueued
 	task.UpdatedAt = time.Now().UTC()
 	encoded, err := encodeTask(task)
 	if err != nil {
 		return
 	}
 	_ = q.client.RPush(context.Background(), q.key, encoded).Err()
+	q.recordTransition(task) // issue #77: mirror the state onto the task record
 }
 
 func (q *Queue) Enqueue(taskType string, payload map[string]any) *Task {
 	if q.redis != nil {
 		return q.redis.Enqueue(taskType, payload)
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
 	task := &Task{
-		ID:        taskType + "-" + time.Now().UTC().Format(time.RFC3339Nano),
-		Type:      taskType,
-		Payload:   payload,
-		Status:    "queued",
-		Attempts:  0,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		ID:             taskType + "-" + time.Now().UTC().Format(time.RFC3339Nano),
+		Type:           taskType,
+		Payload:        payload,
+		Status:         StatusQueued,
+		Attempts:       0,
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+		OrganizationID: organizationFromPayload(payload),
 	}
+	// The record is published BEFORE the task enters the work list: a worker
+	// that dequeues the task always finds its introspection record already
+	// in place (issue #77). See ops.go for the index/lock design.
+	q.trackNewTask(task)
+	q.mu.Lock()
 	q.tasks = append(q.tasks, task)
+	q.mu.Unlock()
 	return task
 }
 
@@ -200,10 +264,11 @@ func (q *Queue) MarkStarted(task *Task) {
 		return
 	}
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	task.Attempts++
-	task.Status = "running"
+	task.Status = StatusRunning
 	task.UpdatedAt = time.Now().UTC()
+	q.mu.Unlock()
+	q.trackTaskSnapshot(task) // issue #77: mirror the state onto the task record
 }
 
 func (q *Queue) MarkFailed(task *Task, errMsg string) {
@@ -215,16 +280,19 @@ func (q *Queue) MarkFailed(task *Task, errMsg string) {
 		return
 	}
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	task.LastError = errMsg
 	task.UpdatedAt = time.Now().UTC()
 
 	if task.Attempts >= 4 {
-		task.Status = "dead_letter"
+		task.Status = StatusDeadLetter
+		q.mu.Unlock()
+		q.trackTaskSnapshot(task)
 		return
 	}
 
-	task.Status = "queued"
+	task.Status = StatusQueued
+	q.mu.Unlock()
+	q.trackTaskSnapshot(task)
 }
 
 func (q *Queue) Length() int {
@@ -256,14 +324,23 @@ func (q *Queue) Ack(task *Task) {
 	if task == nil {
 		return
 	}
+	// Issue #77 alignment: the memory backend now records the completion on
+	// the task exactly like (*RedisQueue).Ack always did, so the "completed"
+	// status is a real, queryable engine state in BOTH modes (previously the
+	// memory Ack only removed the task from the work list and the status
+	// field stayed "running" — invisible to introspection). No delivery
+	// semantics change: the task still leaves the work list.
+	task.Status = StatusCompleted
+	task.UpdatedAt = time.Now().UTC()
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	for i, queued := range q.tasks {
 		if queued.ID == task.ID {
 			q.tasks = append(q.tasks[:i], q.tasks[i+1:]...)
-			return
+			break
 		}
 	}
+	q.mu.Unlock()
+	q.trackTaskSnapshot(task) // completed tasks stay queryable via the index (issue #77)
 }
 func (q *Queue) Dequeue() *Task {
 	if q.redis != nil {
@@ -288,10 +365,11 @@ func (q *Queue) Requeue(task *Task) {
 		return
 	}
 	q.mu.Lock()
-	defer q.mu.Unlock()
-	task.Status = "queued"
+	task.Status = StatusQueued
 	task.UpdatedAt = time.Now().UTC()
 	q.tasks = append(q.tasks, task)
+	q.mu.Unlock()
+	q.trackTaskSnapshot(task)
 }
 
 // Close releases the queue's resources. The in-memory queue holds none and
@@ -352,7 +430,7 @@ func (w *Worker) ProcessNext() error {
 	if w.handle != nil {
 		if err := w.handle(task); err != nil {
 			w.q.MarkFailed(task, err.Error())
-			if task.Status == "dead_letter" {
+			if task.Status == StatusDeadLetter {
 				return nil
 			}
 			w.q.Requeue(task)

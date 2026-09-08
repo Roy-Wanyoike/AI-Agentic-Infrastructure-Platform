@@ -335,6 +335,8 @@ func (a *app) routes() http.Handler {
 	})))
 	// queue pull endpoint for workers to pull tasks (dev-only)
 	apiMux.Handle("/queue/pull", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(http.HandlerFunc(queuePullHandler(a.queueSvc)))))
+	// issue #77: queue introspection + dead-letter requeue (org-scoped)
+	registerQueueOpsRoutes(apiMux, a.queueSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	apiMux.Handle("/runs/", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsRead)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rest := trimRoutePrefix(r.URL.Path, "/runs/")
 		switch {
