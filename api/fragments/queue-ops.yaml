@@ -1,0 +1,367 @@
+# AgentOS API — OpenAPI 3.1 fragment for the queue introspection + dead-letter
+# requeue surface (issue #77, wave 8-c).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1). The pre-existing /queue/pull and POST /runs/create paths are
+# untouched — this fragment only ADDS the introspection surface.
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/organization.yaml pattern),
+# so `python3 scripts/check_fragment_refs.py api/fragments/queue-ops.yaml`
+# passes. Components carry the track-unique `Qt` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation:
+#       GET /queue/tasks, GET /queue/tasks/{id}, GET /queue/stats
+#         -> runs.read (OWNER/ADMIN/MEMBER/VIEWER) — the established read
+#            grant, exactly like the metrics/events reads. No new read
+#            permission was introduced.
+#       POST /queue/tasks/{id}/requeue
+#         -> queue.manage (OWNER/ADMIN only; MEMBER/VIEWER denied 403) — a
+#            NEW dedicated permission registered in
+#            internal/auth/permissions_queue.go following the
+#            permissions_audit.go track convention (appendPermission init).
+#   * structured error model {"error":{"code","message"}}; the 403 body is
+#     the middleware's plain-text "forbidden" (platform-wide behavior).
+#
+# ORG SCOPING: the tenant comes from the auth claims ONLY. Client-supplied
+# organization ids are never trusted and never appear in responses. Tasks are
+# stamped with their organization at enqueue time (Task.OrganizationID, lifted
+# from the payload's "organization_id" that every producer — runs.create,
+# workflow engine, scheduler — already carries). Tasks predating the field
+# decode with an empty scope and are invisible to org-scoped listings rather
+# than leaking into any tenant.
+#
+# PAGINATION: keyset on (sequence DESC, id) — the enqueue sequence is the
+# stable sort key, so appends between pages can neither duplicate nor skip
+# rows. next_cursor is "" when exhausted; malformed/forged cursors answer
+# 400 INVALID_CURSOR. limit is clamped server-side to [1, 200] (default 50).
+#
+# STATUS VOCABULARY: exactly the four engine states — queued, running,
+# dead_letter, completed. "completed" is a real queryable state in BOTH
+# backends (the in-memory Ack records completion; the Redis Ack always did).
+# A dequeued-but-not-yet-started task still reports "queued" (MarkStarted is
+# what flips the state); the dev-only HTTP pull path dequeues without going
+# through MarkStarted, so pulled tasks legitimately stay "queued" in the
+# record — the API process has no visibility into the puller's execution.
+#
+# REQUEUE POLICY (documented per issue #77 "resets attempt bookkeeping"):
+# only dead_letter tasks are requeueable (the engine's terminal failure
+# state; transient failures already requeue themselves inside
+# MarkFailed+Requeue). Requeueing keeps the task ID and original enqueue
+# sequence, restores the original created_at, resets attempts to 0, clears
+# last_error, increments requeues, stamps requeued_at, sets status back to
+# queued and appends the task to the work list so workers pick it up.
+# Requeueing a task in any other state is 409 CONFLICT; unknown AND
+# foreign-organization ids are the same 404 (no existence leak). Every
+# successful requeue writes a queue.task_requeued audit row.
+#
+# DUAL MODE: all four operations dispatch through queue.Queue's Inspector
+# implementation (internal/queue/ops.go + redis_ops.go), so the endpoints
+# serve the in-memory backend (dev mode) and the Redis backend
+# (AGENTOS_QUEUE=redis) with identical contracts.
+openapi: 3.1.0
+info:
+  title: AgentOS — queue ops API (issue #77 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the org-scoped task-queue introspection and
+  dead-letter requeue surface (issue #77): list tasks with status filters and
+  keyset pagination, inspect one task (attempts, last error, timestamps),
+  read the per-status queue depth, and requeue dead-lettered tasks. The
+  tenant scope is derived exclusively from the auth claims — client-supplied
+  organization ids are never trusted and never appear in responses.
+paths:
+  /queue/tasks:
+    get:
+      operationId: listQueueTasks
+      summary: List the org's task-queue records (keyset-paginated, newest first)
+      description: |
+        Returns one page of the caller's organization's task records, newest
+        enqueue first, with an opaque next_cursor for keyset continuation.
+        Use `limit` to size the page (clamped server-side to [1, 200];
+        default 50) and pass `cursor` back unchanged to fetch the next page.
+        `status` filters to exactly one engine state (queued | running |
+        dead_letter | completed); an unknown value answers 400. Unscoped
+        legacy tasks (predating org stamping) never match a scoped listing.
+      x-required-permission: runs.read (OWNER/ADMIN/MEMBER/VIEWER)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [queued, running, dead_letter, completed] }
+          description: Exact engine-state filter. Omit to list every status.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: Page size (clamped server-side; values <= 0 are a 400).
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: Opaque keyset cursor from the previous response's next_cursor. Malformed cursors answer 400 INVALID_CURSOR.
+      responses:
+        '200':
+          description: One keyset page of task records (newest enqueue first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtTaskListResponse'
+              examples:
+                firstPage:
+                  summary: Latest page (next_cursor empty when exhausted)
+                  value:
+                    tasks:
+                      - id: agent.run-2026-09-10T12-00-00-000000000Z
+                        type: agent.run
+                        status: dead_letter
+                        attempts: 4
+                        requeues: 0
+                        last_error: agent timeout
+                        payload:
+                          organization_id: 6f1c9e52-1c76-4a2f-9a86-9f6d4d3e8a01
+                          run_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                        created_at: '2026-09-10T12:00:00Z'
+                        updated_at: '2026-09-10T12:04:00Z'
+                    next_cursor: ''
+        '400':
+          description: Malformed cursor or invalid status/limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtErrorEnvelope'
+        '401':
+          description: Missing or invalid credentials.
+  /queue/tasks/{id}:
+    get:
+      operationId: getQueueTask
+      summary: Inspect one task (attempts, last error, timestamps)
+      description: |
+        Returns the caller's organization's record for one task, including
+        the attempt counter, the requeues counter, the last handler error and
+        the created/updated/requeued timestamps. Unknown AND foreign-
+        organization ids answer the same 404 (no existence leak).
+      x-required-permission: runs.read (OWNER/ADMIN/MEMBER/VIEWER)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/QtTaskId'
+      responses:
+        '200':
+          description: The task record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtTask'
+        '404':
+          description: Unknown or foreign-organization task id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtErrorEnvelope'
+        '401':
+          description: Missing or invalid credentials.
+  /queue/tasks/{id}/requeue:
+    post:
+      operationId: requeueQueueTask
+      summary: Requeue a dead-lettered task (OWNER/ADMIN)
+      description: |
+        Revives a dead_letter task: attempts reset to 0, last_error cleared,
+        the requeues counter incremented, requeued_at stamped and created_at
+        preserved; the task is appended back to the work list so workers pick
+        it up. Attempt bookkeeping restarts from zero (a fresh retry budget),
+        while the requeues counter keeps the operator-visible history.
+        Requeueing a task in any other state (queued, running, completed) is
+        409 CONFLICT — transient failures already requeue themselves inside
+        the engine, so only the terminal dead_letter state is operator-
+        requeueable. Unknown and foreign-organization ids are the same 404.
+        Every successful requeue writes a queue.task_requeued audit row;
+        refused operations write nothing. The operation is serialized per
+        backend, so concurrent requeues yield exactly one work-list entry and
+        one 409.
+      x-required-permission: queue.manage (OWNER/ADMIN; MEMBER/VIEWER denied 403)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/QtTaskId'
+      responses:
+        '200':
+          description: The requeued task record (status queued, attempts 0).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtTask'
+              example:
+                id: agent.run-2026-09-10T12-00-00-000000000Z
+                type: agent.run
+                status: queued
+                attempts: 0
+                requeues: 1
+                payload:
+                  organization_id: 6f1c9e52-1c76-4a2f-9a86-9f6d4d3e8a01
+                  run_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                created_at: '2026-09-10T12:00:00Z'
+                updated_at: '2026-09-10T12:10:00Z'
+                requeued_at: '2026-09-10T12:10:00Z'
+        '404':
+          description: Unknown or foreign-organization task id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtErrorEnvelope'
+        '409':
+          description: The task is not in the requeueable dead_letter state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtErrorEnvelope'
+        '401':
+          description: Missing or invalid credentials.
+        '403':
+          description: Caller lacks queue.manage (MEMBER/VIEWER). Body is the middleware's plain-text "forbidden".
+  /queue/stats:
+    get:
+      operationId: getQueueStats
+      summary: Queue depth by status for the org
+      description: |
+        Returns the caller's organization's task depth for each of the four
+        engine states (all keys always present, zero included) plus the
+        total number of tracked tasks. Other organizations' tasks never
+        count.
+      x-required-permission: runs.read (OWNER/ADMIN/MEMBER/VIEWER)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      responses:
+        '200':
+          description: Per-status depth and total.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QtStatsResponse'
+              example:
+                stats:
+                  queued: 2
+                  running: 1
+                  dead_letter: 1
+                  completed: 7
+                total: 11
+        '401':
+          description: Missing or invalid credentials.
+components:
+  parameters:
+    QtTaskId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: The queue task identifier (as returned by the listing or by runs/create).
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT issued by /auth/login or /auth/register.
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Organization API key (issue #48).
+  schemas:
+    QtTask:
+      type: object
+      description: |
+        Introspection record of one queue task. organization_id is never
+        rendered — the tenant is implied by the caller's claims (the payload
+        may legitimately echo the caller's own organization_id inside its
+        keys).
+      required: [id, type, status, attempts, requeues, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: Stable task identifier (preserved across requeues).
+        type:
+          type: string
+          description: Task type, e.g. agent.run or a workflow node type.
+        status:
+          type: string
+          enum: [queued, running, dead_letter, completed]
+          description: Current engine state. Dequeued-but-not-started tasks still report queued.
+        attempts:
+          type: integer
+          format: int64
+          description: Delivery attempts since the last (re)queue. Reset to 0 by a requeue.
+        requeues:
+          type: integer
+          format: int64
+          description: API-initiated requeue counter; survives the attempt reset and later transitions.
+        last_error:
+          type: string
+          description: Last handler error; empty after a successful requeue.
+        payload:
+          type: object
+          additionalProperties: true
+          description: The task payload as enqueued (organization_id, run_id, input, ...).
+        created_at:
+          type: string
+          format: date-time
+          description: Original enqueue time (preserved across requeues).
+        updated_at:
+          type: string
+          format: date-time
+          description: Last transition time.
+        requeued_at:
+          type: string
+          format: date-time
+          description: Timestamp of the most recent API requeue; absent when never requeued.
+    QtTaskListResponse:
+      type: object
+      required: [tasks, next_cursor]
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/QtTask'
+          description: One keyset page, newest enqueue first.
+        next_cursor:
+          type: string
+          description: Opaque cursor for the next page; "" when the listing is exhausted.
+    QtStatsResponse:
+      type: object
+      required: [stats, total]
+      properties:
+        stats:
+          type: object
+          required: [queued, running, dead_letter, completed]
+          additionalProperties: false
+          properties:
+            queued: { type: integer, format: int64 }
+            running: { type: integer, format: int64 }
+            dead_letter: { type: integer, format: int64 }
+            completed: { type: integer, format: int64 }
+          description: Depth per engine state for the caller's organization.
+        total:
+          type: integer
+          format: int64
+          description: Total number of the organization's tracked tasks.
+    QtErrorEnvelope:
+      type: object
+      description: Shared structured error envelope.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [NOT_FOUND, CONFLICT, INVALID_CURSOR, INVALID_REQUEST, UNAUTHORIZED, INTERNAL_ERROR, QUEUE_UNAVAILABLE]
+            message:
+              type: string
