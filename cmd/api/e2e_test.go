@@ -539,7 +539,8 @@ func TestFullStackWorkerUsageCostE2E(t *testing.T) {
 }
 
 // e2eSingleStep fetches GET /runs/{id}/steps through the full stack and
-// returns the single recorded step (every e2e run records exactly one).
+// returns the work step (step 1; step 0 is the governance verdict recorded
+// on the timeline since #75/#88 — asserted explicitly here).
 func e2eSingleStep(t *testing.T, e *e2eEnv, runID string) map[string]any {
 	t.Helper()
 	rr, resp := e.do(t, http.MethodGet, "/api/v1/runs/"+runID+"/steps", "")
@@ -547,12 +548,25 @@ func e2eSingleStep(t *testing.T, e *e2eEnv, runID string) map[string]any {
 		t.Fatalf("get steps for run %s = %d, want 200 — body=%s", runID, rr.Code, rr.Body.String())
 	}
 	steps, _ := resp["steps"].([]any)
-	if len(steps) != 1 {
-		t.Fatalf("run %s recorded %d steps, want exactly 1 — body=%s", runID, len(steps), rr.Body.String())
+	// Issue #92: the governance verdict is part of the timeline since #75/#88
+	// (step 0 = policy, step 1 = the actual work). Assert the contract
+	// explicitly so a silent policy-step regression cannot come back.
+	if len(steps) != 2 {
+		t.Fatalf("run %s recorded %d steps, want exactly 2 (policy verdict + work step) — body=%s", runID, len(steps), rr.Body.String())
 	}
-	step, _ := steps[0].(map[string]any)
+	policyStep, _ := steps[0].(map[string]any)
+	if policyStep == nil {
+		t.Fatalf("run %s step 0 is not an object: %s", runID, rr.Body.String())
+	}
+	if got, _ := policyStep["StepType"].(string); got != "policy" {
+		t.Fatalf("run %s step 0 type = %q, want policy (verdict on the timeline) — body=%s", runID, got, rr.Body.String())
+	}
+	if out, _ := policyStep["OutputMeta"].(map[string]any); out["decision"] != "allow" {
+		t.Fatalf("run %s policy verdict = %v, want allow (no policies configured in e2e) — body=%s", runID, out, rr.Body.String())
+	}
+	step, _ := steps[1].(map[string]any)
 	if step == nil {
-		t.Fatalf("run %s step is not an object: %s", runID, rr.Body.String())
+		t.Fatalf("run %s step 1 is not an object: %s", runID, rr.Body.String())
 	}
 	return step
 }
