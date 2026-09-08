@@ -112,6 +112,13 @@ type Snapshot struct {
 
 // Listing is one marketplace catalog entry. VersionSnapshot carries the
 // JSON-encoded Snapshot document (JSONB in Postgres).
+//
+// Provenance columns (issue #78, migration 022): an unsigned publish leaves
+// them zero-valued; a signed publish stores the detached Ed25519 signature
+// over the canonical manifest together with the key id, alg, signed-at and
+// the content-addressed manifest hash. LegacyListing marks listings created
+// BEFORE signing existed (grandfathered: always installable) — every new
+// row is born LegacyListing=false.
 type Listing struct {
 	ID              string
 	PublisherOrgID  string
@@ -126,6 +133,13 @@ type Listing struct {
 	DownloadCount   int
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+
+	Signature     string     // base64 (std) detached Ed25519 signature
+	SigningKeyID  string     // publisher_keys.id ("" when unsigned)
+	SigAlg        string     // "ed25519" ("" when unsigned)
+	SignedAt      *time.Time // server-stamped publish-time verification instant
+	ManifestHash  string     // sha256 over the canonical manifest (hex)
+	LegacyListing bool       // pre-signing listing (grandfathered installs)
 }
 
 // AgentsDomain is the minimal surface of the agents service the marketplace
@@ -147,14 +161,22 @@ type VersionReader interface {
 // PublishInput is the publish request. Version > 0 publishes the immutable
 // config-version snapshot with that number (requires a wired VersionReader);
 // Version == 0 (default) snapshots the agent's CURRENT live configuration.
+//
+// Signature + SigningKeyID (issue #78) carry the detached Ed25519 signature
+// over the canonical manifest of the snapshot being published (base64 std of
+// the 64-byte value) and the id of the publisher's REGISTERED key. They must
+// be provided together (ErrSignatureIncomplete) and are verified before the
+// listing is stored.
 type PublishInput struct {
-	AgentID     string
-	Version     int
-	Name        string
-	Slug        string // optional; derived from Name when empty
-	Description string // optional; defaults to the snapshot description
-	Tags        []string
-	Status      string // published (default) or draft
+	AgentID      string
+	Version      int
+	Name         string
+	Slug         string // optional; derived from Name when empty
+	Description  string // optional; defaults to the snapshot description
+	Tags         []string
+	Status       string // published (default) or draft
+	Signature    string // optional; base64 detached signature over the canonical manifest
+	SigningKeyID string // optional; registered publisher key id
 }
 
 // InstallResult bundles the catalog listing (with its refreshed
@@ -164,13 +186,18 @@ type InstallResult struct {
 	Agent   *agents.Agent
 }
 
-// Service is the dual-mode marketplace service.
+// Service is the dual-mode marketplace service. The in-memory mode also
+// holds the provenance state (signing keys + org install policies) in maps
+// guarded by the same mutex; durable modes keep them in the store's
+// SigningKeyStore capability (migration 022).
 type Service struct {
-	mu       sync.Mutex
-	store    Store // nil => in-memory mode
-	agents   AgentsDomain
-	versions VersionReader
-	items    map[string]*Listing // in-memory mode, keyed by listing ID
+	mu          sync.Mutex
+	store       Store // nil => in-memory mode
+	agents      AgentsDomain
+	versions    VersionReader
+	items       map[string]*Listing     // in-memory mode, keyed by listing ID
+	keys        map[string]*SigningKey  // in-memory mode, keyed by key ID
+	orgSettings map[string]*OrgSettings // in-memory mode, keyed by org ID
 }
 
 // NewService returns the in-memory marketplace backed by the given agents
@@ -184,10 +211,12 @@ func NewService(agentsSvc AgentsDomain) *Service {
 // version-numbered publishes (nil => live-config publishes only).
 func NewServiceWithStore(store Store, agentsSvc AgentsDomain, versions VersionReader) *Service {
 	return &Service{
-		store:    store,
-		agents:   agentsSvc,
-		versions: versions,
-		items:    make(map[string]*Listing),
+		store:       store,
+		agents:      agentsSvc,
+		versions:    versions,
+		items:       make(map[string]*Listing),
+		keys:        make(map[string]*SigningKey),
+		orgSettings: make(map[string]*OrgSettings),
 	}
 }
 
@@ -296,6 +325,16 @@ func (s *Service) Publish(ctx context.Context, orgID, userID string, in PublishI
 		DownloadCount:   0,
 		CreatedAt:       now,
 		UpdatedAt:       now,
+		// Issue #78: every new listing is born under the signing regime
+		// — only rows predating migration 022 read back as legacy.
+		LegacyListing: false,
+	}
+
+	// Signature capture (issue #78): verify the detached Ed25519 signature
+	// over the canonical manifest of THIS snapshot before anything is
+	// stored, so no invalidly signed listing can ever enter the catalog.
+	if err := s.applyPublishSignature(ctx, orgID, listing, snap, in.Signature, in.SigningKeyID); err != nil {
+		return nil, err
 	}
 
 	// Slug uniqueness is GLOBAL (any org, any status): pre-check for a
@@ -425,6 +464,12 @@ func (s *Service) Install(ctx context.Context, callerOrgID, slug string) (*Insta
 	// document before it can become an agent.
 	snap, err := validateSnapshot(listing.VersionSnapshot)
 	if err != nil {
+		return nil, err
+	}
+	// Provenance verification (issue #78): tamper evidence, signature and key
+	// checks for signed listings, the allow_unsigned policy for unsigned NEW
+	// listings, grandfathering for legacy (pre-signing) rows.
+	if err := s.verifyInstall(ctx, callerOrgID, listing, snap); err != nil {
 		return nil, err
 	}
 

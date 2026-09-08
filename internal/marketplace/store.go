@@ -32,14 +32,21 @@ const (
 	// listingColumns is the full-row projection; version_snapshot is coerced
 	// to text (NULL cannot occur — the column is NOT NULL — but COALESCE
 	// keeps the scan total).
+	// Provenance projection (issue #78): the signature columns are NULLable
+	// (rows predating migration 022), so text columns are COALESCEd to '' for
+	// the scan; signed_at scans into *time.Time (NULL -> nil) and legacy_listing
+	// defaults TRUE for pre-signing rows (grandfathering).
 	listingColumns = `id, publisher_org_id, publisher_user_id, source_agent_id,
                 COALESCE(version_snapshot::text, '{}'), name, slug, description,
-                tags, status, download_count, created_at, updated_at`
+                tags, status, download_count, created_at, updated_at,
+                COALESCE(signature, ''), COALESCE(signing_key_id, ''), COALESCE(sig_alg, ''),
+                signed_at, COALESCE(manifest_hash, ''), legacy_listing`
 
 	sqlInsertListing = `INSERT INTO marketplace_listings
                 (id, publisher_org_id, publisher_user_id, source_agent_id, version_snapshot,
-                 name, slug, description, tags, status, download_count, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+                 name, slug, description, tags, status, download_count, created_at, updated_at,
+                 signature, signing_key_id, sig_alg, signed_at, manifest_hash, legacy_listing)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`
 
 	sqlSelectListingBySlug = `SELECT ` + listingColumns + ` FROM marketplace_listings
                 WHERE slug = $1`
@@ -126,7 +133,9 @@ func (s *pgStore) CreateListing(ctx context.Context, listing *Listing) error {
 		listing.SourceAgentID, listing.VersionSnapshot,
 		listing.Name, listing.Slug, listing.Description,
 		pq.StringArray(listing.Tags), listing.Status, listing.DownloadCount,
-		listing.CreatedAt, listing.UpdatedAt)
+		listing.CreatedAt, listing.UpdatedAt,
+		listing.Signature, listing.SigningKeyID, listing.SigAlg,
+		listing.SignedAt, listing.ManifestHash, listing.LegacyListing)
 	return mapConstraintErr(err)
 }
 
@@ -231,7 +240,9 @@ func scanListing(sc scanner) (*Listing, error) {
 		&listing.SourceAgentID, &listing.VersionSnapshot,
 		&listing.Name, &listing.Slug, &listing.Description,
 		&tags, &listing.Status, &listing.DownloadCount,
-		&createdAt, &updatedAt)
+		&createdAt, &updatedAt,
+		&listing.Signature, &listing.SigningKeyID, &listing.SigAlg,
+		&listing.SignedAt, &listing.ManifestHash, &listing.LegacyListing)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

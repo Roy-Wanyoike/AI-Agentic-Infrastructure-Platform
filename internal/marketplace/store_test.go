@@ -55,11 +55,15 @@ func listingRows(listings ...*Listing) *sqlmock.Rows {
 		"id", "publisher_org_id", "publisher_user_id", "source_agent_id",
 		"COALESCE(version_snapshot::text, '{}')", "name", "slug", "description",
 		"tags", "status", "download_count", "created_at", "updated_at",
+		"COALESCE(signature, '')", "COALESCE(signing_key_id, '')", "COALESCE(sig_alg, '')",
+		"signed_at", "COALESCE(manifest_hash, '')", "legacy_listing",
 	})
 	for _, l := range listings {
 		rows.AddRow(l.ID, l.PublisherOrgID, l.PublisherUserID, l.SourceAgentID,
 			l.VersionSnapshot, l.Name, l.Slug, l.Description,
-			pq.StringArray(l.Tags), l.Status, l.DownloadCount, l.CreatedAt, l.UpdatedAt)
+			pq.StringArray(l.Tags), l.Status, l.DownloadCount, l.CreatedAt, l.UpdatedAt,
+			l.Signature, l.SigningKeyID, l.SigAlg,
+			l.SignedAt, l.ManifestHash, l.LegacyListing)
 	}
 	return rows
 }
@@ -100,7 +104,9 @@ func TestPostgresStoreCreateListing(t *testing.T) {
 		WithArgs("l-1", "org-a", "user-a", "agent-a", listing.VersionSnapshot,
 			"Support Bot", "support-bot", "Helps customers",
 			pq.StringArray([]string{"rag", "sql"}), StatusPublished, 3,
-			tsA, tsA).
+			tsA, tsA,
+			listing.Signature, listing.SigningKeyID, listing.SigAlg,
+			listing.SignedAt, listing.ManifestHash, listing.LegacyListing).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	if err := store.CreateListing(ctx, listing); err != nil {
 		t.Fatalf("CreateListing returned error: %v", err)
@@ -325,7 +331,11 @@ func TestServiceOverPostgresStoreRoundTrip(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), "org-a", "user-a", source.ID, expectedSnapshot,
 			"Support Bot", "support-bot", "Helps customers",
 			pq.StringArray([]string{"rag", "sql"}), StatusPublished, 0,
-			sqlmock.AnyArg(), sqlmock.AnyArg()).
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			// Provenance columns of an unsigned publish (issue #78): no
+			// signature, key, alg, signed-at or hash; legacy_listing=false
+			// (the signing regime starts HERE, not for pre-migration rows).
+			"", "", "", nil, "", false).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	published, err := svc.Publish(ctx, "org-a", "user-a", PublishInput{
 		AgentID: source.ID, Name: "Support Bot", Description: "Helps customers", Tags: []string{"rag", "sql"},
@@ -355,11 +365,15 @@ func TestServiceOverPostgresStoreRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected browse page: %+v next=%q", page, next)
 	}
 
-	// Install into org-b: point lookup + atomic counter bump; the new agent
-	// lands in the REAL agents service under org-b.
+	// Install into org-b: point lookup + org install policy (unsigned NEW
+	// listing installs because org-b opted into allow_unsigned) + atomic
+	// counter bump; the new agent lands in the REAL agents service under org-b.
 	mock.ExpectQuery(regexp.QuoteMeta(sqlSelectListingBySlug)).
 		WithArgs("support-bot").
 		WillReturnRows(listingRows(published))
+	mock.ExpectQuery(regexp.QuoteMeta(sqlSelectOrgSettings)).
+		WithArgs("org-b").
+		WillReturnRows(sqlmock.NewRows([]string{"allow_unsigned", "updated_at"}).AddRow(true, tsA))
 	mock.ExpectQuery(regexp.QuoteMeta(sqlIncrementDownloadCount)).
 		WithArgs(published.ID).
 		WillReturnRows(sqlmock.NewRows([]string{"download_count"}).AddRow(1))

@@ -25,7 +25,8 @@ Current migration structure:
 - 019_sso_scim.sql
 - 020_connectors.sql
 - 021_canary_policy.sql
-- 023_auth_lifecycle.sql (issue #76; note: 022 is deliberately unused)
+- 022_marketplace_signing.sql
+- 023_auth_lifecycle.sql (issue #76)
 
 Migration conventions:
 

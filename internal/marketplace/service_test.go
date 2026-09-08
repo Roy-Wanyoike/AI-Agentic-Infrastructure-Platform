@@ -134,6 +134,11 @@ func TestRoundTripPublishBrowseGetInstallAcrossOrgs(t *testing.T) {
 		t.Fatalf("GetBySlug returned a different listing")
 	}
 
+	// Issue #78: unsigned NEW listings install only when the TARGET org opted
+	// into allow_unsigned (this round trip exercises the non-signing path).
+	if _, err := svc.SetAllowUnsigned(ctx, "org-b", true); err != nil {
+		t.Fatalf("SetAllowUnsigned(org-b): %v", err)
+	}
 	// Install into org-b: a NEW agent is created there from the snapshot.
 	result, err := svc.Install(ctx, "org-b", "support-bot-template")
 	if err != nil {
@@ -173,6 +178,9 @@ func TestRoundTripPublishBrowseGetInstallAcrossOrgs(t *testing.T) {
 	// the download counter accumulates across installs. The snapshot name
 	// collides with the source agent itself in org-a, so the deterministic
 	// suffix applies here too.
+	if _, err := svc.SetAllowUnsigned(ctx, "org-a", true); err != nil {
+		t.Fatalf("SetAllowUnsigned(org-a): %v", err)
+	}
 	selfResult, err := svc.Install(ctx, "org-a", "support-bot-template")
 	if err != nil {
 		t.Fatalf("self-install: %v", err)
@@ -290,6 +298,9 @@ func TestInstallNameCollisionDeterministicSuffix(t *testing.T) {
 		t.Fatalf("CreateAgentCtx(org-b): %v", err)
 	}
 
+	if _, err := svc.SetAllowUnsigned(ctx, "org-b", true); err != nil {
+		t.Fatalf("SetAllowUnsigned(org-b): %v", err)
+	}
 	first, err := svc.Install(ctx, "org-b", "copilot")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
@@ -341,6 +352,7 @@ func TestInstallCollisionExhaustion(t *testing.T) {
 	svc.items["l-1"] = &Listing{
 		ID: "l-1", PublisherOrgID: "org-a", Slug: "bot", Status: StatusPublished,
 		VersionSnapshot: `{"name":"Bot","instructions":"x","model":"m"}`,
+		LegacyListing:   true, // pre-signing row: exempt from the unsigned policy
 	}
 	svc.mu.Unlock()
 	if _, err := svc.Install(context.Background(), "org-b", "bot"); !errors.Is(err, ErrNameCollision) {
