@@ -308,6 +308,8 @@ func (a *app) routes() http.Handler {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/auth/register", registerHandler(a.authSvc))
 	apiMux.HandleFunc("/auth/login", loginHandler(a.authSvc))
+	// issue #76: auth lifecycle — server-side revocation + single-use refresh
+	registerAuthLifecycleRoutes(apiMux, a.authSvc, a.auditSvc)
 	apiMux.Handle("/agents", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionAgentsRead)(http.HandlerFunc(listAgentsHandler(a.agentsSvc)))))
 	// issue #55 e2e blocker fix: this registration used to be methodless,
 	// which CONFLICTED with the issue #49 lifecycle wildcards ("PUT /agents/{id}"
