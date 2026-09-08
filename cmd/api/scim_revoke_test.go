@@ -208,7 +208,15 @@ func TestSCIMTokenRevokeAudited(t *testing.T) {
 		t.Fatalf("audit resource must name the revoked token, got %q", entry.Resource)
 	}
 	if entry.Metadata != nil {
-		t.Fatalf("audit metadata must carry no credential material, got %v", entry.Metadata)
+		// The tamper-evident chain (audit service) owns exactly one
+		// reserved metadata key holding hashes + a version tag — service-
+		// owned evidence, never caller data. Any OTHER key would be caller
+		// material and must not appear on a credential-scoped action.
+		for k := range entry.Metadata {
+			if k != audit.ChainMetadataKey {
+				t.Fatalf("audit metadata must carry no credential material, got unexpected key %q in %v", k, entry.Metadata)
+			}
+		}
 	}
 	if raw, merr := json.Marshal(entry); merr != nil {
 		t.Fatalf("marshal audit entry: %v", merr)
