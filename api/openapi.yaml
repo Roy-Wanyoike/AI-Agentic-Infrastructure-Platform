@@ -6766,8 +6766,395 @@ paths:
             application/scim+json:
               schema:
                 $ref: '#/components/schemas/ScimError'
+# ---- wave-8 fragment: audit-chain.yaml (paths) ----
+  /audit/verify:
+    get:
+      operationId: verifyAuditChain
+      summary: Verify the tamper-evident audit chain of the caller's organization
+      description: |
+        Replays the org's audit trail positionally and checks every
+        service-owned chain stamp. `valid` is the actionable verdict; the
+        first inconsistent entry (if any) is named by `broken_at_index`.
+        Unstamped rows (written before this feature, or during a store
+        listing outage) participate in the hash progression but carry no
+        verifiable link; they are reported via `unstamped`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          schema: { type: string }
+          description: Must agree with the authenticated claims (404 otherwise).
+      responses:
+        "200":
+          description: Chain verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AudChainReport" }
+        "401": { $ref: "#/components/responses/AudUnauthorized" }
+        "403": { $ref: "#/components/responses/AudForbidden" }
+        "404": { $ref: "#/components/responses/AudNotFound" }
+  /audit/export:
+    get:
+      operationId: exportAuditTrail
+      summary: Export the org's audit trail as deterministic JSONL evidence
+      description: |
+        One JSON entry per line; the final line is the `chain_head` anchor
+        ({type, head_hash, length, chain_version}) also mirrored in the
+        `X-Audit-Head-Hash` response header. Park the bytes (or just the
+        anchor) in WORM storage: any later rewrite of the trail disagrees
+        with the anchor.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema: { type: string, enum: [jsonl] }
+        - name: organization_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: NDJSON evidence snapshot.
+          headers:
+            X-Audit-Head-Hash:
+              description: Head hash of the exported chain.
+              schema: { type: string }
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: JSONL entries; final line is the chain_head anchor.
+        "400": { $ref: "#/components/responses/AudBadRequest" }
+        "401": { $ref: "#/components/responses/AudUnauthorized" }
+        "403": { $ref: "#/components/responses/AudForbidden" }
+        "404": { $ref: "#/components/responses/AudNotFound" }
+
+# ---- wave-8 fragment: budgets.yaml (paths) ----
+  /budgets:
+    post:
+      operationId: createBudget
+      summary: Create a budget (org or agent scope)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BudgetInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budget: { $ref: "#/components/schemas/Budget" }
+        "400": { $ref: "#/components/responses/BudgetValidationError" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+        "404": { $ref: "#/components/responses/BudgetAgentNotFound" }
+        "409": { $ref: "#/components/responses/BudgetConflict" }
+    get:
+      operationId: listBudgets
+      summary: List budgets of the caller's organization
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: active
+          in: query
+          schema: { type: string, enum: ["true", "false"] }
+      responses:
+        "200":
+          description: Budget list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budgets:
+                    type: array
+                    items: { $ref: "#/components/schemas/Budget" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+  /budgets/evaluate:
+    get:
+      operationId: evaluateBudget
+      summary: Dry-run a budget decision (dashboard pre-flight)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agent_id
+          in: query
+          schema: { type: string }
+        - name: runs
+          in: query
+          schema: { type: string, description: Non-negative integer projection. }
+        - name: cost
+          in: query
+          schema: { type: string, description: Non-negative cost projection in cents. }
+      responses:
+        "200":
+          description: Decision (allowed or denied with reason budget_exceeded).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  decision: { $ref: "#/components/schemas/BudgetDecision" }
+        "400": { $ref: "#/components/responses/BudgetValidationError" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+  /budgets/{id}:
+    get:
+      operationId: getBudget
+      summary: Get one budget
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/BudgetId" }]
+      responses:
+        "200":
+          description: The budget.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budget: { $ref: "#/components/schemas/Budget" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+        "404": { $ref: "#/components/responses/BudgetAgentNotFound" }
+    put:
+      operationId: updateBudget
+      summary: Update limits / active flag
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/BudgetId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BudgetInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budget: { $ref: "#/components/schemas/Budget" }
+        "400": { $ref: "#/components/responses/BudgetValidationError" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+        "404": { $ref: "#/components/responses/BudgetAgentNotFound" }
+    delete:
+      operationId: deleteBudget
+      summary: Delete a budget
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/BudgetId" }]
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+        "404": { $ref: "#/components/responses/BudgetAgentNotFound" }
+
+# ---- wave-8 fragment: showback.yaml (paths) ----
+  /showback:
+    get:
+      operationId: getShowbackReport
+      summary: Per-agent usage/cost rollup for a period
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: group_by
+          in: query
+          schema: { type: string, enum: [agent, team], default: agent }
+      responses:
+        "200":
+          description: Report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShowbackReport" }
+        "400": { $ref: "#/components/responses/ShowbackBadRequest" }
+        "401": { $ref: "#/components/responses/ShowbackUnauthorized" }
+        "403": { $ref: "#/components/responses/ShowbackForbidden" }
+
+# ---- wave-8 fragment: mcp-trust.yaml (paths) ----
+  /mcp-servers/{id}/drift:
+    get:
+      operationId: getMcpServerDrift
+      summary: Drift history + current/pinned toolset hashes
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Trust state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpTrustState" }
+        "401": { $ref: "#/components/responses/McpTrustUnauthorized" }
+        "403": { $ref: "#/components/responses/McpTrustForbidden" }
+        "404": { $ref: "#/components/responses/McpTrustNotFound" }
+  /mcp-servers/{id}/pin:
+    post:
+      operationId: pinMcpServerToolset
+      summary: Pin the CURRENT cached toolset (rug-pull protection)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Pin state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpTrustState" }
+        "401": { $ref: "#/components/responses/McpTrustUnauthorized" }
+        "403": { $ref: "#/components/responses/McpTrustForbidden" }
+        "404": { $ref: "#/components/responses/McpTrustNotFound" }
+  /mcp-servers/{id}/pin/accept:
+    post:
+      operationId: acceptMcpServerDrift
+      summary: Adopt the fresh toolset as cache + pin (accept detected drift)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated trust state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpTrustState" }
+        "401": { $ref: "#/components/responses/McpTrustUnauthorized" }
+        "403": { $ref: "#/components/responses/McpTrustForbidden" }
+        "404": { $ref: "#/components/responses/McpTrustNotFound" }
+
+# ---- wave-8 fragment: agent-keys.yaml (paths) ----
+  /agents/{id}/keys:
+    post:
+      operationId: createAgentKey
+      summary: Mint an agent-scoped key (plaintext exactly once)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentKeyCreate" }
+      responses:
+        "201":
+          description: Minted. `value` is the ONLY delivery of the plaintext.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_key: { $ref: "#/components/schemas/AgentKey" }
+                  value: { type: string, description: Plaintext key; shown once. }
+        "401": { $ref: "#/components/responses/AgentKeyUnauthorized" }
+        "403": { $ref: "#/components/responses/AgentKeyForbidden" }
+        "404": { $ref: "#/components/responses/AgentKeyNotFound" }
+        "422": { $ref: "#/components/responses/AgentKeyValidation" }
+    get:
+      operationId: listAgentKeys
+      summary: List keys of one agent (no secrets)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Key list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_keys:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentKey" }
+        "401": { $ref: "#/components/responses/AgentKeyUnauthorized" }
+        "403": { $ref: "#/components/responses/AgentKeyForbidden" }
+        "404": { $ref: "#/components/responses/AgentKeyNotFound" }
+  /agents/{id}/keys/{keyID}:
+    patch:
+      operationId: updateAgentKey
+      summary: Update name / allow-list / expiry
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: keyID, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentKeyUpdate" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_key: { $ref: "#/components/schemas/AgentKey" }
+        "401": { $ref: "#/components/responses/AgentKeyUnauthorized" }
+        "403": { $ref: "#/components/responses/AgentKeyForbidden" }
+        "404": { $ref: "#/components/responses/AgentKeyNotFound" }
+        "422": { $ref: "#/components/responses/AgentKeyValidation" }
+    delete:
+      operationId: revokeAgentKey
+      summary: Revoke an agent key
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: keyID, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: boolean }
+        "401": { $ref: "#/components/responses/AgentKeyUnauthorized" }
+        "403": { $ref: "#/components/responses/AgentKeyForbidden" }
+        "404": { $ref: "#/components/responses/AgentKeyNotFound" }
+
 components:
   parameters:
+    # ---- wave-8 fragment: budgets.yaml (parameters) ----
+    BudgetId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+
     ApiKeysID:
       name: id
       in: path
@@ -7040,6 +7427,111 @@ components:
 
         '
   responses:
+    # ---- wave-8 fragment: audit-chain.yaml (responses) ----
+    AudUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AudError" }
+    AudForbidden:
+      description: Authenticated but not permitted (audit.read is OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AudError" }
+    AudNotFound:
+      description: Cross-tenant probe — no existence leak.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AudError" }
+    AudBadRequest:
+      description: Invalid request (e.g. format must be jsonl).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AudError" }
+
+    # ---- wave-8 fragment: budgets.yaml (responses) ----
+    BudgetValidationError:
+      description: Validation error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+    BudgetUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+    BudgetForbidden:
+      description: Not permitted for this tier.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+    BudgetAgentNotFound:
+      description: Unknown id or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+    BudgetConflict:
+      description: An active budget already exists for (scope, ref).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+
+    # ---- wave-8 fragment: showback.yaml (responses) ----
+    ShowbackBadRequest:
+      description: Invalid range or group_by.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ShowbackError" }
+    ShowbackUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ShowbackError" }
+    ShowbackForbidden:
+      description: Not permitted (billing read tier).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ShowbackError" }
+
+    # ---- wave-8 fragment: mcp-trust.yaml (responses) ----
+    McpTrustUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/McpTrustError" }
+    McpTrustForbidden:
+      description: Not permitted for this tier.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/McpTrustError" }
+    McpTrustNotFound:
+      description: Unknown id or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/McpTrustError" }
+
+    # ---- wave-8 fragment: agent-keys.yaml (responses) ----
+    AgentKeyUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AgentKeyError" }
+    AgentKeyForbidden:
+      description: Not permitted (agents.write is OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AgentKeyError" }
+    AgentKeyNotFound:
+      description: Unknown agent/key or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AgentKeyError" }
+    AgentKeyValidation:
+      description: Validation error (blank name, bad expiry, empty allow-list entries).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AgentKeyError" }
+
     ApiKeyUnauthorized:
       description: Missing or invalid credentials.
       content:
@@ -13059,6 +13551,180 @@ components:
                 VALIDATION_ERROR.
             message:
               type: string
+
+      # ---- wave-8 fragment: audit-chain.yaml (schemas) ----
+    AudError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    AudChainReport:
+      type: object
+      required: [valid, length]
+      properties:
+        valid: { type: boolean }
+        length: { type: integer, description: Number of entries in the org trail. }
+        head_hash: { type: string, description: What the data hashes to now. }
+        expected_head_hash:
+          type: string
+          description: The head the stamps claim (rendered on mismatch).
+        broken_at_index:
+          type: integer
+          description: Index of the first inconsistent entry (omitted when valid).
+        unstamped:
+          type: integer
+          description: Rows participating in the chain without a verifiable stamp.
+
+      # ---- wave-8 fragment: budgets.yaml (schemas) ----
+    BudgetError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    BudgetInput:
+      type: object
+      required: [scope]
+      properties:
+        scope: { type: string, enum: [organization, agent] }
+        ref_id: { type: string, description: Agent id; required for scope=agent. }
+        period: { type: string, enum: [monthly], default: monthly }
+        limit_runs: { type: integer, description: 0 = unlimited. }
+        limit_cost_cents: { type: integer, description: 0 = unlimited. }
+        is_active: { type: boolean, default: true }
+    Budget:
+      type: object
+      properties:
+        id: { type: string }
+        scope: { type: string, enum: [organization, agent] }
+        ref_id: { type: string }
+        period: { type: string }
+        limit_runs: { type: integer }
+        limit_cost_cents: { type: integer }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    BudgetDecision:
+      type: object
+      properties:
+        allowed: { type: boolean }
+        reason: { type: string, description: budget_exceeded when denied. }
+        denied_budget_id: { type: string }
+        denied_scope: { type: string }
+        message: { type: string }
+
+      # ---- wave-8 fragment: showback.yaml (schemas) ----
+    ShowbackError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    ShowbackRow:
+      type: object
+      properties:
+        scope_ref: { type: string, description: Agent id. }
+        runs: { type: integer }
+        tool_calls: { type: integer }
+        tokens_in: { type: integer }
+        tokens_out: { type: integer }
+        cost_cents: { type: number }
+    ShowbackReport:
+      type: object
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        group_by: { type: string, enum: [agent, team] }
+        rows:
+          type: array
+          items: { $ref: "#/components/schemas/ShowbackRow" }
+        notes:
+          type: array
+          items: { type: string }
+          description: Honest limitations of this report (team fallback etc.).
+
+      # ---- wave-8 fragment: mcp-trust.yaml (schemas) ----
+    McpTrustError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    McpTrustDriftEvent:
+      type: object
+      properties:
+        at: { type: string, format: date-time }
+        old_hash: { type: string }
+        new_hash: { type: string }
+        added: { type: array, items: { type: string } }
+        removed: { type: array, items: { type: string } }
+        changed: { type: array, items: { type: string } }
+    McpTrustState:
+      type: object
+      properties:
+        mcp_server:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            toolset_hash: { type: string }
+            pinned_toolset_hash: { type: string }
+            last_drift_at: { type: string, format: date-time }
+        toolset_hash: { type: string }
+        pinned_toolset_hash: { type: string }
+        last_drift_at: { type: string, format: date-time }
+        drift_history:
+          type: array
+          items: { $ref: "#/components/schemas/McpTrustDriftEvent" }
+
+      # ---- wave-8 fragment: agent-keys.yaml (schemas) ----
+    AgentKeyError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    AgentKeyCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        tool_allow_list:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: Omitted/null = all tools; empty = none.
+        expires_at: { type: string, format: date-time, nullable: true }
+    AgentKeyUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        tool_allow_list: { type: array, items: { type: string }, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+    AgentKey:
+      type: object
+      properties:
+        id: { type: string }
+        organization_id: { type: string }
+        agent_id: { type: string }
+        name: { type: string }
+        key_prefix: { type: string, description: Display prefix (ak_...). }
+        tool_allow_list: { type: array, items: { type: string }, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
 
   requestBodies: {}
   headers: {}

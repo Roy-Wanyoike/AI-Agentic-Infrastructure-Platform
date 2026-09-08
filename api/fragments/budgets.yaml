@@ -1,0 +1,210 @@
+# AgentOS API — OpenAPI 3.1 fragment for budget gates (wave-8: FinOps).
+#
+# Merge target: api/openapi.yaml. Paths WITHOUT the /api/v1 prefix.
+#
+# Contract notes:
+#   * Budgets are per-scope (organization|agent) monthly limits on runs and
+#     cost (cents). At most one ACTIVE budget per (scope, ref).
+#   * Denials share the quota-enforcement contract: HTTP 402 with
+#     machine-readable reason "budget_exceeded", gated by
+#     AGENTOS_BILLING_ENFORCEMENT (default off = observe-only).
+#   * RBAC: writes users.manage (OWNER/ADMIN); reads runs.execute (MEMBER+).
+paths:
+  /budgets:
+    post:
+      operationId: createBudget
+      summary: Create a budget (org or agent scope)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BudgetInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budget: { $ref: "#/components/schemas/Budget" }
+        "400": { $ref: "#/components/responses/BudgetValidationError" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+        "404": { $ref: "#/components/responses/BudgetAgentNotFound" }
+        "409": { $ref: "#/components/responses/BudgetConflict" }
+    get:
+      operationId: listBudgets
+      summary: List budgets of the caller's organization
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: active
+          in: query
+          schema: { type: string, enum: ["true", "false"] }
+      responses:
+        "200":
+          description: Budget list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budgets:
+                    type: array
+                    items: { $ref: "#/components/schemas/Budget" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+  /budgets/evaluate:
+    get:
+      operationId: evaluateBudget
+      summary: Dry-run a budget decision (dashboard pre-flight)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agent_id
+          in: query
+          schema: { type: string }
+        - name: runs
+          in: query
+          schema: { type: string, description: Non-negative integer projection. }
+        - name: cost
+          in: query
+          schema: { type: string, description: Non-negative cost projection in cents. }
+      responses:
+        "200":
+          description: Decision (allowed or denied with reason budget_exceeded).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  decision: { $ref: "#/components/schemas/BudgetDecision" }
+        "400": { $ref: "#/components/responses/BudgetValidationError" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+  /budgets/{id}:
+    get:
+      operationId: getBudget
+      summary: Get one budget
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/BudgetId" }]
+      responses:
+        "200":
+          description: The budget.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budget: { $ref: "#/components/schemas/Budget" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+        "404": { $ref: "#/components/responses/BudgetAgentNotFound" }
+    put:
+      operationId: updateBudget
+      summary: Update limits / active flag
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/BudgetId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BudgetInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  budget: { $ref: "#/components/schemas/Budget" }
+        "400": { $ref: "#/components/responses/BudgetValidationError" }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+        "404": { $ref: "#/components/responses/BudgetAgentNotFound" }
+    delete:
+      operationId: deleteBudget
+      summary: Delete a budget
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/BudgetId" }]
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/BudgetUnauthorized" }
+        "403": { $ref: "#/components/responses/BudgetForbidden" }
+        "404": { $ref: "#/components/responses/BudgetAgentNotFound" }
+components:
+  parameters:
+    BudgetId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    BudgetValidationError:
+      description: Validation error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+    BudgetUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+    BudgetForbidden:
+      description: Not permitted for this tier.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+    BudgetAgentNotFound:
+      description: Unknown id or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+    BudgetConflict:
+      description: An active budget already exists for (scope, ref).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BudgetError" }
+  schemas:
+    BudgetError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    BudgetInput:
+      type: object
+      required: [scope]
+      properties:
+        scope: { type: string, enum: [organization, agent] }
+        ref_id: { type: string, description: Agent id; required for scope=agent. }
+        period: { type: string, enum: [monthly], default: monthly }
+        limit_runs: { type: integer, description: 0 = unlimited. }
+        limit_cost_cents: { type: integer, description: 0 = unlimited. }
+        is_active: { type: boolean, default: true }
+    Budget:
+      type: object
+      properties:
+        id: { type: string }
+        scope: { type: string, enum: [organization, agent] }
+        ref_id: { type: string }
+        period: { type: string }
+        limit_runs: { type: integer }
+        limit_cost_cents: { type: integer }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    BudgetDecision:
+      type: object
+      properties:
+        allowed: { type: boolean }
+        reason: { type: string, description: budget_exceeded when denied. }
+        denied_budget_id: { type: string }
+        denied_scope: { type: string }
+        message: { type: string }
