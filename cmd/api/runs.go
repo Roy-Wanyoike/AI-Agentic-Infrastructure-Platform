@@ -305,6 +305,13 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.Hand
 		if !enforceQuota(w, r, req.OrganizationID, req.AgentID, auditSvc) {
 			return
 		}
+		// wave-8 issue C (6-6c): budget gate AFTER the quota gate —
+		// additive billing enforcement under the SAME
+		// AGENTOS_BILLING_ENFORCEMENT flag; see enforceBudget in
+		// budgets.go for the decision matrix.
+		if !enforceBudget(w, r, req.OrganizationID, req.AgentID, req.EstimatedCostCents, auditSvc) {
+			return
+		}
 		var runID string
 		var rs *runs.Service
 		if runsServiceVar != nil {
