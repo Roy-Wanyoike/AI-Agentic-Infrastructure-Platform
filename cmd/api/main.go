@@ -413,6 +413,11 @@ func (a *app) routes() http.Handler {
 	registerBillingRoutes(apiMux, a.billingSvc, a.authSvc, a.apiKeysSvc)
 	// issue #57: usage meters + margin + optional Stripe usage-record sync
 	registerUsageMetersRoutes(apiMux, a.billingSvc, billing.NewRunsMeterSource(a.runsSvc, a.runsSvc), billing.NewStripeSyncerFromEnv(a.logr), a.authSvc, a.apiKeysSvc, a.logr)
+	// wave-8 issue C (6-6c): per-scope budget gates + dry-run evaluate; also
+	// assigns budgetServiceVar for the create-run budget gate (enforceBudget)
+	registerBudgetRoutes(apiMux, a.db, billing.NewRunsConsumptionSource(a.runsSvc), a.agentsSvc, a.authSvc, a.apiKeysSvc)
+	// wave-8 issue C (6-6c): showback/chargeback reports over the runs ledger
+	registerShowbackRoutes(apiMux, billing.NewRunsShowbackSource(a.runsSvc), a.authSvc, a.apiKeysSvc)
 	// issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)
 	registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #29: OIDC SSO browser flow + SCIM 2.0 provisioning

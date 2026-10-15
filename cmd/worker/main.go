@@ -203,6 +203,9 @@ func main() {
 	// same durable runs.cost_cents aggregates the API's billing service
 	// uses, so both processes decide from one source of truth.
 	var quotaGate *quotaEnforcer
+	// wave-8 issue C (6-6c): worker-side budget enforcement — additive
+	// defense in depth AFTER the quota gate, same durable-state precondition.
+	var budgetGate *budgetEnforcer
 	if billing.EnforcementFromEnv() {
 		if quotaDB != nil {
 			quotaRuns := runs.NewServiceWithStore(runs.NewPostgresStore(quotaDB))
@@ -213,7 +216,15 @@ func main() {
 				audit: audit.NewServiceWithStore(audit.NewPostgresStore(quotaDB)),
 				log:   logr,
 			}
+			budgetGate = &budgetEnforcer{
+				budgets: billing.NewBudgetServiceWithStore(billing.NewBudgetPostgresStore(quotaDB),
+					billing.NewRunsConsumptionSource(quotaRuns)),
+				runs:  quotaRuns,
+				audit: audit.NewServiceWithStore(audit.NewPostgresStore(quotaDB)),
+				log:   logr,
+			}
 			logr.Info("worker quota enforcement enabled", "flag", billing.EnforcementEnvVar)
+			logr.Info("worker budget enforcement enabled", "flag", billing.EnforcementEnvVar)
 		} else {
 			logr.Warn("worker quota enforcement disabled: AGENTOS_BILLING_ENFORCEMENT is set but no Postgres DSN is configured")
 		}
@@ -288,6 +299,22 @@ func main() {
 					apiBase = "http://localhost:8080"
 				}
 				payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusFailed), "output": billing.ReasonQuotaExceeded, "ts": time.Now().UTC().Format(time.RFC3339)}}
+				_ = postEventWithRetries(apiBase, runID, payload)
+			}()
+			return nil
+		}
+		// wave-8 issue C (6-6c): pre-execution budget gate AFTER the
+		// quota gate — same denial posture, reason budget_exceeded.
+		if !budgetGate.allow(ctx, orgID, runID, agentID) {
+			if checkpoint != nil {
+				_ = wfSvc.FinishNodeRun(ctx, checkpoint.OrganizationID, checkpoint.ID, workflows.RunStatusFailed, workflowCodeBudgetExceeded)
+			}
+			go func() {
+				apiBase := os.Getenv("AGENTOS_API")
+				if apiBase == "" {
+					apiBase = "http://localhost:8080"
+				}
+				payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": string(runs.StatusFailed), "output": billing.ReasonBudgetExceeded, "ts": time.Now().UTC().Format(time.RFC3339)}}
 				_ = postEventWithRetries(apiBase, runID, payload)
 			}()
 			return nil
