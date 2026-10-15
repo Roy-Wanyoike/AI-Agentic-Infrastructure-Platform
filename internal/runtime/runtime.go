@@ -28,11 +28,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agentos/internal/agents"
 	"agentos/internal/apikeys"
 	"agentos/internal/audit"
+	"agentos/internal/events"
 	"agentos/internal/models"
 	"agentos/internal/observability"
 	"agentos/internal/policies"
@@ -62,6 +64,13 @@ const (
 const (
 	StepTypeModel = "model"
 	StepTypeTool  = "tool"
+	// StepTypeBudget marks a token-budget annotation step (issue #107): a
+	// non-execution record that persists a BudgetSnapshot (warn or
+	// exceeded) on the run timeline so budget decisions are auditable.
+	StepTypeBudget = "budget"
+	// StepTypeCancelled marks the final partial-results record of a
+	// gracefully cancelled run (issue #107, see shutdown.go).
+	StepTypeCancelled = "cancelled"
 )
 
 // Step statuses recorded through the StepRecorder.
@@ -206,6 +215,27 @@ type Runner struct {
 	// writes a best-effort audit row (action agentkey.tool_denied). See
 	// WithAgentKeyAudit / SetAgentKeyAudit.
 	agentKeyAudit *audit.Service
+	// eventPub is optional (nil-safe DI, issue #107): when wired, run
+	// lifecycle events (run.cancelled, run.token_budget_exceeded) are
+	// published best-effort through the platform event bus. See
+	// WithEventPublisher.
+	eventPub events.Publisher
+	// runtimeCfg + agentCfgSrc + summarizer implement the issue #107 per-agent
+	// runtime configuration: runner-wide defaults (env-configurable in the
+	// worker) optionally overridden per agent through a raw runtime_config
+	// JSON source, plus an optional model-backed history summarizer
+	// (mechanical default). See WithRuntimeConfig / WithAgentConfigSource /
+	// WithHistorySummarizer.
+	runtimeCfg  RuntimeConfig
+	agentCfgSrc func(agentID string) json.RawMessage
+	summarizer  Summarizer
+	// Shutdown gate (issue #107): stopping refuses new runs
+	// (ErrShuttingDown); inflight counts executing runs; drained is the
+	// one-shot channel Shutdown waits on. Guarded by gateMu.
+	gateMu   sync.Mutex
+	stopping bool
+	inflight int
+	drained  chan struct{}
 }
 
 // Option configures a Runner.
@@ -267,6 +297,42 @@ func WithToolTimeout(d time.Duration) Option {
 	}
 }
 
+// WithEventPublisher attaches the platform event seam (issue #107): run
+// lifecycle events (run.cancelled, run.token_budget_exceeded) are published
+// best-effort — a nil publisher, a context without a tenant scope or a
+// publish failure never affects execution. Passing nil keeps the legacy
+// event-free behavior (nil-safe DI).
+func WithEventPublisher(pub events.Publisher) Option {
+	return func(r *Runner) { r.eventPub = pub }
+}
+
+// WithRuntimeConfig sets the runner-wide runtime configuration (issue #107):
+// the conversation-history and token-budget defaults every run starts from.
+// Per-agent overrides (WithAgentConfigSource) layer on top; unset fields fall
+// back to the safe defaults (see RuntimeConfig.WithDefaults).
+func WithRuntimeConfig(cfg RuntimeConfig) Option {
+	return func(r *Runner) { r.runtimeCfg = cfg }
+}
+
+// WithAgentConfigSource attaches the per-agent runtime_config document
+// source (issue #107): for every run the runner asks the source
+// for the agent's raw runtime_config JSON and overlays a VALID override on
+// the runner-wide defaults. A nil source, an absent document or an invalid
+// document falls back to the runner-wide configuration — bad config must
+// never break a run. The source is consulted once per run (before the loop
+// starts) and must be safe for concurrent use.
+func WithAgentConfigSource(src func(agentID string) json.RawMessage) Option {
+	return func(r *Runner) { r.agentCfgSrc = src }
+}
+
+// WithHistorySummarizer injects the Summarizer behind the summarize_older
+// truncation strategy (issue #107). Nil keeps the deterministic
+// MechanicalSummarizer default; a failing summarizer degrades to the
+// mechanical summary (see ConversationHistory.Prompt).
+func WithHistorySummarizer(s Summarizer) Option {
+	return func(r *Runner) { r.summarizer = s }
+}
+
 // NewRunner builds a Runner with default limits and offline behavior. The
 // signature is unchanged from earlier versions so existing callers compile.
 func NewRunner(agentService *agents.Service, toolRegistry *tools.Registry) *Runner {
@@ -308,6 +374,25 @@ func (r *Runner) SetAgentKeyAudit(svc *audit.Service) {
 		return
 	}
 	r.agentKeyAudit = svc
+}
+
+// resolveRuntimeConfig computes the effective runtime configuration for one
+// run (issue #107): the runner-wide defaults (WithRuntimeConfig / the
+// worker's RuntimeConfigFromEnv) overlaid with the agent's runtime_config
+// document read through WithAgentConfigSource, then the safe defaults are
+// applied to still-unset fields. A nil source, an absent document or an
+// invalid document keeps the base configuration untouched (bad config must
+// never break a run).
+func (r *Runner) resolveRuntimeConfig(agentID string) RuntimeConfig {
+	cfg := r.runtimeCfg
+	if r.agentCfgSrc != nil {
+		if raw := r.agentCfgSrc(agentID); len(strings.TrimSpace(string(raw))) > 0 {
+			if override, err := ParseRuntimeConfig(raw); err == nil {
+				cfg = mergeRuntimeConfig(cfg, override)
+			}
+		}
+	}
+	return cfg.WithDefaults()
 }
 
 // NewRunnerWithOptions builds a Runner with options applied.
@@ -387,6 +472,14 @@ func (r *Runner) RunWithID(ctx context.Context, runID, agentID, input string) (*
 	if strings.TrimSpace(runID) == "" {
 		runID = newRunID()
 	}
+
+	// Issue #107 shutdown gate: a runner that stopped accepting new runs
+	// (Stop / Shutdown) refuses here with ErrShuttingDown; every other
+	// path releases the in-flight slot on the way out (defer).
+	if err := r.begin(); err != nil {
+		return nil, err
+	}
+	defer r.finish()
 
 	agent, ok := r.agentService.Get(agentID)
 	if !ok {
@@ -474,10 +567,19 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 	}
 
 	// Provider mode: bounded model/tool loop.
+	//
+	// Issue #107: the loop is now configuration-driven — the per-agent
+	// runtime config sizes the conversation history sent to the provider
+	// (ConversationHistory) and enforces the cumulative token budget
+	// (TokenBudget); caller cancellation unwinds gracefully through
+	// unwindCancelled (shutdown.go). Config resolution happens once, before
+	// the loop starts.
+	cfg := r.resolveRuntimeConfig(agent.ID)
+	budget := NewTokenBudget(cfg.TokenBudget)
+	history := NewConversationHistory(cfg.ConversationHistory.MaxTokens, cfg.ConversationHistory.Strategy)
+	history.Summarizer = r.summarizer
 	systemPrompt := buildSystemPrompt(agent, r.toolRegistry)
-	messages := []models.Message{
-		{Role: "user", Content: input},
-	}
+	history.Append(models.Message{Role: "user", Content: input})
 
 	type lastCall struct {
 		tool string
@@ -491,28 +593,37 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			if errors.Is(err, context.DeadlineExceeded) {
 				return "", fmt.Errorf("%w: %v", ErrMaxRuntimeExceeded, err)
 			}
-			return "", err // caller cancelled the run
+			// Issue #107: graceful cancellation between steps — no
+			// step is in flight, so unwind with the partial state.
+			return "", r.unwindCancelled(ctx, run, err)
 		}
 		run.Steps = stepIndex
 
+		promptView := history.Prompt(ctx)
 		callStart := time.Now()
 		resp, err := r.provider.Complete(ctx, models.CompletionRequest{
 			System:   systemPrompt,
-			Messages: messages,
+			Messages: promptView,
 			Model:    agent.Model,
 		})
 		modelStep := Step{
 			Index:      stepIndex,
 			Type:       StepTypeModel,
 			Name:       r.provider.Name(),
-			Input:      truncateForRecord(lastUserContent(messages), 512),
+			Input:      truncateForRecord(lastUserContent(promptView), 512),
 			DurationMS: time.Since(callStart).Milliseconds(),
 		}
+		// Issue #107: account the provider-reported usage into the
+		// cumulative budget as soon as a response (with usage) exists;
+		// the classification outcome is acted on in the success path
+		// below (a failed call returns before any budget decision).
+		var bstate BudgetState
 		if resp != nil {
 			modelStep.TokenUsage = resp.Usage
 			run.Tokens.PromptTokens += resp.Usage.PromptTokens
 			run.Tokens.CompletionTokens += resp.Usage.CompletionTokens
 			run.Tokens.TotalTokens += resp.Usage.TotalTokens
+			bstate = budget.Record(resp.Usage)
 		}
 		if err != nil {
 			modelStep.Status = StepFailed
@@ -523,6 +634,12 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			if errors.Is(err, context.DeadlineExceeded) {
 				return "", fmt.Errorf("%w: %v", ErrMaxRuntimeExceeded, err)
 			}
+			// Issue #107: a caller cancellation fails the CURRENT step
+			// (recorded above) and then unwinds gracefully — partial
+			// results marker + run.cancelled event + typed outcome.
+			if isCancellation(err) {
+				return "", r.unwindCancelled(ctx, run, err)
+			}
 			return "", fmt.Errorf("runtime: model call failed: %w", err)
 		}
 
@@ -530,6 +647,20 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 		modelStep.Status = StepSucceeded
 		modelStep.Output = truncateForRecord(text, 512)
 		r.record(ctx, run.ID, modelStep)
+
+		// Issue #107: token budget outcomes. The warn annotation lands
+		// once when the alert threshold is first crossed; a violation
+		// records the failed annotation, publishes the event and
+		// hard-stops the loop with the typed error (run status mapping
+		// unchanged — FAILED through the existing failure path).
+		if bstate.Alert != nil {
+			r.record(ctx, run.ID, budgetAnnotationStep(stepIndex, *bstate.Alert, StepSucceeded, ""))
+		}
+		if bstate.Exceeded != nil {
+			r.record(ctx, run.ID, budgetAnnotationStep(stepIndex, bstate.Snapshot, StepFailed, bstate.Exceeded.Error()))
+			r.emitRunEvent(ctx, events.EventRunTokenBudgetExceeded, run.ID, budgetEventPayload(run, bstate.Exceeded))
+			return "", bstate.Exceeded
+		}
 
 		toolName, toolArgs, isTool := parseToolCall(text)
 		if !isTool {
@@ -584,12 +715,49 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			r.record(ctx, run.ID, toolStep)
 		}
 
-		messages = append(messages,
+		// Issue #107: a cancellation that landed during the tool call —
+		// the current step completed above, so unwind gracefully now
+		// instead of feeding the observation back into a dead run.
+		if cerr := ctx.Err(); cerr != nil && isCancellation(cerr) {
+			return "", r.unwindCancelled(ctx, run, cerr)
+		}
+
+		history.Append(
 			models.Message{Role: "assistant", Content: text},
 			models.Message{Role: "tool", Name: toolName, Content: observation},
 		)
 	}
 	return "", fmt.Errorf("%w: budget was %d steps", ErrMaxStepsExceeded, r.maxSteps)
+}
+
+// budgetAnnotationStep builds the dedicated "budget" annotation step that
+// persists a BudgetSnapshot on the run timeline (issue #107): warn
+// annotations carry a succeeded status, violations a failed status with the
+// typed error text. The snapshot JSON rides in the step Output so budget
+// data is persisted with the run trace.
+func budgetAnnotationStep(index int, snap BudgetSnapshot, status, errMsg string) Step {
+	encoded, _ := json.Marshal(snap)
+	return Step{
+		Index:  index,
+		Type:   StepTypeBudget,
+		Name:   "token_budget",
+		Status: status,
+		Output: string(encoded),
+		Error:  errMsg,
+	}
+}
+
+// budgetEventPayload renders the run.token_budget_exceeded event payload
+// (issue #107): enough to alert and attribute without leaking prompts.
+func budgetEventPayload(run *Run, violation *TokenBudgetExceededError) map[string]any {
+	return map[string]any{
+		"run_id":    run.ID,
+		"agent_id":  run.AgentID,
+		"steps":     run.Steps,
+		"dimension": violation.Dimension,
+		"used":      violation.Used,
+		"limit":     violation.Limit,
+	}
 }
 
 // executeTool runs one tool call with the configured timeout, preferring the

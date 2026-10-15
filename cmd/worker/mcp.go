@@ -29,6 +29,7 @@ import (
 
 	"agentos/internal/agents"
 	"agentos/internal/audit"
+	"agentos/internal/events"
 	"agentos/internal/mcp"
 	"agentos/internal/models"
 	"agentos/internal/observability"
@@ -48,9 +49,12 @@ type orgRunnerCache struct {
 	recorder      runtime.StepRecorder
 	metrics       *observability.Metrics
 	enforcer      *policies.Enforcer
-	agentKeyAudit *audit.Service // wave-8: agent-key tool-denial audit sink (nil-safe)
+	agentKeyAudit *audit.Service        // wave-8: agent-key tool-denial audit sink (nil-safe)
+	runtimeCfg    runtime.RuntimeConfig // issue #107: runner-wide conversation-history/budget defaults (nil-safe)
+	eventPub      events.Publisher      // issue #107: run lifecycle event seam (nil-safe)
 	sandbox       tools.SandboxExecutor
 	mcpReg        *mcp.Registry
+	stopped       bool // issue #107: set by stopAll; runners built afterwards refuse runs
 	logr          *slog.Logger
 }
 
@@ -119,9 +123,16 @@ func (c *orgRunnerCache) forOrg(ctx context.Context, orgID string) *runtime.Runn
 		runtime.WithProvider(c.provider),
 		runtime.WithStepRecorder(c.recorder),
 		runtime.WithMetrics(c.metrics),
+		runtime.WithRuntimeConfig(c.runtimeCfg), // issue #107: zero value = safe defaults
+		runtime.WithEventPublisher(c.eventPub),  // issue #107: nil = event-free legacy behavior
 	)
 	runner.SetPolicyEnforcer(c.enforcer)
 	runner.SetAgentKeyAudit(c.agentKeyAudit) // wave-8: best-effort agentkey.tool_denied rows
+	if c.stopped {
+		// issue #107: the cache is draining (or drained) — a runner built
+		// after stopAll must refuse runs exactly like the stopped ones.
+		runner.Stop()
+	}
 	c.runners[orgID] = runner
 	return runner
 }
@@ -156,4 +167,56 @@ func (c *orgRunnerCache) setAgentKeyAudit(svc *audit.Service) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.agentKeyAudit = svc
+}
+
+// setRuntimeConfig wires the runner-wide runtime configuration (issue #107:
+// conversation history + token budget defaults from the AGENTOS_RUNTIME_*
+// environment variables) for every runner built by this cache. Call once at
+// startup before task consumption; guarded by the cache mutex.
+func (c *orgRunnerCache) setRuntimeConfig(cfg runtime.RuntimeConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.runtimeCfg = cfg
+}
+
+// setEventPublisher wires the run lifecycle event seam (issue #107) for every
+// runner built by this cache. Call once at startup before task consumption;
+// guarded by the cache mutex.
+func (c *orgRunnerCache) setEventPublisher(pub events.Publisher) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.eventPub = pub
+}
+
+// stopAll marks the cache as shutting down (issue #107): every cached runner
+// refuses new runs from now on (runtime.ErrShuttingDown) and runners built
+// afterwards are born stopped. Non-blocking; see shutdownAll for the
+// draining variant. Idempotent.
+func (c *orgRunnerCache) stopAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stopped = true
+	for _, r := range c.runners {
+		r.Stop()
+	}
+}
+
+// shutdownAll drains the cache (issue #107): stopAll semantics plus a bounded
+// wait (ctx, the worker's grace period) for every cached runner's in-flight
+// runs. Returns the first timeout error so the caller logs the runs it could
+// not wait for.
+func (c *orgRunnerCache) shutdownAll(ctx context.Context) error {
+	c.stopAll()
+	c.mu.Lock()
+	runners := make([]*runtime.Runner, 0, len(c.runners))
+	for _, r := range c.runners {
+		runners = append(runners, r)
+	}
+	c.mu.Unlock()
+	for _, r := range runners {
+		if err := r.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
