@@ -1,0 +1,45 @@
+AgentOS release "{{ .Release.Name }}" deployed to namespace "{{ .Release.Namespace }}" (chart {{ .Chart.Name }}-{{ .Chart.Version }}).
+
+1. Check rollout status:
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "agentos.componentName" (list . "api") }}
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "agentos.componentName" (list . "web") }}
+
+2. Migrations ran as a pre-install/pre-upgrade hook Job:
+   kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/instance={{ .Release.Name }}
+   Re-run manually if needed:
+   kubectl -n {{ .Release.Namespace }} delete job/{{ include "agentos.componentName" (list . "migrate") }} && \
+     helm upgrade {{ .Release.Name }} <chart> ... (hook re-creates it)
+
+3. {{- if .Values.secrets.create }} WARNING: the rendered Secret contains PLACEHOLDER
+   values (CHANGEME). Real deployments must set every placeholder before traffic
+   is served -- the API refuses to boot in production without a real JWT_SECRET
+   (issue #55) and AGENTOS_SECRETS_MASTER_KEY (issue #25).
+   Prefer secrets.create=false + secrets.existingSecret backed by sealed-secrets
+   or external-secrets. Expected keys in the existing Secret:
+     databaseUrl, jwtSecret, secretsMasterKey, apiKey, openaiApiKey,
+     fallbackApiKey, postgresPassword.
+   {{- else }} Secrets are provided via existingSecret "{{ include "agentos.secretName" . }}"
+   (sealed-secrets/external-secrets). Nothing to do.
+   {{- end }}
+
+4. Access the dashboard:
+   {{- if .Values.ingress.enabled }}
+   Ingress host: {{ .Values.ingress.host }}{{ if not .Values.ingress.tls.enabled }} (TLS DISABLED -- enable .Values.ingress.tls before real use){{ end }}
+   curl https://{{ .Values.ingress.host }}/healthz   # proxied to the API
+   {{- else }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agentos.componentName" (list . "web") }} 8080:{{ .Values.web.port }}
+   # then open http://localhost:8080
+   {{- end }}
+
+5. {{- if and .Values.postgresql.deploy }} NOTICE: the in-cluster Postgres/Redis/NATS
+   StatefulSets are DEV/SMALL-STAGE reference deployments (single replica, no
+   backups). For production use managed services (deploy/terraform) and set
+   postgresql/redis/nats .deploy=false.
+   {{- else }} Managed data tier in use: Postgres={{ if .Values.postgresql.deploy }}in-cluster{{ else }}external{{ end }},
+   Redis={{ if .Values.redis.deploy }}in-cluster{{ else }}{{ .Values.redis.externalAddr }}{{ end }},
+   NATS={{ if .Values.nats.deploy }}in-cluster{{ else }}{{ .Values.nats.externalUrl }}{{ end }}.
+   {{- end }}
+
+6. Health endpoints are the REAL ones from cmd/api/main.go: /healthz (liveness)
+   and /readyz (readiness). The worker intentionally has no HTTP probes (it
+   runs no HTTP server -- Dockerfile.worker).

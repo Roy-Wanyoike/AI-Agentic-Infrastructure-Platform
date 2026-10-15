@@ -1,0 +1,117 @@
+{{- if .Values.nats.deploy }}
+{{- /* REFERENCE NATS StatefulSet (JetStream) -- DEV / SMALL-STAGE ONLY.
+     Flags mirror docker-compose.yml (-js -m 8222 -sd /data). PRODUCTION: see
+     deploy/terraform/modules/nats/README.md -- run the nats-server helm chart
+     (3-node JetStream cluster) or managed NATS, then set nats.deploy=false +
+     nats.externalUrl. The :8222 /healthz monitoring endpoint is REAL
+     (docker-compose.prod.yml healthchecks it). */ -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentos.componentName" (list . "nats") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.componentSelectorLabels" (list . "nats") | nindent 4 }}
+spec:
+  serviceName: {{ include "agentos.componentName" (list . "nats") }}-hs
+  replicas: 1 # REFERENCE ONLY
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agentos.componentName" (list . "nats") }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentos.componentSelectorLabels" (list . "nats") | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nats
+          image: {{ .Values.nats.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["nats-server", "-js", "-m", "8222", "-sd", "/data"]
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitor
+              containerPort: 8222
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          resources:
+            {{- toYaml .Values.nats.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.nats.storage }}
+        {{- with .Values.nats.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentos.componentName" (list . "nats") }}-hs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.componentSelectorLabels" (list . "nats") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: {{ include "agentos.componentName" (list . "nats") }}
+  ports:
+    - name: client
+      port: 4222
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentos.componentName" (list . "nats") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.componentSelectorLabels" (list . "nats") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "agentos.componentName" (list . "nats") }}
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client
+{{- end }}

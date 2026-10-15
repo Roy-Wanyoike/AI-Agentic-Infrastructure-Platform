@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentos.configName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+data:
+  APP_ENV: {{ .Values.config.APP_ENV | quote }}
+  API_PORT: "8080"
+  AGENTOS_QUEUE: {{ .Values.config.AGENTOS_QUEUE | quote }}
+  REDIS_QUEUE_KEY: {{ .Values.config.REDIS_QUEUE_KEY | quote }}
+  {{- if .Values.redis.deploy }}
+  REDIS_ADDR: "{{ include "agentos.componentName" (list . "redis") }}:6379"
+  {{- else }}
+  {{- if .Values.redis.externalAddr }}
+  REDIS_ADDR: {{ .Values.redis.externalAddr | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if .Values.nats.deploy }}
+  AGENTOS_NATS_URL: "nats://{{ include "agentos.componentName" (list . "nats") }}:4222"
+  {{- else }}
+  {{- if .Values.nats.externalUrl }}
+  AGENTOS_NATS_URL: {{ .Values.nats.externalUrl | quote }}
+  {{- end }}
+  {{- end }}
+  AGENTOS_API: http://{{ include "agentos.componentName" (list . "api") }}:8080
+  AGENTOS_RATE_LIMIT_RPM: {{ .Values.config.AGENTOS_RATE_LIMIT_RPM | quote }}
+  AGENTOS_WORKFLOW_STALE_AFTER: {{ .Values.config.AGENTOS_WORKFLOW_STALE_AFTER | quote }}
+  AGENTOS_TOOL_SANDBOX: {{ .Values.config.AGENTOS_TOOL_SANDBOX | quote }}
+  {{- with .Values.config.AGENTOS_CORS_ORIGINS }}
+  AGENTOS_CORS_ORIGINS: {{ . | quote }}
+  {{- end }}
+  {{- range $key, $value := .Values.config.extraEnv }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

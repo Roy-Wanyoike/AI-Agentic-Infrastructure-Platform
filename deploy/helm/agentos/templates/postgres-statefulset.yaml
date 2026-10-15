@@ -1,0 +1,126 @@
+{{- if .Values.postgresql.deploy }}
+{{- /* ====================================================================
+     REFERENCE Postgres StatefulSet -- DEV / SMALL-STAGE ONLY.
+     Single replica, simple PVC, no HA/backup. FOR PRODUCTION USE MANAGED
+     POSTGRES (deploy/terraform/modules/database: RDS / CloudSQL), set
+     postgresql.deploy=false and point secrets.databaseUrl at the managed DSN.
+     ==================================================================== */ -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentos.componentName" (list . "postgres") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.componentSelectorLabels" (list . "postgres") | nindent 4 }}
+spec:
+  serviceName: {{ include "agentos.componentName" (list . "postgres") }}-hs
+  replicas: 1 # REFERENCE ONLY
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agentos.componentName" (list . "postgres") }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentos.componentSelectorLabels" (list . "postgres") | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresql.image | quote }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: pg
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgresql.auth.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgresql.auth.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: postgresPassword
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgresql.auth.user | quote }}, "-d", {{ .Values.postgresql.auth.database | quote }}]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgresql.auth.user | quote }}, "-d", {{ .Values.postgresql.auth.database | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.storage }}
+        {{- with .Values.postgresql.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentos.componentName" (list . "postgres") }}-hs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.componentSelectorLabels" (list . "postgres") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: {{ include "agentos.componentName" (list . "postgres") }}
+  ports:
+    - name: pg
+      port: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentos.componentName" (list . "postgres") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.componentSelectorLabels" (list . "postgres") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "agentos.componentName" (list . "postgres") }}
+  ports:
+    - name: pg
+      port: 5432
+      targetPort: pg
+{{- end }}

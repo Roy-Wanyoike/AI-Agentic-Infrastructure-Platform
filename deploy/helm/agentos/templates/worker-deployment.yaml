@@ -1,0 +1,123 @@
+{{- /* Worker: NO HTTP probes -- the worker runs no HTTP server (Dockerfile.worker,
+cmd/worker/main.go). Do not add httpGet probes here. */ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentos.componentName" (list . "worker") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.componentSelectorLabels" (list . "worker") | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.worker.enabled }}
+  replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "agentos.componentSelectorLabels" (list . "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentos.componentSelectorLabels" (list . "worker") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "agentos.serviceAccountName" (list . "worker") }}
+      {{ include "agentos.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: worker
+          image: "{{ include "agentos.image" (list $ .Values.worker.image.repository) }}:{{ .Values.worker.image.tag }}"
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentos.configName" . }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: databaseUrl
+            - name: AGENTOS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: apiKey
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: openaiApiKey
+                  optional: true
+            - name: AGENTOS_FALLBACK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: fallbackApiKey
+                  optional: true
+            {{- if .Values.otel.sidecar.enabled }}
+            {{ include "agentos.otelEnv" (list . "agentos-worker") | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          {{ include "agentos.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.otel.sidecar.enabled }}
+            - name: otel-config
+              mountPath: /etc/otel
+              readOnly: true
+            {{- end }}
+        {{- if .Values.otel.sidecar.enabled }}
+        - name: otel-collector
+          image: {{ .Values.otel.sidecar.image | quote }}
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - name: otlp-http
+              containerPort: 4318
+            - name: otlp-grpc
+              containerPort: 4317
+          resources:
+            {{- toYaml .Values.otel.sidecar.resources | nindent 12 }}
+          {{ include "agentos.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: otel-config
+              mountPath: /etc/otel
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.otel.sidecar.enabled }}
+        - name: otel-config
+          configMap:
+            name: {{ include "agentos.otelConfigName" . }}
+        {{- end }}
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,214 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default-deny ingress for the reference data tier; explicit allows follow.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentos.fullname" . }}-data-default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [{{ include "agentos.componentName" (list . "postgres") }}, {{ include "agentos.componentName" (list . "redis") }}, {{ include "agentos.componentName" (list . "nats") }}]
+  policyTypes: [Ingress]
+  ingress: []
+{{- if .Values.postgresql.deploy }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentos.componentName" (list . "postgres") }}-allow
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agentos.componentName" (list . "postgres") }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [{{ include "agentos.componentName" (list . "api") }}, {{ include "agentos.componentName" (list . "worker") }}, {{ include "agentos.componentName" (list . "migrate") }}]
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}
+{{- if .Values.redis.deploy }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentos.componentName" (list . "redis") }}-allow
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agentos.componentName" (list . "redis") }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [{{ include "agentos.componentName" (list . "api") }}, {{ include "agentos.componentName" (list . "worker") }}]
+      ports:
+        - protocol: TCP
+          port: 6379
+{{- end }}
+{{- if .Values.nats.deploy }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentos.componentName" (list . "nats") }}-allow
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agentos.componentName" (list . "nats") }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [{{ include "agentos.componentName" (list . "api") }}, {{ include "agentos.componentName" (list . "worker") }}]
+      ports:
+        - protocol: TCP
+          port: 4222
+{{- end }}
+---
+# API policy: ingress from ingress-nginx + web + worker; egress DNS, data tier,
+# public HTTPS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentos.componentName" (list . "api") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agentos.componentName" (list . "api") }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressControllerNamespace }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "agentos.componentName" (list . "web") }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "agentos.componentName" (list . "worker") }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [{{ include "agentos.componentName" (list . "postgres") }}, {{ include "agentos.componentName" (list . "redis") }}, {{ include "agentos.componentName" (list . "nats") }}]
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 4222
+    {{- if .Values.networkPolicy.allowPublicEgress }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+---
+# Worker policy: no ingress (no HTTP server); egress DNS, data tier, API, HTTPS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentos.componentName" (list . "worker") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agentos.componentName" (list . "worker") }}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "agentos.componentName" (list . "api") }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [{{ include "agentos.componentName" (list . "postgres") }}, {{ include "agentos.componentName" (list . "redis") }}, {{ include "agentos.componentName" (list . "nats") }}]
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 4222
+    {{- if .Values.networkPolicy.allowPublicEgress }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}

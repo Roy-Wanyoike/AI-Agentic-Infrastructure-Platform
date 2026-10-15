@@ -1,0 +1,79 @@
+# Environment example: production (issue #117).
+# helm upgrade --install agentos deploy/helm/agentos -n agentos \
+#   -f deploy/helm/agentos/values-prod.yaml --set secrets.jwtSecret=... (or better: pre-created Secret)
+#
+# Production assumptions:
+#   * Managed data tier (RDS/ElastiCache/NATS) provisioned by
+#     deploy/terraform (see environments/production). postgresql/redis/nats
+#     .deploy=false -> reference StatefulSets are NOT rendered.
+#   * Secrets injected by sealed-secrets / external-secrets into an
+#     existingSecret; the chart does not render Secret values (secrets.create=false).
+#   * HPA + PDB + NetworkPolicy on; TLS terminated at ingress with a real cert.
+namespace:
+  create: false # provision agentos ns (and RBAC/quota) out of band
+
+global:
+  imagePullSecrets: [] # set if your registry requires auth, e.g. ghcr-pull-secret
+
+api:
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+worker:
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+web:
+  replicaCount: 2
+
+autoscaling:
+  api:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 12
+  worker:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 30
+
+ingress:
+  host: agentos.example.com # CHANGE ME
+  tls:
+    enabled: true
+    secretName: agentos-tls # provisioned by cert-manager/ACM, not this chart
+
+config:
+  APP_ENV: production
+  AGENTOS_CORS_ORIGINS: "https://agentos.example.com" # CHANGE ME
+  AGENTOS_RATE_LIMIT_RPM: "120"
+
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+  allowPublicEgress: true
+
+# BYO managed endpoints (values are placeholders -- wire the terraform outputs):
+postgresql:
+  deploy: false
+
+redis:
+  deploy: false
+  externalAddr: "CHANGE-ME.0001.use1.cache.amazonaws.com:6379"
+
+nats:
+  deploy: false
+  externalUrl: "nats://nats-cluster.events.svc:4222"
+
+secrets:
+  create: false
+  existingSecret: "agentos-secrets" # keys: databaseUrl, jwtSecret, secretsMasterKey, apiKey, openaiApiKey, fallbackApiKey, postgresPassword

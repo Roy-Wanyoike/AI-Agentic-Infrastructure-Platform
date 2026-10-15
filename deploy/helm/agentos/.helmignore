@@ -1,0 +1,17 @@
+# Patterns to ignore when packaging (helm .helmignore, issue #117).
+.git
+.github
+.idea
+.vscode
+*.swp
+*.tmp
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+*.tgz
+*.lock
+tmp/
+charts/*.tgz
+values-local.yaml
+values-secret*.yaml

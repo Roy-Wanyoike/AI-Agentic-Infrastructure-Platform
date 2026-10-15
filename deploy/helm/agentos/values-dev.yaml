@@ -1,0 +1,57 @@
+# Environment example: development (issue #117).
+# helm install agentos deploy/helm/agentos -f deploy/helm/agentos/values-dev.yaml
+#
+# Dev: smaller footprint, single replicas, no HPA/PDB/NetworkPolicy, in-cluster
+# reference data tier, permissive CORS for local frontends.
+namespace:
+  create: true
+
+api:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+worker:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+web:
+  replicaCount: 1
+
+config:
+  APP_ENV: development
+  AGENTOS_CORS_ORIGINS: "http://localhost:5173,http://localhost:8080"
+
+autoscaling:
+  api:
+    enabled: false
+  worker:
+    enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+ingress:
+  host: agentos-dev.example.com
+
+secrets:
+  # PLACEHOLDERS -- dev cluster convenience values only; never reuse in prod.
+  create: true
+  databaseUrl: "postgres://agentos:agentos@agentos-agentos-postgres:5432/agentos?sslmode=disable"
+  jwtSecret: "dev-only-openssl-rand-base64-48"
+  secretsMasterKey: "dev-only-openssl-rand-base64-32"
+  apiKey: "dev-only-callback-key"
+  openaiApiKey: "" # offline deterministic mode by default
+  postgresPassword: "agentos"
