@@ -1,0 +1,88 @@
+# synth-workers.yaml — issue #148 (flagship #118): isolated Playwright browser
+# and API test execution workers — schema-only fragment (worker internals are
+# Go-side; these schemas document the run/evidence contract surfaced via API).
+openapi: 3.1.0
+info:
+  title: AgentOS Synthetic Assurance — Execution Workers
+  version: "1.0.0"
+security:
+  - bearerToken: []
+  - apiKey: []
+paths: {}
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Superset JWT access token issued by the auth service (POST /auth/login, POST /auth/refresh).
+    apiKey:
+      type: http
+      scheme: bearer
+      description: Tenant API key ("sk_..." minted via /api-keys; org-scoped).
+  schemas:
+    SynthWorkerKind:
+      type: string
+      enum: [browser, api]
+      description: Isolation boundary of the executing worker (#148).
+    SynthRunStatus:
+      type: string
+      enum: [pending, queued, running, paused, cancelling, completed, failed, cancelled, inconclusive]
+      description: Versioned test-run state machine. Interrupted/lost workers resolve to inconclusive — never silently lost.
+    SynthStepEvent:
+      type: object
+      required: [index, step_index, type, status]
+      properties:
+        index:
+          type: integer
+        step_index:
+          type: integer
+        type:
+          type: string
+          enum: [action, assertion, console, network, error, navigation]
+        status:
+          type: string
+          enum: [passed, failed, skipped, blocked, inconclusive]
+          description: Failed/skipped/blocked/inconclusive are distinct — a skipped assertion is never a pass.
+        message:
+          type: string
+        redacted_meta:
+          type: object
+          additionalProperties:
+            type: string
+          description: Request/response metadata with authorization/cookie/set-cookie values stripped by the redaction engine.
+        evidence_ref:
+          type: string
+          description: Opaque reference into the evidence store (screenshots, Playwright traces, console/network captures).
+        at:
+          type: string
+          format: date-time
+    SynthRunOptions:
+      type: object
+      properties:
+        app_version:
+          type: string
+          description: Build/release under test — the pin used by release comparison (#156).
+        max_steps:
+          type: integer
+          description: Hard step budget for this run.
+        kill_switch:
+          type: boolean
+          description: When true the run is refused (global/project kill switch active).
+    SynthWorkerHealth:
+      type: object
+      required: [kind, healthy, in_flight]
+      properties:
+        kind:
+          $ref: '#/components/schemas/SynthWorkerKind'
+        healthy:
+          type: boolean
+        in_flight:
+          type: integer
+        last_heartbeat:
+          type: string
+          format: date-time
+        stale:
+          type: boolean
+          description: True when the heartbeat is older than the configured threshold — supervised runs become recoverable or explicitly inconclusive.
+  responses: {}
