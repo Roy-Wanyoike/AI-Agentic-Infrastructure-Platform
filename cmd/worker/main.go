@@ -20,6 +20,8 @@ import (
 	"agentos/internal/config"
 	"agentos/internal/database"
 	"agentos/internal/events"
+	"agentos/internal/httpx"
+	"agentos/internal/limiter"
 	"agentos/internal/logger"
 	"agentos/internal/models"
 	"agentos/internal/observability"
@@ -293,6 +295,32 @@ func main() {
 				"key_id", vk.ID, "organization_id", vk.OrganizationID)
 		}
 	}
+	// issue #124: granular rate limits at the runtime tool/model seams
+	// (hook lines; the engine lives in internal/limiter). Dual-mode config
+	// store: Postgres rate_limits when a DSN is configured — durable state
+	// SHARED with the API process so both resolve the same limits —
+	// in-memory otherwise. The engine is Redis-backed when REDIS_ADDR/
+	// REDIS_URL is set (the global limiter's client discovery, imported
+	// from internal/httpx unmodified) and falls back to per-process
+	// in-memory windows otherwise; the fail mode follows
+	// AGENTOS_LIMITER_FAIL_MODE (default open). Wired onto the base runner
+	// and the per-org runners (the path tasks actually execute on) below;
+	// tool denials are recorded on the step and the run continues, model
+	// denials fail the run before the provider call.
+	var limStore limiter.Store = limiter.NewMemoryStore()
+	if quotaDB != nil {
+		limStore = limiter.NewPostgresStore(quotaDB)
+	}
+	// ONE resolver instance serves BOTH the engine's per-check resolution
+	// and the Enforcer's management CRUD: UpsertConfig/DeleteConfig
+	// invalidate this resolver's org cache, so a config change in one
+	// process is never served stale by the engine's TTL cache.
+	limResolver := limiter.NewResolver(limStore)
+	granularLimiter := limiter.NewEnforcer(
+		limiter.NewLimiter(httpx.RedisClientFromEnv(), limResolver),
+		limResolver,
+		limiter.WithMetrics(metricsSvc),
+	)
 	orgRunners := newOrgRunnerCache(agentsvc, provider,
 		stepRecorderAdapter(runsService, agentsvc), metricsSvc,
 		workerPolicyEnforcer(logr, quotaDB), sbExec,
@@ -301,6 +329,11 @@ func main() {
 	// seam (durable when a DSN is configured; nil = disabled in-memory mode).
 	orgRunners.setAgentKeyAudit(workerAudit)
 	runner.SetAgentKeyAudit(workerAudit)
+	// issue #124: granular rate-limit seam on every execution runner (hook
+	// line; see the block above). Nil-safe / unwired without config rows:
+	// resolution yields "no limit configured" and nothing is counted.
+	orgRunners.setGranularLimiter(granularLimiter)
+	runner.SetGranularLimiter(granularLimiter)
 	// issue #107: the per-org runners share the runtime configuration and
 	// the event seam with the base runner (call before any task is
 	// consumed).

@@ -31,6 +31,7 @@ import (
 	"agentos/internal/events"
 	"agentos/internal/httpx"
 	"agentos/internal/knowledge"
+	"agentos/internal/limiter"
 	"agentos/internal/logger"
 	"agentos/internal/marketplace"
 	"agentos/internal/mcp"
@@ -121,6 +122,15 @@ type app struct {
 	// posture; the residency store is the source of truth — org schema
 	// untouched). Audit seam is wired at route registration.
 	residencySvc *tenant.ResidencyService
+
+	// issue #124: granular rate limits (org/agent/tool/model scopes).
+	// Dual-mode: the config store is Postgres-backed when a DSN is
+	// configured (migration 036 rate_limits) and in-memory otherwise;
+	// the sliding-window engine is Redis-backed when REDIS_ADDR/REDIS_URL
+	// is configured (httpx.RedisClientFromEnv) with the in-memory
+	// fallback otherwise. Wired into the create-run gate
+	// (limiterGateVar) and the /rate-limits management surface below.
+	limiterSvc *limiter.Enforcer
 
 	// issue #108: agent-to-agent orchestration executor (comm bus +
 	// delegation protocol + supervisor). The bus and the delegation ledger
@@ -406,6 +416,30 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.gatewaySvc = models.NewGatewayService()
 	}
 	a.gatewaySvc.SetAuditor(a.auditSvc)
+	// issue #124: granular rate limits — dual-mode construction (the
+	// residencySvc pattern): Postgres-backed config store when a DSN is
+	// configured (migration 036 rate_limits; limits resolve
+	// subject-specific > org default > unlimited), in-memory otherwise;
+	// Redis-backed sliding-window engine when REDIS_ADDR/REDIS_URL is
+	// set (reusing the global limiter's client discovery — internal/httpx
+	// is imported, not modified), with the engine's own in-memory
+	// fallback otherwise. The facade feeds BOTH the create-run gate
+	// (org + agent scopes) and the /rate-limits management surface.
+	var limStore limiter.Store = limiter.NewMemoryStore()
+	if a.db != nil {
+		limStore = limiter.NewPostgresStore(a.db)
+	}
+	// ONE resolver instance serves BOTH the engine's per-check resolution
+	// and the management surface: UpsertConfig/DeleteConfig invalidate this
+	// resolver's org cache, so HTTP writes are visible to enforcement
+	// immediately (two instances would stale-cache up to the resolver TTL).
+	limResolver := limiter.NewResolver(limStore)
+	a.limiterSvc = limiter.NewEnforcer(
+		limiter.NewLimiter(httpx.RedisClientFromEnv(), limResolver),
+		limResolver,
+		limiter.WithMetrics(a.metricsSvc),
+	)
+	limiterGateVar = a.limiterSvc // issue #124: create-run gate seam
 	return a
 }
 
@@ -510,10 +544,11 @@ func (a *app) routes() http.Handler {
 	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #52: organizations & membership management (last-owner guarded)
 	registerOrganizationRoutes(apiMux, a.orgsSvc, a.identities, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc)          // issue #140: org region pinning + data-flow residency checks + posture
-	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)      // issue #122: agent export/import/clone
-	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)  // issue #108: agent-to-agent orchestration executor
-	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                      // issue #109: workflow DSL validation endpoint
+	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc)         // issue #140: org region pinning + data-flow residency checks + posture
+	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)     // issue #122: agent export/import/clone
+	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #108: agent-to-agent orchestration executor
+	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                     // issue #109: workflow DSL validation endpoint
+	registerLimiterRoutes(apiMux, a.limiterSvc, a.authSvc, a.apiKeysSvc)                         // issue #124: granular rate limits
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks

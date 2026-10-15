@@ -210,6 +210,12 @@ type Runner struct {
 	// context (policies.WithRunScope). See WithPolicyEnforcer /
 	// SetPolicyEnforcer.
 	policy *policies.Enforcer
+	// limiter is optional (nil-safe DI, issue #124): when wired, tool
+	// invocations and provider model calls are checked against the
+	// organization's granular rate limits (org/agent/tool/model scopes;
+	// see limiter_hooks.go). The run scope is read from the same
+	// caller-stamped context. See WithGranularLimiter / SetGranularLimiter.
+	limiter GranularLimiter
 	// agentKeyAudit is optional (nil-safe DI, wave-8 agent identity v1):
 	// when wired, a tool invocation denied by an agent key's allow-list
 	// writes a best-effort audit row (action agentkey.tool_denied). See
@@ -547,6 +553,20 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 					Status: StepFailed, Input: expr,
 					Error: err.Error(),
 				})
+			} else if decision := r.checkToolRateLimit(ctx, "calculator"); decision != nil {
+				// Issue #124: the offline calculator path goes
+				// through the same granular tool-scope rate
+				// limit as the provider loop (skip semantics,
+				// like the policy seam above): the denial is
+				// visible on the recorded step and the run
+				// completes through the offline-fallback
+				// answer below.
+				r.record(ctx, run.ID, Step{
+					Index: 1, Type: StepTypeTool, Name: "calculator",
+					Status: StepFailed, Input: expr,
+					Output: "tool rate limited: " + decision.Reason,
+					Error:  (&ToolRateLimitError{Tool: "calculator", Decision: *decision}).Error(),
+				})
 			} else if out, ok := r.runCalculator(expr); ok {
 				r.record(ctx, run.ID, Step{
 					Index: 1, Type: StepTypeTool, Name: "calculator",
@@ -599,6 +619,26 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 		}
 		run.Steps = stepIndex
 
+		// Issue #124: granular model-scope rate limit BEFORE the
+		// provider call (model RPM; TPM is charged post-call via
+		// reportModelTokens below). A denial records the failed model
+		// step and fails the run with the machine-readable
+		// rate_limited code — a throttled model must not consume
+		// provider quota. Hook logic lives in limiter_hooks.go.
+		modelSubject := agent.Model
+		if strings.TrimSpace(modelSubject) == "" {
+			modelSubject = r.provider.Name()
+		}
+		if decision := r.checkModelRateLimit(ctx, modelSubject); decision != nil {
+			merr := &ModelRateLimitError{Model: modelSubject, Decision: *decision}
+			r.record(ctx, run.ID, Step{
+				Index: stepIndex, Type: StepTypeModel, Name: modelSubject,
+				Status: StepFailed, Input: truncateForRecord(input, 512),
+				Error: merr.Error(),
+			})
+			return "", merr
+		}
+
 		promptView := history.Prompt(ctx)
 		callStart := time.Now()
 		resp, err := r.provider.Complete(ctx, models.CompletionRequest{
@@ -624,6 +664,12 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			run.Tokens.CompletionTokens += resp.Usage.CompletionTokens
 			run.Tokens.TotalTokens += resp.Usage.TotalTokens
 			bstate = budget.Record(resp.Usage)
+			// Issue #124: charge the TRUE token usage of the
+			// completed call into the model scope's TPM window
+			// (post-call accounting; the pre-call check enforced
+			// the window against previously reported usage).
+			// Best-effort; never breaks the run.
+			r.reportModelTokens(ctx, modelSubject, resp.Usage)
 		}
 		if err != nil {
 			modelStep.Status = StepFailed
@@ -775,6 +821,15 @@ func (r *Runner) executeTool(ctx context.Context, name string, args map[string]a
 	// passes unchanged.
 	if err := r.authorizeAgentKeyTool(ctx, name); err != nil {
 		return "", err
+	}
+	// Issue #124: granular tool-scope rate limit AFTER the policy and
+	// agent-key checks, BEFORE the tool resolves/executes — a denial is a
+	// typed ToolRateLimitError (code rate_limited): the tool is never
+	// invoked, the step records the denial and the run CONTINUES (the
+	// observation fed back to the model states the rate limit). Hook logic
+	// lives in limiter_hooks.go.
+	if decision := r.checkToolRateLimit(ctx, name); decision != nil {
+		return "", &ToolRateLimitError{Tool: name, Decision: *decision}
 	}
 	if r.toolRegistry == nil {
 		return "", fmt.Errorf("tool %q is not registered", name)
