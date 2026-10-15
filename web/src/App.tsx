@@ -51,6 +51,7 @@ import { UsageView } from './views/usage'
 import { KnowledgeView } from './views/knowledge'
 import { MemoryView } from './views/memory'
 import { AnalyticsView } from './views/analytics'
+import { CostAnalyticsView } from './views/costAnalytics'
 import { VersionsView } from './views/versions'
 import { PoliciesView } from './views/policies'
 import { SchedulesView } from './views/schedules'
@@ -1385,6 +1386,8 @@ export default function App() {
         return <MemoryView canWrite={canWriteRole} />
       case 'Analytics':
         return <AnalyticsView />
+      case 'Cost Analytics':
+        return <CostAnalyticsView />
       case 'Ops':
         return <OpsView canRequeue={canManageQueueOpsRole} />
       case 'Usage':
