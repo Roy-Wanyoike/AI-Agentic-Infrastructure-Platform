@@ -7,8 +7,8 @@
 [![CI](https://github.com/Roy-Wanyoike/AI-Agentic-Infrastructure-Platform/actions/workflows/ci.yml/badge.svg)](https://github.com/Roy-Wanyoike/AI-Agentic-Infrastructure-Platform/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1%C2%A0%C2%B7%C2%A096%20paths-6BA539)
-![Tests](https://img.shields.io/badge/tests-40%20packages%20%E2%9C%94-3FB950)
+![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1%C2%A0%C2%B7%C2%A0182%20paths-6BA539)
+![Tests](https://img.shields.io/badge/tests-50%20packages%20%E2%9C%94-3FB950)
 [![License](https://img.shields.io/badge/license-Apache_2.0-blue)](./LICENSE)
 
 **Author agents → version them → deploy with canary traffic splits → run on a durable queue → evaluate, govern, observe, and bill for every token.**
@@ -17,7 +17,7 @@
 
 ---
 
-AgentOS is the control plane for running AI agents in production: a Go 1.25 modular monolith (40 internal packages, one deployable API process + one worker) with a React 19 dashboard, a 112-path OpenAPI 3.1 contract, and **dual-mode persistence** — the exact same binary runs against Postgres for production or fully in-memory with zero infrastructure for development and CI. Every tenant boundary, permission check, and retry path is enforced in code and exercised by tests, not promised in docs.
+AgentOS is the control plane for running AI agents in production: a Go 1.25 modular monolith (47 internal packages, one deployable API process + one worker) with a React 19 dashboard, a 182-path OpenAPI 3.1 contract (531 schemas), and **dual-mode persistence** — the exact same binary runs against Postgres for production or fully in-memory with zero infrastructure for development and CI. Every tenant boundary, permission check, and retry path is enforced in code and exercised by tests, not promised in docs.
 
 ![AgentOS dashboard — mission control](docs/images/dashboard-overview.png)
 
@@ -50,7 +50,7 @@ AgentOS is the control plane for running AI agents in production: a Go 1.25 modu
 
 ## Architecture
 
-Dual-mode by design: in Postgres mode every service persists through a tenant-guarded store; in memory mode the same interfaces run on maps — which is why the full test suite (43 packages) runs in seconds with no containers.
+Dual-mode by design: in Postgres mode every service persists through a tenant-guarded store; in memory mode the same interfaces run on maps — which is why the full test suite (50 packages) runs in seconds with no containers.
 
 ![AgentOS architecture](docs/images/architecture.png)
 
@@ -83,7 +83,7 @@ cd web && npm install && npm run dev   # dashboard on :5173
 ```bash
 cp .env.example .env
 make docker-up      # Postgres, Redis, NATS
-make migrate-up     # apply the 25 migrations
+make migrate-up     # apply the 37 migrations
 make seed           # demo org + agents + workflow + runs
 make run-api        # API on :8080
 make run-worker     # run execution (second terminal)
@@ -148,11 +148,11 @@ run, _ := client.Runs().Create(ctx, agentID, "classify this ticket")
 
 ## Engineering discipline
 
-- **Contract-first**: the 112-path OpenAPI 3.1 spec (261 schemas) is regression-tested by `internal/apispec` — a dangling `$ref`, duplicate `operationId`, or path without operations fails CI (mutation-verified).
+- **Contract-first**: the 182-path OpenAPI 3.1 spec (531 schemas) is regression-tested by `internal/apispec` — a dangling `$ref`, duplicate `operationId`, or path without operations fails CI (mutation-verified).
 - **Tenant isolation everywhere**: every Postgres query carries an `organization_id` guard; tenant identity comes from signed claims, never from client payloads.
 - **Security by default**: bcrypt passwords, HMAC-signed session tokens, hashed API keys and SCIM tokens, AES-256-GCM secrets at rest with key-versioned envelopes, OWNER-gated one-time secret reveal (audit-logged).
 - **Honest observability**: metrics are incremented at the point of truth (run terminal transitions, tool executions); the dashboard renders "not exposed by the API" rather than fake numbers — no silent mocking, as a product rule.
-- **Verified before merged**: every feature landed through a PR gated on `gofmt`, `go vet`, `go build`, and the full `go test -count=1 ./...` suite (40 packages, race-clean; a dedicated `-race` CI job runs the whole tree).
+- **Verified before merged**: every feature landed through a PR gated on `gofmt`, `go vet`, `go build`, and the full `go test -count=1 ./...` suite (50 packages, race-clean; a dedicated `-race` CI job runs the whole tree).
 
 ```bash
 make lint && make verify    # gofmt + vet + build + test
@@ -161,7 +161,7 @@ make lint && make verify    # gofmt + vet + build + test
 ## Project structure
 
 ```text
-├── api/openapi.yaml          # canonical OpenAPI 3.1 contract (112 paths)
+├── api/openapi.yaml          # canonical OpenAPI 3.1 contract (182 paths)
 ├── api/fragments/            # per-track spec fragments, merged into the main spec
 ├── cmd/
 │   ├── api/                  # HTTP process: routes, handlers, middleware wiring
@@ -171,11 +171,11 @@ make lint && make verify    # gofmt + vet + build + test
 │   ├── sandbox-exec/         # process-isolated tool sandbox
 │   ├── seed/                 # idempotent demo seeder
 │   └── migrate/              # migration runner (env-aware)
-├── internal/                 # 40 domain packages — agents, deployments, runs,
+├── internal/                 # 47 domain packages — agents, deployments, runs,
 │   │                         # runtime, workflows, evaluations, policies, billing,
 │   │                         # secrets, marketplace, connectors, mcp, sso, scim,
 │   │                         # sandbox, knowledge, memory, events, scheduler …
-├── migrations/               # 21 tenant-guarded SQL migrations
+├── migrations/               # 37 tenant-guarded SQL migrations
 ├── web/                      # React 19 + Vite + TypeScript dashboard
 ├── docs/architecture.md      # factual architecture walkthrough
 ├── docs/self-hosting.md      # production deployment guide
@@ -186,6 +186,7 @@ make lint && make verify    # gofmt + vet + build + test
 ## Docs
 
 - [Architecture walkthrough](docs/architecture.md)
+- [Synthetic assurance — flagship closure evidence](docs/synthetic-assurance.md)
 - [OpenAPI contract](api/openapi.yaml) — import into Swagger UI / Postman
 - [Implementation plan](docs/agentos-implementation-plan.md)
 - [Contributing](CONTRIBUTING.md) — setup, quality gates, PR rules
