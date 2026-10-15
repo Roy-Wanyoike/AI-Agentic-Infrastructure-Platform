@@ -1,0 +1,157 @@
+# OpenAPI 3.1 fragment — Tiered Retrieval Tools (issue #132; LeaseState for
+# the graph lifecycle coordination of issue #135 lands in the same file).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). This is a SCHEMA-ONLY fragment: the tiered retrieval tools are
+# agent tools registered into the tool registry (internal/tools.Tool), not
+# HTTP endpoints — the schemas below document the tool surface (tier
+# identity, per-tool spec, lifecycle lease state) for catalog rendering and
+# future /v1/tools exposure.
+#
+# Standalone-valid: the security scheme names used by `security:` are
+# declared in this fragment's own components.securitySchemes, copied
+# VERBATIM from api/fragments/apikeys.yaml (secrets.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/retrieval-tools.yaml`
+# passes. Components carry the track-unique `Retrieval` prefix to avoid
+# collisions with the tools-catalog fragment (ToolInfo etc.).
+#
+# SECURITY: read-only retrieval over org-scoped knowledge candidates. The
+# tools carry org_id in their arguments and fail closed without it; the
+# policy engine restricts tiers through the existing tool_allowlist
+# condition (internal/policies, unchanged). No new permission enum is
+# introduced — the existing agents.read grant matches the read-only surface
+# (api/fragments/knowledge.yaml semantics).
+openapi: 3.1.0
+info:
+  title: AgentOS — tiered retrieval tools (issue #132 fragment)
+  version: 3.0.0-fragment
+security:
+- bearerToken: []
+- apiKey: []
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    RetrievalTier:
+      type: string
+      description: |
+        One depth tier of the multi-depth search hierarchy (issue #132),
+        cheapest first. Tiers are policy-restrictable: the existing
+        tool_allowlist condition can admit quick searches for every agent
+        while reserving the deeper tiers for trusted runs. Each tier tool
+        exposes its tier via TierName().
+      enum:
+      - quick
+      - panorama
+      - insight
+      x-tier-cost:
+        quick: low
+        panorama: medium
+        insight: high
+    RetrievalToolSpec:
+      type: object
+      description: |
+        The contract of one tiered retrieval tool as registered into the
+        platform tool registry (registry names: quick_search,
+        panorama_search, insight_forge). Tools implement the platform tool
+        interface (Name + Execute, plus ContextAware for deadline/cancel
+        propagation) and are registered with the one-line
+        knowledge.RegisterRetrievalTools helper — the internal/tools catalog
+        itself is not modified.
+      required: [name, tier, description, cost_class]
+      properties:
+        name:
+          type: string
+          description: Registry name (the value tool_allowlist policies match).
+          enum: [quick_search, panorama_search, insight_forge]
+        tier:
+          $ref: '#/components/schemas/RetrievalTier'
+        description:
+          type: string
+          description: What the tier does.
+        cost_class:
+          type: string
+          enum: [low, medium, high]
+          description: Relative cost of one call (observability hint; the per-call estimated_tokens counters carry the numbers).
+        input:
+          type: object
+          description: Tool arguments (JSON object passed to Execute).
+          required: [org_id, query]
+          properties:
+            org_id:
+              type: string
+              minLength: 1
+              description: Caller organization id (tenant guard; fail-closed when missing).
+            query:
+              type: string
+              minLength: 1
+              description: Search query (insight_forge decomposes it into sub-questions).
+            k:
+              type: integer
+              minimum: 1
+              maximum: 50
+              description: Top-K result cap (quick_search default 5, panorama_search default 20).
+            include_archived:
+              type: boolean
+              default: false
+              description: panorama_search only — widen the window to archived/expired documents (the metadata convention archived/status/expires_at).
+        output:
+          type: object
+          description: |
+            Tool result map: tier, org_id, query, results (contract search
+            result fields document_id/document_title/chunk_id/chunk_ordinal/
+            content/score/citation), count and estimated_tokens.
+            panorama_search adds full per-result context
+            (document_source/document_metadata/created_at) and
+            include_archived. insight_forge adds sub_questions, findings
+            (per sub-question results) and synthesis.
+          properties:
+            tier:
+              $ref: '#/components/schemas/RetrievalTier'
+            count:
+              type: integer
+            estimated_tokens:
+              type: integer
+              description: Deterministic token-cost estimate of the call (~4 chars/token; budgeting signal, not billing).
+            results:
+              type: array
+              items: { type: object, additionalProperties: true }
+            synthesis:
+              type: string
+              description: insight_forge only — the composed insight over the deduplicated, ranked findings.
+    LeaseState:
+      type: object
+      description: |
+        Point-in-time snapshot of one graph's lifecycle coordination state
+        (issue #135): read leases + exclusive write locks per org-scoped
+        graph key ("org/<org_id>/kb/<kb_id>"). Mirrors
+        knowledge.LeaseState; exposed for observability rendering and a
+        future admin status endpoint — the coordination itself is in-process
+        (mutex + broadcast channels, no goroutines, no network surface).
+      required: [graph_key, active_readers, write_locked, queue]
+      properties:
+        graph_key:
+          type: string
+          description: Org-scoped lifecycle key built by knowledge.GraphKey — "org/<org_id>/kb/<kb_id>". Tenant keys are disjoint by construction.
+          examples:
+          - org/9f1c…/kb/2b7e…
+        active_readers:
+          type: integer
+          minimum: 0
+          description: Read leases currently held (search/run duration).
+        write_locked:
+          type: boolean
+          description: True while the exclusive write lease (reset/re-ingest/schema change) is held; no reader can be admitted.
+        queue:
+          type: integer
+          minimum: 0
+          description: Writers waiting for active readers to release (writer-priority — new readers queue behind them).
