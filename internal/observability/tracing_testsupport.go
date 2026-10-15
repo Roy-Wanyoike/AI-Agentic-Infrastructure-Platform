@@ -30,7 +30,9 @@ type RecordedSpan struct {
 	ParentSpanID trace.SpanID
 	SpanKind     trace.SpanKind
 	StatusCode   codes.Code
-	Attributes   map[string]string
+	// StatusDescription carries the span status message (empty for Unset).
+	StatusDescription string
+	Attributes        map[string]string
 }
 
 // Attr returns the attribute value for key ("", when absent).
@@ -54,13 +56,14 @@ func (r *testSpanRecorder) OnEnd(s sdktrace.ReadOnlySpan) {
 		attrs[string(kv.Key)] = kv.Value.Emit()
 	}
 	snap := RecordedSpan{
-		Name:         s.Name(),
-		TraceID:      s.SpanContext().TraceID(),
-		SpanID:       s.SpanContext().SpanID(),
-		ParentSpanID: s.Parent().SpanID(),
-		SpanKind:     s.SpanKind(),
-		StatusCode:   s.Status().Code,
-		Attributes:   attrs,
+		Name:              s.Name(),
+		TraceID:           s.SpanContext().TraceID(),
+		SpanID:            s.SpanContext().SpanID(),
+		ParentSpanID:      s.Parent().SpanID(),
+		SpanKind:          s.SpanKind(),
+		StatusCode:        s.Status().Code,
+		StatusDescription: s.Status().Description,
+		Attributes:        attrs,
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
