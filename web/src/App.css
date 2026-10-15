@@ -2181,6 +2181,102 @@ Tools (registry), Security (audit trail), Settings (identity admin)
   overflow: auto;
 }
 
+/* Cost Analytics (issue #127): hand-rolled SVG spend charts, efficiency and
+   forecast tables, budget utilization meters, CSV export button. */
+.cost-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cost-controls .field {
+  margin-bottom: 0;
+  min-width: 170px;
+}
+
+.cost-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 16px 0 6px;
+}
+
+.cost-grid {
+  stroke: rgba(148, 163, 184, 0.16);
+  stroke-width: 1;
+}
+
+.cost-axis {
+  fill: #94a3b8;
+  font-size: 10px;
+  font-family: inherit;
+}
+
+.cost-bar {
+  fill: #60a5fa;
+}
+
+.cost-bar:hover {
+  fill: #8b5cf6;
+}
+
+.cost-line {
+  fill: none;
+  stroke: #60a5fa;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cost-line-dashed {
+  fill: none;
+  stroke: #f59e0b;
+  stroke-width: 2;
+  stroke-dasharray: 6 5;
+  stroke-linecap: round;
+}
+
+.cost-dot {
+  fill: #f59e0b;
+  stroke: #0f172a;
+  stroke-width: 1.5;
+}
+
+.cost-notes {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.cost-budget-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.cost-budget-section h4 {
+  margin: 0 0 10px;
+}
+
+.cost-util {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 140px;
+}
+
+.cost-util .meter {
+  flex: 1;
+}
+
+.cost-budget-alert td {
+  background: rgba(245, 158, 11, 0.07);
+}
+
+.cost-alert-text {
+  color: #f59e0b;
 /* ---------------------------------------------------------------------------
    Agent Builder (issue #121): step wizard rail, template cards, checkbox
    grids, config diff table, and the live test-run stream log.
