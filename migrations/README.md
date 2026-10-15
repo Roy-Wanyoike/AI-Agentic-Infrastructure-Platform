@@ -30,6 +30,7 @@ Current migration structure:
 - 024_notifications_subscriptions.sql (issue #83)
 - 025_mcp_registry.sql (issue #82)
 - 027_agent_api_keys.sql (wave-8: agent-scoped API keys with tool allow-lists)
+- 030_virtual_keys.sql (wave-9 issue #139: gateway virtual keys with model allow-lists + enforced monthly spend caps)
 
 Migration conventions:
 
