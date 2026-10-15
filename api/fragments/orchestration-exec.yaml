@@ -1,0 +1,477 @@
+# AgentOS API — OpenAPI 3.1 fragment for the runtime agent-to-agent
+# orchestration executor (issue #108).
+#
+# Merge target: api/openapi.yaml. Paths WITHOUT the /api/v1 prefix.
+#
+# Convention note (apikeys.yaml / residency.yaml pattern): security scheme
+# names used by `security:` are declared in this fragment's own
+# components.securitySchemes (verbatim base definitions), so
+# `python3 scripts/check_fragment_refs.py api/fragments/orchestration-exec.yaml`
+# passes standalone. Folding is last-key-wins (identity re-definition).
+#
+# Contract notes:
+#   * Tenant scope comes EXCLUSIVELY from the auth claims: no org-addressable
+#     path ids exist on this surface, so a caller can never name a foreign
+#     tenant (cross-tenant reads are 404 one layer down in the bus/ledger).
+#   * POST /orchestration/delegate is ASYNC: validation -> ledger -> approval
+#     gate -> child-run creation happen on the request path and the run ids
+#     return immediately (202); execution happens on a background goroutine
+#     and its outcome lands in the delegation ledger + the delegator's inbox
+#     (GET /orchestration/agents/{id}/messages, GET /orchestration/delegations).
+#   * The comm bus and the delegation ledger are in-memory BY DESIGN this
+#     round (no orchestration store/migration assigned); the durable trail
+#     lives in the runs rows and approvals rows the seams write. Inboxes and
+#     ledger state are per-process: a restart clears them.
+#   * Routing strategy is capability_match (configuration-order routing when
+#     no required_capability is sent), so required_capability is real: a task
+#     naming a capability no worker declares is a typed 409
+#     NO_CAPABLE_WORKER. The worker routing table is deployment configuration
+#     for the process (SupervisorConfig below is NOT an HTTP-managed
+#     resource this round); with no workers configured,
+#     POST /orchestration/supervisor/run is a typed 409 NO_WORKERS.
+#   * RBAC (x-required-permission; NEW issue #108 grants):
+#     orchestration.read  (OWNER/ADMIN/MEMBER/VIEWER) — delegation chains and
+#     message traffic are observability surfaces;
+#     orchestration.write (OWNER/ADMIN) — delegations create runs and consume
+#     model tokens (same tier as runs.execute provisioning).
+paths:
+  /orchestration/delegate:
+    post:
+      operationId: delegateOrchestrationTask
+      summary: Delegate a subtask from one agent to another (async)
+      description: >
+        Creates the delegation ledger record, files the approval when
+        require_approval is set, creates the child run and returns the run ids
+        immediately (202 pending). Without require_approval the child run
+        executes in the background and the outcome is delivered to the
+        delegator's inbox as a response message. Failures that occur before
+        any child run exists are 422/409/500 with the failed delegation_id
+        kept traceable in the ledger.
+      x-required-permission: orchestration.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DelegateRequest" }
+      responses:
+        "202":
+          description: >
+            Accepted. status is "pending" (execution queued) or
+            "awaiting_approval" (parked at the approval gate; approval_id set,
+            never executed until approved).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DelegateAccepted" }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+        "409":
+          description: >
+            APPROVAL_UNAVAILABLE — require_approval was set but the approval
+            service is unwired (fail-closed; no child run created).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DelegationFailedError" }
+        "422": { $ref: "#/components/responses/OrchestrationValidation" }
+        "500":
+          description: >
+            DELEGATION_FAILED — a downstream seam (child run creation, inbox
+            registration) failed; the failed record stays in the ledger and
+            its id is returned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DelegationFailedError" }
+  /orchestration/messages:
+    post:
+      operationId: sendOrchestrationMessage
+      summary: Send one point-to-point agent-to-agent message
+      description: >
+        Delivers the message to the target agent's inbox in the caller's
+        organization. Synchronous and non-blocking: an unknown target inbox is
+        404, a saturated inbox is 409 INBOX_FULL (the caller may retry),
+        success is 202 with the delivery confirmation.
+      x-required-permission: orchestration.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MessageSendRequest" }
+      responses:
+        "202":
+          description: Delivered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivered: { type: boolean, enum: [true] }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+        "404": { $ref: "#/components/responses/OrchestrationNotFound" }
+        "409":
+          description: INBOX_FULL — the target inbox is saturated; nothing was delivered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrchestrationError" }
+        "422": { $ref: "#/components/responses/OrchestrationValidation" }
+  /orchestration/agents/{id}/messages:
+    get:
+      operationId: listOrchestrationAgentMessages
+      summary: Read an agent's retained inbox (newest first)
+      description: >
+        Returns the agent's retained inbox for the caller's organization
+        (newest first, optionally limited). The same agent id in another
+        organization resolves to a different (possibly absent) inbox.
+      x-required-permission: orchestration.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: The agent id (org-scoped by the caller's claims).
+      - name: limit
+        in: query
+        required: false
+        schema: { type: integer, minimum: 0 }
+        description: Maximum number of retained messages to return (0 / omitted = all).
+      responses:
+        "200":
+          description: The retained inbox (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id: { type: string }
+                  count: { type: integer }
+                  messages:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentMessage" }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+        "404": { $ref: "#/components/responses/OrchestrationNotFound" }
+        "422": { $ref: "#/components/responses/OrchestrationValidation" }
+  /orchestration/supervisor/run:
+    post:
+      operationId: runOrchestrationSupervisorTask
+      summary: Route one task through the supervisor to a worker agent
+      description: >
+        Selects a worker (capability_match strategy: a task without
+        required_capability routes in configuration order; with one, only
+        capable workers are candidates) and delegates through the delegation
+        protocol. Completed results are 200; approval-parked results are 202;
+        routing exhaustion surfaces the typed supervisor errors. On
+        ALL_WORKERS_FAILED the response carries the per-attempt trace
+        (worker_agent_id, delegation_id, error) — every attempt stays in the
+        delegation ledger.
+      x-required-permission: orchestration.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SupervisorRunRequest" }
+      responses:
+        "200":
+          description: The delegated task completed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupervisorRunResult" }
+        "202":
+          description: The supervised delegation was parked at the approval gate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupervisorRunResult" }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+        "409":
+          description: >
+            NO_WORKERS (no worker routing table is configured for this
+            process) or NO_CAPABLE_WORKER (no worker declares the task's
+            required_capability).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrchestrationError" }
+        "422": { $ref: "#/components/responses/OrchestrationValidation" }
+        "502":
+          description: ALL_WORKERS_FAILED — every candidate attempt failed; attempts carries the trace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupervisorFailedError" }
+  /orchestration/delegations:
+    get:
+      operationId: listOrchestrationDelegations
+      summary: Read the organization's delegation ledger (chain trace)
+      description: >
+        Chronological delegation records for the caller's organization.
+        Optional run_id filter matches records whose parent OR child run
+        equals the id (the delegation chain visible from one run).
+        Cross-tenant records never appear: the ledger is org-scoped.
+      x-required-permission: orchestration.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: run_id
+        in: query
+        required: false
+        schema: { type: string }
+        description: Filter to delegations whose parent or child run is this run id.
+      responses:
+        "200":
+          description: The delegation ledger (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delegations:
+                    type: array
+                    items: { $ref: "#/components/schemas/DelegationRecord" }
+                  count: { type: integer }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  responses:
+    OrchestrationValidation:
+      description: Validation error (missing/blank required fields, malformed JSON or limit, unknown message type, depth limit exceeded).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/OrchestrationError" }
+    OrchestrationUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/OrchestrationError" }
+    OrchestrationForbidden:
+      description: >
+        Not permitted for this role (reads orchestration.read = all roles;
+        writes orchestration.write = OWNER/ADMIN only).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/OrchestrationError" }
+    OrchestrationNotFound:
+      description: >
+        Unknown target in the caller's organization (unregistered inbox) —
+        never a cross-tenant leak.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/OrchestrationError" }
+  schemas:
+    OrchestrationError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    DelegationFailedError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [VALIDATION_ERROR, APPROVAL_UNAVAILABLE, DELEGATION_FAILED]
+            message: { type: string }
+        delegation_id:
+          type: string
+          description: The failed record's id (it stays in the ledger for traceability).
+    DelegateRequest:
+      type: object
+      required: [from_agent_id, to_agent_id, task]
+      properties:
+        from_agent_id:
+          type: string
+          description: The delegator agent (its inbox receives the response message).
+        to_agent_id:
+          type: string
+          description: The delegated-to agent (executes the subtask).
+        task:
+          type: string
+          description: The subtask text (becomes the child run input).
+        parent_run_id:
+          type: string
+          description: The delegating run ("" at the top of a chain).
+        require_approval:
+          type: boolean
+          description: Park the delegation at the approval gate instead of executing.
+        depth:
+          type: integer
+          description: Delegation depth of the CALLING chain (0 for top-level; the server enforces the configured limit).
+    DelegateAccepted:
+      type: object
+      required: [delegation_id, child_run_id, status, depth]
+      properties:
+        delegation_id: { type: string }
+        child_run_id: { type: string }
+        status:
+          type: string
+          enum: [pending, awaiting_approval]
+        depth: { type: integer }
+        approval_id:
+          type: string
+          description: Present only when the delegation was parked at the approval gate.
+    MessageSendRequest:
+      type: object
+      required: [from_agent_id, to_agent_id]
+      properties:
+        from_agent_id: { type: string }
+        to_agent_id: { type: string }
+        message_type:
+          type: string
+          enum: [request, response, delegate, broadcast]
+          description: Defaults to the bus's validation rules; an unknown type is 422.
+        run_id:
+          type: string
+          description: Optional run linkage carried on the message.
+        payload:
+          description: Arbitrary JSON delivered verbatim to the target inbox.
+    AgentMessage:
+      type: object
+      properties:
+        org_id: { type: string }
+        from_agent_id: { type: string }
+        to_agent_id:
+          type: string
+          description: The target agent ("*" for broadcast deliveries).
+        run_id: { type: string }
+        message_type:
+          type: string
+          enum: [request, response, delegate, broadcast]
+        payload: {}
+        timestamp: { type: string, format: date-time }
+        message_id: { type: string }
+    SupervisorRunRequest:
+      type: object
+      required: [task]
+      properties:
+        task:
+          type: string
+          description: The task text (becomes the delegated input).
+        task_ref:
+          type: string
+          description: Caller-side task reference (echoed in the result and traces).
+        from_agent_id:
+          type: string
+          description: Response routing target ("" = supervisor-initiated, no comm routing).
+        parent_run_id: { type: string }
+        required_capability:
+          type: string
+          description: Restrict candidates to workers declaring this capability (typed 409 NO_CAPABLE_WORKER when none does).
+    SupervisorRunResult:
+      type: object
+      required: [task, status, worker_agent_id, delegation_id, child_run_id, tokens, attempts]
+      properties:
+        task_ref: { type: string }
+        task: { type: string }
+        status:
+          type: string
+          enum: [completed, awaiting_approval, failed]
+        worker_agent_id: { type: string }
+        delegation_id: { type: string }
+        child_run_id: { type: string }
+        output: { type: string }
+        tokens: { $ref: "#/components/schemas/OrchestrationUsage" }
+        attempts:
+          type: array
+          description: The FAILED attempts that preceded the successful one (empty on first-try success).
+          items: { $ref: "#/components/schemas/WorkerAttempt" }
+    WorkerAttempt:
+      type: object
+      properties:
+        worker_agent_id: { type: string }
+        delegation_id: { type: string }
+        error: { type: string }
+    SupervisorFailedError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [ALL_WORKERS_FAILED]
+            message: { type: string }
+        task_ref: { type: string }
+        attempts:
+          type: array
+          items: { $ref: "#/components/schemas/WorkerAttempt" }
+    OrchestrationUsage:
+      type: object
+      properties:
+        prompt_tokens: { type: integer }
+        completion_tokens: { type: integer }
+        total_tokens: { type: integer }
+    DelegationRecord:
+      type: object
+      properties:
+        id: { type: string }
+        org_id: { type: string }
+        from_agent_id:
+          type: string
+          description: The delegator ("" = supervisor-initiated; no response routing).
+        to_agent_id: { type: string }
+        task: { type: string }
+        parent_run_id: { type: string }
+        child_run_id: { type: string }
+        depth: { type: integer }
+        status:
+          type: string
+          enum: [pending, awaiting_approval, completed, failed]
+        approval_id: { type: string }
+        result: { type: string }
+        error: { type: string }
+        tokens: { $ref: "#/components/schemas/OrchestrationUsage" }
+        response_delivered: { type: boolean }
+        created_at: { type: string, format: date-time }
+        completed_at:
+          oneOf:
+            - { type: string, format: date-time }
+            - { type: "null" }
+    SupervisorConfig:
+      type: object
+      description: >
+        Supervisor routing configuration for THIS process (deployment
+        configuration, not an HTTP-managed resource this round): the worker
+        routing table and caps the executor was constructed with. Exposed
+        here so the ALL_WORKERS_FAILED / NO_WORKERS semantics are readable.
+      properties:
+        workers:
+          type: array
+          items:
+            type: object
+            properties:
+              agent_id: { type: string }
+              capabilities:
+                type: array
+                items: { type: string }
+        strategy:
+          type: string
+          enum: [round_robin, least_loaded, capability_match]
+          description: The executor runs capability_match (configuration order when no required_capability is sent).
+        max_concurrent: { type: integer }
+        max_retries: { type: integer }
