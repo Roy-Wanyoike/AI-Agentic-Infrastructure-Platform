@@ -9,11 +9,16 @@ import (
 
 const (
 	// Tenant guard: approvals are inserted with their organization_id scope.
-	sqlInsertApproval = `INSERT INTO approvals (id, organization_id, run_id, workflow_run_id, resource, action, reason, risk, status, requester, approver, decision_reason, created_at, decided_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
+	// Issue #137: require_dual persists the two-person rule flag (the
+	// remaining oversight columns are written by pgStore.
+	// UpdateApprovalOversight).
+	sqlInsertApproval = `INSERT INTO approvals (id, organization_id, run_id, workflow_run_id, resource, action, reason, risk, status, requester, approver, decision_reason, created_at, decided_at, require_dual) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
 	// Tenant guard: single-approval reads are scoped to one organization_id.
-	sqlSelectApprovalScoped = `SELECT id, organization_id, COALESCE(run_id, ''), COALESCE(workflow_run_id, ''), COALESCE(resource, ''), COALESCE(action, ''), COALESCE(reason, ''), COALESCE(risk, ''), status, COALESCE(requester, ''), COALESCE(approver, ''), COALESCE(decision_reason, ''), created_at, decided_at FROM approvals WHERE id = $1 AND organization_id = $2`
+	// Issue #137: the oversight columns (dual control, delegation, escalation)
+	// round-trip with the base row (all COALESCEd/nullable — additive).
+	sqlSelectApprovalScoped = `SELECT id, organization_id, COALESCE(run_id, ''), COALESCE(workflow_run_id, ''), COALESCE(resource, ''), COALESCE(action, ''), COALESCE(reason, ''), COALESCE(risk, ''), status, COALESCE(requester, ''), COALESCE(approver, ''), COALESCE(decision_reason, ''), created_at, decided_at, COALESCE(require_dual, FALSE), COALESCE(first_approver, ''), COALESCE(first_decision, ''), first_decided_at, COALESCE(delegated_to, ''), COALESCE(delegated_by, ''), COALESCE(delegation_note, ''), delegation_expires_at, escalated_at, COALESCE(escalation_reason, ''), escalation_deadline FROM approvals WHERE id = $1 AND organization_id = $2`
 	// Tenant guard: listings filter on organization_id (optional status filter).
-	sqlSelectApprovalsByOrg = `SELECT id, organization_id, COALESCE(run_id, ''), COALESCE(workflow_run_id, ''), COALESCE(resource, ''), COALESCE(action, ''), COALESCE(reason, ''), COALESCE(risk, ''), status, COALESCE(requester, ''), COALESCE(approver, ''), COALESCE(decision_reason, ''), created_at, decided_at FROM approvals WHERE organization_id = $1 AND ($2 = '' OR status = $2) ORDER BY created_at DESC`
+	sqlSelectApprovalsByOrg = `SELECT id, organization_id, COALESCE(run_id, ''), COALESCE(workflow_run_id, ''), COALESCE(resource, ''), COALESCE(action, ''), COALESCE(reason, ''), COALESCE(risk, ''), status, COALESCE(requester, ''), COALESCE(approver, ''), COALESCE(decision_reason, ''), created_at, decided_at, COALESCE(require_dual, FALSE), COALESCE(first_approver, ''), COALESCE(first_decision, ''), first_decided_at, COALESCE(delegated_to, ''), COALESCE(delegated_by, ''), COALESCE(delegation_note, ''), delegation_expires_at, escalated_at, COALESCE(escalation_reason, ''), escalation_deadline FROM approvals WHERE organization_id = $1 AND ($2 = '' OR status = $2) ORDER BY created_at DESC`
 	// Tenant guard: decision updates require a matching organization_id.
 	sqlUpdateApproval = `UPDATE approvals SET status = $1, approver = $2, decision_reason = $3, decided_at = $4 WHERE id = $5 AND organization_id = $6`
 )
@@ -55,7 +60,8 @@ func (s *pgStore) CreateApproval(ctx context.Context, orgID string, a *Approval)
 	_, err := s.db.ExecContext(ctx, sqlInsertApproval,
 		a.ID, orgID, nullableString(a.RunID), nullableString(a.WorkflowRunID),
 		a.Resource, a.Action, a.Reason, a.Risk, a.Status,
-		a.Requester, a.Approver, a.DecisionReason, a.CreatedAt, nullableTime(a.DecidedAt))
+		a.Requester, a.Approver, a.DecisionReason, a.CreatedAt, nullableTime(a.DecidedAt),
+		a.RequireDual) // issue #137: two-person rule flag
 	return err
 }
 
@@ -103,8 +109,15 @@ func (s *pgStore) UpdateApproval(ctx context.Context, orgID, id, status, approve
 
 func scanApproval(scanner interface{ Scan(dest ...any) error }) (*Approval, error) {
 	var a Approval
-	var decidedAt sql.NullTime
-	if err := scanner.Scan(&a.ID, &a.OrganizationID, &a.RunID, &a.WorkflowRunID, &a.Resource, &a.Action, &a.Reason, &a.Risk, &a.Status, &a.Requester, &a.Approver, &a.DecisionReason, &a.CreatedAt, &decidedAt); err != nil {
+	var (
+		decidedAt           sql.NullTime
+		firstDecidedAt      sql.NullTime // issue #137 oversight columns
+		delegationExpiresAt sql.NullTime
+		escalatedAt         sql.NullTime
+		escalationDeadline  sql.NullTime
+	)
+	if err := scanner.Scan(&a.ID, &a.OrganizationID, &a.RunID, &a.WorkflowRunID, &a.Resource, &a.Action, &a.Reason, &a.Risk, &a.Status, &a.Requester, &a.Approver, &a.DecisionReason, &a.CreatedAt, &decidedAt,
+		&a.RequireDual, &a.FirstApprover, &a.FirstDecision, &firstDecidedAt, &a.DelegatedTo, &a.DelegatedBy, &a.DelegationNote, &delegationExpiresAt, &escalatedAt, &a.EscalationReason, &escalationDeadline); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrApprovalNotFound
 		}
@@ -113,6 +126,22 @@ func scanApproval(scanner interface{ Scan(dest ...any) error }) (*Approval, erro
 	if decidedAt.Valid {
 		t := decidedAt.Time
 		a.DecidedAt = &t
+	}
+	if firstDecidedAt.Valid {
+		t := firstDecidedAt.Time
+		a.FirstDecidedAt = &t
+	}
+	if delegationExpiresAt.Valid {
+		t := delegationExpiresAt.Time
+		a.DelegationExpiresAt = &t
+	}
+	if escalatedAt.Valid {
+		t := escalatedAt.Time
+		a.EscalatedAt = &t
+	}
+	if escalationDeadline.Valid {
+		t := escalationDeadline.Time
+		a.EscalationDeadline = &t
 	}
 	return &a, nil
 }
