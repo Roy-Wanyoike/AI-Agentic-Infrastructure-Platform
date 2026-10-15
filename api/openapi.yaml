@@ -9399,8 +9399,779 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
 
+# ---- wave-10 round-3 fragment: synth-registry.yaml (paths) ----
+  /synth/projects:
+    post:
+      operationId: createSynthProject
+      summary: Create a project container for synthetic testing
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthProjectCreateRequest'
+      responses:
+        '201':
+          description: Project created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthProjectResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          $ref: '#/components/responses/SynthForbidden'
+    get:
+      operationId: listSynthProjects
+      summary: List the organization's projects
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Projects ordered by creation time (empty list, never null).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthProjectListResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+  /synth/projects/{id}:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    get:
+      operationId: getSynthProject
+      summary: Get one project (foreign-org ids are 404)
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthProjectResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    put:
+      operationId: updateSynthProject
+      summary: Rename a project
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthProjectCreateRequest'
+      responses:
+        '200':
+          description: The renamed project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthProjectResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    delete:
+      operationId: deleteSynthProject
+      summary: Delete a project (cascades to its targets and environments)
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthDeletedResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/targets:
+    post:
+      operationId: createSynthTarget
+      summary: |
+        Register an application under test (starts UNVERIFIED with a
+        challenge token issued server-side; execute nothing against it
+        until the ownership challenge is confirmed).
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthTargetCreateRequest'
+      responses:
+        '201':
+          description: Target created (verified=false).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthTargetResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    get:
+      operationId: listSynthTargets
+      summary: List targets, optionally narrowed to one project
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: project_id
+        in: query
+        required: false
+        description: When present, only targets of this project are returned.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Targets ordered by creation time (empty list, never null).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthTargetListResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+  /synth/targets/{id}:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    get:
+      operationId: getSynthTarget
+      summary: Get one target (never carries challenge-token material)
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthTargetResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    put:
+      operationId: updateSynthTarget
+      summary: Rename a target (verification state is owned by the verify flow)
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthTargetUpdateRequest'
+      responses:
+        '200':
+          description: The renamed target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthTargetResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    delete:
+      operationId: deleteSynthTarget
+      summary: Delete a target (dependent environments are removed with it)
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthDeletedResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/targets/{id}/verify:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    post:
+      operationId: verifySynthTarget
+      summary: Issue the ownership challenge OR confirm it (verified=true)
+      description: |
+        Challenge/confirm flow proving control of the target's base_url.
+
+        * Empty body (or {"action":"issue"}) ISSUES the ownership challenge
+          and returns the one-time token exactly once
+          (status "challenge_issued"). Surface the token on the target
+          (e.g. /.well-known/agentos-synth-challenge) and confirm.
+        * {"token":"<challenge>"} CONFIRMS: on match the target flips to
+          verified=true and the one-time token is consumed. A mismatch is
+          403 VERIFICATION_FAILED. Confirming an already-verified target is
+          an idempotent 200; re-issuing on a verified target is a no-op
+          that never silently un-verifies.
+
+        Tests execute only against VERIFIED targets: the worker-plane
+        ScopeGuard denies every action (reads included) on unverified
+        targets.
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthVerifyRequest'
+      responses:
+        '200':
+          description: |
+            Either a challenge issue (status "challenge_issued"; the ONLY
+            response carrying the one-time token) or a confirmation /
+            idempotent no-op (status "verified").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthVerifyResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          description: Challenge token mismatch (VERIFICATION_FAILED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/targets/{id}/environments:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    post:
+      operationId: createSynthEnvironment
+      summary: Bind a runnable context with hard safety rails to a target
+      description: |
+        Mode semantics (types.go): production environments DEFAULT to
+        production_read_only; pre_production is never valid on production;
+        production requires a non-empty allowed_domains allowlist; rate
+        caps are honored only in pre_production (a cap on any other mode is
+        a validation error, never silently dropped).
+
+        EXTRA handler gate (not a permission): production test enablement
+        requires the OWNER or ADMIN role even for synth.write holders.
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthEnvironmentSpec'
+      responses:
+        '201':
+          description: Environment created (kind-derived default mode applied).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthEnvironmentResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          $ref: '#/components/responses/SynthForbidden'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    get:
+      operationId: listSynthTargetEnvironments
+      summary: List a target's environments
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Environments of the target (empty list, never null).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthEnvironmentListResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/environments/{id}:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    get:
+      operationId: getSynthEnvironment
+      summary: Get one environment
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthEnvironmentResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    put:
+      operationId: updateSynthEnvironment
+      summary: Replace the safety posture (re-validated; production cannot escalate)
+      description: |
+        The full spec is re-validated, so a production environment can never
+        escalate to pre_production and can never drop its allowlist. Identity
+        fields (org, target) are immutable. EXTRA handler gate: a
+        production-kind spec requires the OWNER or ADMIN role.
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthEnvironmentSpec'
+      responses:
+        '200':
+          description: The updated environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthEnvironmentResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          $ref: '#/components/responses/SynthForbidden'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    delete:
+      operationId: deleteSynthEnvironment
+      summary: Delete an environment
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthDeletedResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/personas:
+    post:
+      operationId: createSynthPersona
+      summary: Register a synthetic identity profile
+      description: |
+        Personas NEVER impersonate real customer accounts — a persona is
+        either a documented built-in key (visitor, new_user, returning_user,
+        standard_customer, administrator, restricted_user, mobile_user,
+        accessibility_user, slow_network_user) or a custom one (built_in
+        omitted). Constraints are declarative traits only; synthetic
+        credentials map by reference and never live in this record.
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthPersonaSpec'
+      responses:
+        '201':
+          description: Persona created (version 1).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthPersonaResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          $ref: '#/components/responses/SynthForbidden'
+    get:
+      operationId: listSynthPersonas
+      summary: List the organization's personas
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Personas ordered by creation time (empty list, never null).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthPersonaListResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+  /synth/personas/{id}:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    get:
+      operationId: getSynthPersona
+      summary: Get one persona
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The persona.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthPersonaResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    put:
+      operationId: updateSynthPersona
+      summary: Update a persona (bumps the version journeys pin against)
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthPersonaSpec'
+      responses:
+        '200':
+          description: The updated persona with an incremented version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthPersonaResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    delete:
+      operationId: deleteSynthPersona
+      summary: Delete a persona
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthDeletedResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+
+# ---- wave-10 round-3 fragment: quality-gates.yaml (paths) ----
+  /quality-gates/policies:
+    post:
+      operationId: createQualityGatePolicy
+      summary: Create quality-gate policy version 1
+      description: >
+        Creates a new versioned release-assurance policy. Validation
+        failures (unknown suite kind, out-of-range thresholds, a
+        security_adversarial requirement without fail_closed=true or
+        without an explicit max_severity_allowed, unbounded exceptions)
+        answer 422 VALIDATION_ERROR.
+      x-required-permission: qualitygates.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QualityGatePolicyInput" }
+      responses:
+        "201":
+          description: Created (version 1).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+    get:
+      operationId: listQualityGatePolicies
+      summary: List the organization's quality-gate policies (latest versions)
+      x-required-permission: qualitygates.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        "200":
+          description: The latest version of every policy (name-sorted).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies:
+                    type: array
+                    items: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+  /quality-gates/policies/{id}:
+    parameters:
+    - $ref: "#/components/parameters/QualityGatesPolicyID"
+    get:
+      operationId: getQualityGatePolicy
+      summary: Read one policy version
+      description: >
+        Returns the latest version by default; `?version=N` pins an exact
+        immutable version. Unknown or foreign ids are 404.
+      x-required-permission: qualitygates.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: version
+        in: query
+        required: false
+        description: Pin an exact policy version (positive integer; default latest).
+        schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The policy version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+    put:
+      operationId: updateQualityGatePolicy
+      summary: Append a new immutable version of the policy
+      description: >
+        Validates the input and appends version N+1 (history is retained;
+        prior versions remain readable via `?version=`). Validation
+        failures answer 422.
+      x-required-permission: qualitygates.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QualityGatePolicyInput" }
+      responses:
+        "200":
+          description: The new version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+    delete:
+      operationId: deleteQualityGatePolicy
+      summary: Delete every version of the policy
+      x-required-permission: qualitygates.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        "200":
+          description: Deleted (id echoed back).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: string }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+  /quality-gates/evaluate:
+    post:
+      operationId: evaluateQualityGate
+      summary: Evaluate a policy against explicit evidence refs
+      description: >
+        Resolves the tenant-scoped evidence records by ref, evaluates the
+        policy deterministically and returns the Decision
+        (recommendation + per-suite check results). The decision is a
+        RECOMMENDATION: applying promote/rollback/abort to live traffic is
+        the orchestrator's CanaryAdvisor wiring — evaluation never mutates
+        canaries. Unknown/foreign refs are 404; inactive policies are 422
+        POLICY_INACTIVE; tampered evidence is 422 EVIDENCE_TAMPERED.
+      x-required-permission: qualitygates.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policy_id]
+              properties:
+                policy_id: { type: string, description: The policy to evaluate (latest version). }
+                evidence_refs:
+                  type: array
+                  items: { type: string }
+                  description: Evidence record ids (as returned by the assurance producers). Missing refs for a required suite leave that check blocked.
+      responses:
+        "200":
+          description: The deterministic decision.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  decision: { $ref: "#/components/schemas/QualityGateDecision" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+  /quality-gates/exceptions:
+    post:
+      operationId: approveQualityGateException
+      summary: Approve a time-bounded exception on a policy
+      description: >
+        Appends a waiver to the policy as a NEW version and emits the
+        qualitygates.exception_approved audit event. expires_at is
+        REQUIRED and must be strictly in the future (exceptions are
+        time-bounded only); suite must be a non-security kind ("" waives
+        every non-security suite). approved_by is ALWAYS the authenticated
+        actor — the request body cannot attribute a waiver to someone
+        else.
+      x-required-permission: qualitygates.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policy_id, reason, expires_at]
+              properties:
+                policy_id: { type: string }
+                suite:
+                  type: string
+                  description: The waived suite kind ("" = every non-security suite). security_adversarial is structurally unwaivable.
+                  enum: [evaluations, synthetic_journeys, canary_health]
+                reason: { type: string, minLength: 1 }
+                expires_at: { type: string, format: date-time, description: RFC3339; must be strictly in the future. }
+      responses:
+        "200":
+          description: The new policy version carrying the exception.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+
 components:
   parameters:
+    # ---- wave-10 round-3 fragment: synth-registry.yaml (parameters) ----
+    SynthID:
+      name: id
+      in: path
+      required: true
+      description: Resource id (UUID, as returned by the create operation).
+      schema:
+        type: string
+
+    # ---- wave-10 round-3 fragment: quality-gates.yaml (parameters) ----
+    QualityGatesPolicyID:
+      name: id
+      in: path
+      required: true
+      description: Quality-gate policy id (UUID, as returned by the create operation).
+      schema:
+        type: string
+        minLength: 1
+
     # ---- wave-10 fragment: agents-portability.yaml (parameters) ----
     PortAgentID:
       name: id
@@ -9741,6 +10512,101 @@ components:
         type: string
 
   securitySchemes:
+    # ---- wave-10 round-3 fragment: synth-registry.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 round-3 fragment: synth-workers.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Superset JWT access token issued by the auth service (POST /auth/login, POST /auth/refresh).
+    apiKey:
+      type: http
+      scheme: bearer
+      description: Tenant API key ("sk_..." minted via /api-keys; org-scoped).
+
+    # ---- wave-10 round-3 fragment: synth-journeys.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 round-3 fragment: synth-evidence.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 round-3 fragment: synth-github.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 round-3 fragment: quality-gates.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 round-3 fragment: adversarial-evals.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 round-3 fragment: synth-explore.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
     # ---- wave-10 fragment: agents-portability.yaml (securitySchemes) ----
     bearerToken:
       type: http
@@ -9982,6 +10848,71 @@ components:
 
         '
   responses:
+    # ---- wave-10 round-3 fragment: synth-registry.yaml (responses) ----
+    SynthValidationError:
+      description: Invalid input (400 VALIDATION_ERROR).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SynthErrorEnvelope'
+    SynthUnauthorized:
+      description: Missing or invalid credentials (401 UNAUTHORIZED).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SynthErrorEnvelope'
+    SynthForbidden:
+      description: |
+        Insufficient role (403 FORBIDDEN — e.g. production test enablement
+        without OWNER/ADMIN).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SynthErrorEnvelope'
+    SynthNotFound:
+      description: |
+        Unknown OR foreign-org id (404 NOT_FOUND — the tenant guard makes
+        both indistinguishable; no existence leak across organizations).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SynthErrorEnvelope'
+
+    # ---- wave-10 round-3 fragment: quality-gates.yaml (responses) ----
+    QualityGatesValidation:
+      description: >
+        Validation error (unknown suite kind, out-of-range thresholds, a
+        softened security requirement, unbounded/past exception expiry,
+        inactive policy [code POLICY_INACTIVE], tampered evidence [code
+        EVIDENCE_TAMPERED], malformed version query).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+    QualityGatesUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+    QualityGatesForbidden:
+      description: >
+        Not permitted for this tier (reads/evaluate qualitygates.read —
+        all roles; writes/exceptions qualitygates.write — OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+    QualityGatesNotFound:
+      description: >
+        Unknown id OR an id belonging to another organization (foreign
+        resources are indistinguishable from unknown ones).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+    QualityGatesInternal:
+      description: Internal error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+
     # ---- wave-10 fragment: agents-portability.yaml (responses) ----
     PortUnauthorized:
       description: Missing or invalid credentials.
@@ -19639,6 +20570,2054 @@ components:
           type: array
           items: { $ref: "#/components/schemas/BatchItem" }
       required: [batch_id, status, summary, items]
+
+      # ---- wave-10 round-3 fragment: synth-registry.yaml (schemas) ----
+    SynthProject:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+          description: Always the caller's organization (from the auth claims).
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - name
+      - created_at
+      - updated_at
+    SynthProjectCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+      required:
+      - name
+    SynthProjectResponse:
+      type: object
+      properties:
+        project:
+          $ref: '#/components/schemas/SynthProject'
+      required:
+      - project
+    SynthProjectListResponse:
+      type: object
+      properties:
+        projects:
+          type: array
+          description: Ordered by creation time; empty when the org has none.
+          items:
+            $ref: '#/components/schemas/SynthProject'
+      required:
+      - projects
+    SynthTarget:
+      type: object
+      description: |
+        Never carries the ownership challenge token: the one-time secret is
+        rendered exactly once by POST /synth/targets/{id}/verify when it
+        issues a challenge.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        project_id:
+          type: string
+        name:
+          type: string
+        base_url:
+          type: string
+          description: Absolute http(s) URL of the application under test.
+        verified:
+          type: boolean
+          description: Tests execute only against verified targets.
+        verified_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - project_id
+      - name
+      - base_url
+      - verified
+      - verified_at
+      - created_at
+      - updated_at
+    SynthTargetCreateRequest:
+      type: object
+      properties:
+        project_id:
+          type: string
+        name:
+          type: string
+          minLength: 1
+        base_url:
+          type: string
+          description: Absolute http(s) URL (scheme + host required).
+      required:
+      - project_id
+      - name
+      - base_url
+    SynthTargetUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+      required:
+      - name
+    SynthTargetResponse:
+      type: object
+      properties:
+        target:
+          $ref: '#/components/schemas/SynthTarget'
+      required:
+      - target
+    SynthTargetListResponse:
+      type: object
+      properties:
+        targets:
+          type: array
+          description: Ordered by creation time; empty when none match.
+          items:
+            $ref: '#/components/schemas/SynthTarget'
+      required:
+      - targets
+    SynthVerifyRequest:
+      type: object
+      description: |
+        Empty (or action="issue") issues a challenge; a non-empty token
+        confirms ownership.
+      properties:
+        action:
+          type: string
+          enum:
+          - issue
+          description: Currently only "issue" is meaningful (the default).
+        token:
+          type: string
+          description: The one-time challenge token to confirm (empty = issue).
+    SynthVerification:
+      type: object
+      description: Present ONLY on a challenge issue; carries the one-time token.
+      properties:
+        token:
+          type: string
+          description: The one-time ownership challenge secret.
+        instructions:
+          type: string
+      required:
+      - token
+      - instructions
+    SynthVerifyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+          - challenge_issued
+          - verified
+        target:
+          $ref: '#/components/schemas/SynthTarget'
+        verification:
+          oneOf:
+          - $ref: '#/components/schemas/SynthVerification'
+          - type: 'null'
+          description: Present only when status is challenge_issued.
+      required:
+      - status
+      - target
+    SynthQuietWindow:
+      type: object
+      description: |
+        Timezone-aware interval policy on weekdays (0=Sunday .. 6=Saturday)
+        between start and end ("HH:MM", location = IANA name).
+      properties:
+        weekdays:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+        start:
+          type: string
+          description: 'HH:MM (24-hour clock).'
+          examples:
+          - '22:00'
+        end:
+          type: string
+          description: 'HH:MM (24-hour clock).'
+          examples:
+          - '04:00'
+        location:
+          type: string
+          description: Loadable IANA timezone name.
+          examples:
+          - Europe/Berlin
+        reason:
+          type: string
+      required:
+      - weekdays
+      - start
+      - end
+      - location
+    SynthEnvironment:
+      type: object
+      description: |
+        A runnable context with hard safety rails. The mode pins the
+        enforcement posture: pre_production allows full write journeys;
+        production_read_only denies every state-changing action
+        server-side; release_comparison allows writes only through
+        isolated synthetic accounts.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        target_id:
+          type: string
+        kind:
+          type: string
+          enum:
+          - local
+          - dev
+          - staging
+          - production
+        mode:
+          type: string
+          enum:
+          - pre_production
+          - production_read_only
+          - release_comparison
+        allowed_domains:
+          type: array
+          description: |
+            Network policy: requests outside these hosts are scope
+            violations. REQUIRED (non-empty) for production environments.
+          items:
+            type: string
+        rate_cap_per_min:
+          type: integer
+          description: 0 = unlimited; honored only in pre_production mode.
+        budget_per_run:
+          type: integer
+          description: Max steps per run (0 = default 200).
+        quiet_windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthQuietWindow'
+        test_windows:
+          type: array
+          description: When non-empty, runs are allowed ONLY inside these.
+          items:
+            $ref: '#/components/schemas/SynthQuietWindow'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - target_id
+      - kind
+      - mode
+      - allowed_domains
+      - rate_cap_per_min
+      - budget_per_run
+      - quiet_windows
+      - test_windows
+      - created_at
+      - updated_at
+    SynthEnvironmentSpec:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum:
+          - local
+          - dev
+          - staging
+          - production
+        mode:
+          type: string
+          enum:
+          - pre_production
+          - production_read_only
+          - release_comparison
+          description: |
+            Omitted = kind-derived default (production ->
+            production_read_only, everything else -> pre_production).
+        allowed_domains:
+          type: array
+          items:
+            type: string
+        rate_cap_per_min:
+          type: integer
+          minimum: 0
+          description: Pre-production mode only; a cap elsewhere is a 400.
+        budget_per_run:
+          type: integer
+          minimum: 0
+        quiet_windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthQuietWindow'
+        test_windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthQuietWindow'
+      required:
+      - kind
+    SynthEnvironmentResponse:
+      type: object
+      properties:
+        environment:
+          $ref: '#/components/schemas/SynthEnvironment'
+      required:
+      - environment
+    SynthEnvironmentListResponse:
+      type: object
+      properties:
+        environments:
+          type: array
+          description: Empty list, never null.
+          items:
+            $ref: '#/components/schemas/SynthEnvironment'
+      required:
+      - environments
+    SynthPersona:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        built_in:
+          type: string
+          description: '"" for custom; else a documented built-in key.'
+          enum:
+          - ''
+          - visitor
+          - new_user
+          - returning_user
+          - standard_customer
+          - administrator
+          - restricted_user
+          - mobile_user
+          - accessibility_user
+          - slow_network_user
+        role_hints:
+          type: array
+          description: Role/permission hints for journey planning.
+          items:
+            type: string
+        constraints:
+          type: object
+          description: Declarative traits (network=slow3g, viewport=mobile, ...).
+          additionalProperties:
+            type: string
+        version:
+          type: integer
+          description: Bumped on every update; journeys pin persona versions.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - name
+      - built_in
+      - role_hints
+      - constraints
+      - version
+      - created_at
+      - updated_at
+    SynthPersonaSpec:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        built_in:
+          type: string
+          description: One of the documented keys, or omitted/empty for custom.
+        role_hints:
+          type: array
+          items:
+            type: string
+        constraints:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+      - name
+    SynthPersonaResponse:
+      type: object
+      properties:
+        persona:
+          $ref: '#/components/schemas/SynthPersona'
+      required:
+      - persona
+    SynthPersonaListResponse:
+      type: object
+      properties:
+        personas:
+          type: array
+          description: Ordered by creation time; empty when the org has none.
+          items:
+            $ref: '#/components/schemas/SynthPersona'
+      required:
+      - personas
+    SynthDeletedResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          description: Always true on success.
+      required:
+      - deleted
+    SynthErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of NOT_FOUND, VALIDATION_ERROR, VERIFICATION_FAILED, FORBIDDEN, UNAUTHORIZED, INTERNAL_ERROR.
+              examples:
+              - NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+
+      # ---- wave-10 round-3 fragment: synth-workers.yaml (schemas) ----
+    SynthWorkerKind:
+      type: string
+      enum: [browser, api]
+      description: Isolation boundary of the executing worker (#148).
+    SynthRunStatus:
+      type: string
+      enum: [pending, queued, running, paused, cancelling, completed, failed, cancelled, inconclusive]
+      description: Versioned test-run state machine. Interrupted/lost workers resolve to inconclusive — never silently lost.
+    SynthStepEvent:
+      type: object
+      required: [index, step_index, type, status]
+      properties:
+        index:
+          type: integer
+        step_index:
+          type: integer
+        type:
+          type: string
+          enum: [action, assertion, console, network, error, navigation]
+        status:
+          type: string
+          enum: [passed, failed, skipped, blocked, inconclusive]
+          description: Failed/skipped/blocked/inconclusive are distinct — a skipped assertion is never a pass.
+        message:
+          type: string
+        redacted_meta:
+          type: object
+          additionalProperties:
+            type: string
+          description: Request/response metadata with authorization/cookie/set-cookie values stripped by the redaction engine.
+        evidence_ref:
+          type: string
+          description: Opaque reference into the evidence store (screenshots, Playwright traces, console/network captures).
+        at:
+          type: string
+          format: date-time
+    SynthRunOptions:
+      type: object
+      properties:
+        app_version:
+          type: string
+          description: Build/release under test — the pin used by release comparison (#156).
+        max_steps:
+          type: integer
+          description: Hard step budget for this run.
+        kill_switch:
+          type: boolean
+          description: When true the run is refused (global/project kill switch active).
+    SynthWorkerHealth:
+      type: object
+      required: [kind, healthy, in_flight]
+      properties:
+        kind:
+          $ref: '#/components/schemas/SynthWorkerKind'
+        healthy:
+          type: boolean
+        in_flight:
+          type: integer
+        last_heartbeat:
+          type: string
+          format: date-time
+        stale:
+          type: boolean
+          description: True when the heartbeat is older than the configured threshold — supervised runs become recoverable or explicitly inconclusive.
+
+      # ---- wave-10 round-3 fragment: synth-journeys.yaml (schemas) ----
+    SynthPersona:
+      type: object
+      description: |
+        A synthetic identity profile (issue #147/#149). Personas NEVER
+        impersonate real customer accounts — they map to dedicated synthetic
+        credentials by reference only. `built_in` is empty for custom
+        personas; when set it must be one of the 9 built-in keys and the
+        profile must match the canonical definition exactly (anti-forgery:
+        custom personas cannot claim built-in keys).
+      properties:
+        id:
+          type: string
+          description: Persona id (org-scoped).
+        org_id:
+          type: string
+          description: Owning organization id.
+        name:
+          type: string
+          description: Human-readable persona name.
+        built_in:
+          type: string
+          enum:
+          - ''
+          - visitor
+          - new_user
+          - returning_user
+          - standard_customer
+          - administrator
+          - restricted_user
+          - mobile_user
+          - accessibility_user
+          - slow_network_user
+          description: |
+            Empty for custom personas; else the built-in key. A persona
+            carrying a built-in key must match the canonical role hints and
+            constraints byte-for-byte.
+        role_hints:
+          type: array
+          description: Role/permission hints for journey planning (advisory).
+          items:
+            type: string
+        constraints:
+          type: object
+          description: |
+            Deterministic test constraints (lowercase snake_case keys).
+            Canonical keys: network (slow3g|regular), viewport
+            (mobile|desktop), a11y (strict|none), input
+            (keyboard_only|touch|pointer). Org-extension keys are allowed.
+          additionalProperties:
+            type: string
+        version:
+          type: integer
+          description: |
+            Bumped on every mutation; run snapshots pin (id, version).
+            Built-in personas are immutable (derive a custom one instead).
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - name
+      - role_hints
+      - constraints
+      - version
+    SynthJourneyStep:
+      type: object
+      description: |
+        One atomic action. Deterministic steps carry explicit
+        selectors/inputs; AI-assisted navigation is a hint (Hint), never the
+        oracle. Write operations MUST be flagged (write_op); runtime
+        enforcement against the environment mode is the worker's (#148).
+      properties:
+        index:
+          type: integer
+          description: Sequential position (0-based); spec identity requires strict ordering.
+        action:
+          type: string
+          enum:
+          - navigate
+          - click
+          - fill
+          - select
+          - wait
+          - api_call
+          - assert
+          - extract
+        target:
+          type: string
+          description: Selector, URL, or API spec reference (may be empty only for wait).
+        value:
+          type: string
+          description: Input value or wait duration; never a secret (no PII).
+        write_op:
+          type: boolean
+          description: True when the step changes application state.
+        timeout_ms:
+          type: integer
+          description: Step timeout; 0 = worker default.
+        hint:
+          type: string
+          description: Optional AI navigation hint — never part of the oracle.
+      required:
+      - index
+      - action
+      - target
+      - write_op
+    SynthAssertion:
+      type: object
+      description: |
+        A deterministic, versioned expected outcome. Every journey carries at
+        least one assertion — explicit success criteria are mandatory and
+        model confidence can never mark a run passed (issue #149).
+      properties:
+        kind:
+          type: string
+          enum:
+          - element_visible
+          - text_contains
+          - api_status
+          - json_schema
+          - url_pattern
+          - no_console_error
+          - a11y_violations_below
+          - latency_below_ms
+        target:
+          type: string
+          description: Selector/URL/schema reference; may be empty only for page-wide kinds (no_console_error, a11y_violations_below).
+        expected:
+          type: string
+          description: The expected value (text, status code, pattern, threshold).
+        severity:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+          - critical
+          description: Failure severity; drives finding triage (#150).
+      required:
+      - kind
+      - target
+      - expected
+      - severity
+    SynthJourney:
+      type: object
+      description: |
+        A versioned test specification: explicit preconditions, steps,
+        assertions, cleanup. Lifecycle draft → reviewed → scheduled → retired;
+        drafts are the only editable state (reviewed/scheduled are immutable
+        except via the version-bump clone). Write-op journeys MUST define
+        cleanup steps.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        project_id:
+          type: string
+        environment_id:
+          type: string
+          description: Environment the journey runs against (verified target, #147).
+        persona_id:
+          type: string
+          description: Synthetic persona executing the journey (same org).
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+          - draft
+          - reviewed
+          - scheduled
+          - retired
+        risk:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+          - critical
+          description: Risk classification; required. Scheduling requires review, and high/critical journeys require an auditable review record for the current version.
+        version:
+          type: integer
+          description: Bumped on every spec mutation and on the version-bump clone.
+        preconditions:
+          type: array
+          description: Explicit preconditions; fixture references (fixture:<name>:v<n>) travel here and feed run snapshots.
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthJourneyStep'
+        assertions:
+          type: array
+          minItems: 1
+          description: ALWAYS non-empty — the deterministic success criteria.
+          items:
+            $ref: '#/components/schemas/SynthAssertion'
+        cleanup:
+          type: array
+          description: Steps restoring state; REQUIRED when any step has write_op=true.
+          items:
+            $ref: '#/components/schemas/SynthJourneyStep'
+        tags:
+          type: array
+          description: Product capability tags; drive the coverage report (JourneyCoverage).
+          items:
+            type: string
+        source:
+          type: string
+          enum:
+          - authored
+          - exploration
+          - regression
+          description: Provenance of the spec.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - project_id
+      - environment_id
+      - persona_id
+      - name
+      - status
+      - risk
+      - version
+      - steps
+      - assertions
+    SynthCapabilityCoverage:
+      type: object
+      description: Journeys covering one normalized product capability tag.
+      properties:
+        capability:
+          type: string
+          description: Normalized tag (trimmed, lowercased).
+        journey_ids:
+          type: array
+          items:
+            type: string
+        status_counts:
+          type: object
+          description: Journey count per lifecycle status within this capability.
+          additionalProperties:
+            type: integer
+      required:
+      - capability
+      - journey_ids
+      - status_counts
+    SynthJourneyCoverage:
+      type: object
+      description: |
+        Capability coverage report (MapCapabilities): journeys → product
+        capability tags from SynthJourney.tags. Deterministic ordering
+        (sorted capabilities, sorted journey ids); journeys without tags are
+        listed separately and never silently count as coverage. Gaps
+        (requested capabilities with zero journeys) are the release-gate
+        primitive (#152).
+      properties:
+        total_journeys:
+          type: integer
+        untagged_journey_ids:
+          type: array
+          items:
+            type: string
+        capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthCapabilityCoverage'
+      required:
+      - total_journeys
+      - untagged_journey_ids
+      - capabilities
+
+      # ---- wave-10 round-3 fragment: synth-evidence.yaml (schemas) ----
+    SynthEvidenceBundle:
+      type: object
+      description: |
+        Versioned evidence record for one synthetic run (issue #150). Every
+        artifact reference points at REDACTED artifacts; secrets never enter
+        the bundle. The schema_version must be pinned by consumers; the
+        bundle id is deterministic (evd_<sha256[0:16]> over version, org,
+        run, journey, journey version and capture time).
+      properties:
+        schema_version:
+          type: integer
+          description: Bundle schema version (currently 1). Bumped on incompatible changes.
+        bundle_id:
+          type: string
+          description: Deterministic id, "evd_" + 16 hex chars.
+        org_id:
+          type: string
+          description: Owning organization (tenant scope; isolation is non-negotiable).
+        project_id:
+          type: string
+        run_id:
+          type: string
+        run_kind:
+          type: string
+          enum: [browser, api]
+        run_status:
+          type: string
+          description: >
+            Run status at capture time: pending, queued, running, paused,
+            cancelling, completed, failed, cancelled or inconclusive.
+        journey_id:
+          type: string
+        journey_version:
+          type: integer
+          description: Journey spec version the run executed.
+        persona_id:
+          type: string
+        persona_version:
+          type: integer
+          description: Persona version the run executed.
+        environment_id:
+          type: string
+        environment_kind:
+          type: string
+          enum: [local, dev, staging, production]
+        environment_mode:
+          type: string
+          enum: [pre_production, production_read_only, release_comparison]
+        app_version:
+          type: string
+          description: App/build under test (release comparison).
+        captured_at:
+          type: string
+          format: date-time
+        run_started_at:
+          type: string
+          format: date-time
+          nullable: true
+        run_finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        failing_assertion:
+          nullable: true
+          $ref: '#/components/schemas/SynthAssertionOutcome'
+        assertion_results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthAssertionOutcome'
+        repro_steps:
+          type: array
+          description: Deterministic, human-executable reproduction procedure.
+          items:
+            type: string
+        screenshot_refs:
+          type: array
+          description: >
+            Redacted screenshot artifact refs. Structurally absent for
+            non-admin roles (heavy artifacts are withheld, with tombstone
+            markers left in redacted_meta).
+          items:
+            type: string
+        browser_trace_ref:
+          type: string
+          nullable: true
+          description: Redacted browser trace artifact ref; withheld for non-admin roles.
+        console_refs:
+          type: array
+          items:
+            type: string
+        network_refs:
+          type: array
+          items:
+            type: string
+        other_refs:
+          type: array
+          description: 'Refs outside the screenshot:/trace:/console:/network: prefix convention.'
+          items:
+            type: string
+        correlation_ids:
+          type: object
+          description: Trace/span/request ids, post-redaction.
+          additionalProperties:
+            type: string
+        redacted_meta:
+          type: object
+          description: Free-form metadata after RedactionEngine processing.
+          additionalProperties:
+            type: string
+      required:
+      - schema_version
+      - bundle_id
+      - org_id
+      - run_id
+      - captured_at
+    SynthAssertionOutcome:
+      type: object
+      description: Deterministic result of one journey assertion as observed.
+      properties:
+        index:
+          type: integer
+          description: Index within the journey's assertion list.
+        kind:
+          type: string
+          enum: [element_visible, text_contains, api_status, json_schema, url_pattern, no_console_error, a11y_violations_below, latency_below_ms]
+        target:
+          type: string
+          description: Selector / URL / schema ref the assertion checked.
+        expected:
+          type: string
+        actual:
+          type: string
+        passed:
+          type: boolean
+        message:
+          type: string
+          description: Failure detail (pre-redacted by the worker).
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        at:
+          type: string
+          format: date-time
+      required:
+      - index
+      - kind
+      - passed
+    SynthFinding:
+      type: object
+      description: |
+        A defect finding linking the exact run/journey/assertion that
+        produced it with a stable dedup fingerprint (issue #150). Statuses
+        follow the enforced taxonomy; a confirmed defect is independently
+        reproduced. Hypothesis text (if any) is language-enforced to carry
+        the "hypothesis:" prefix marker and is never presented as verified
+        root cause.
+      properties:
+        id:
+          type: string
+          description: Occurrence-row id ("fnd_" + 24 hex chars).
+        org_id:
+          type: string
+        run_id:
+          type: string
+          description: Run that produced this occurrence.
+        journey_id:
+          type: string
+        assertion_ix:
+          type: integer
+          description: Failing assertion index (-1 when none).
+        status:
+          type: string
+          enum: [confirmed, likely, flaky, harness_failure, environmental_failure, inconclusive]
+          description: |
+            confirmed = independently reproduced; likely = failed with
+            consistent deterministic signals, no repro yet; flaky = passes
+            on isolated re-run; harness_failure = driver/worker errors (app
+            not implicated); environmental_failure = infra signals;
+            inconclusive = insufficient signals. Terminal-ish statuses
+            (harness/environmental) are reclassified only with new evidence.
+        severity:
+          type: string
+          enum: [info, low, medium, high, critical]
+        title:
+          type: string
+        description:
+          type: string
+          description: >
+            Deterministic description; AI-assisted root-cause hypotheses are
+            appended as separate lines starting with "hypothesis:".
+        fingerprint:
+          type: string
+          description: >
+            Stable SHA-256 over the canonical JSON of
+            {org, target, assertion_kind, failure_class}. The org is inside
+            the hash, so dedup never merges across tenants.
+        repro_steps:
+          type: string
+        evidence_refs:
+          type: array
+          description: Redacted artifact refs (union across occurrences; history preserved).
+          items:
+            type: string
+        repro_run_id:
+          type: string
+          nullable: true
+          description: Run id of the isolated reproduction attempt, when one exists.
+        reproducible:
+          type: boolean
+          nullable: true
+          description: >
+            True only when the isolated re-run independently reproduced the
+            failure; false when it did not; null when never attempted.
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: >
+            0-1 confidence from documented per-status bases plus 0.10 x
+            evidence-bundle completeness.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - run_id
+      - status
+      - severity
+      - fingerprint
+      - confidence
+      - created_at
+      - updated_at
+    SynthOccurrence:
+      type: object
+      description: |
+        One observed instance of a deduped finding. The occurrence log is
+        append-only (extend via the occurrence history, never rewrite it)
+        and never merged across organizations.
+      properties:
+        run_id:
+          type: string
+          description: Run that produced this occurrence.
+        at:
+          type: string
+          format: date-time
+          description: When the occurrence was recorded (injectable server clock).
+      required:
+      - run_id
+      - at
+    SynthReproResult:
+      type: object
+      description: |
+        Outcome of one independent reproduction attempt. Reproduction runs
+        in an ISOLATED environment via a narrow runner seam; production
+        writes are never replayed, and production_read_only environments
+        admit only the read-only subset (runners that cannot guarantee it
+        are refused up-front).
+      properties:
+        repro_run_id:
+          type: string
+          description: Run id of the isolated re-run.
+        reproduced:
+          type: boolean
+          description: True when the failure independently reproduced.
+        at:
+          type: string
+          format: date-time
+        environment_id:
+          type: string
+          description: Isolated environment used (allocated by the runner).
+        mode:
+          type: string
+          enum: [pre_production, production_read_only, release_comparison]
+        read_only_subset:
+          type: boolean
+          description: >
+            True when the attempt was constrained to non-write steps
+            (mandatory under production_read_only).
+        note:
+          type: string
+          description: Optional runner note (runner-owned, pre-redacted).
+      required:
+      - repro_run_id
+      - reproduced
+      - at
+
+      # ---- wave-10 round-3 fragment: synth-github.yaml (schemas) ----
+    SynthGitHubRef:
+      type: object
+      description: |
+        Tracks the external GitHub issue created from a synthetic-assurance
+        finding (mirrors the pinned `synth.GitHubRef` type). The
+        (org_id, fingerprint) pair is the idempotency anchor: at most one
+        issue per finding fingerprint per organization. `repo` is always a
+        repository from the org's server-side allowlist — the syncer refuses
+        any repository outside it before issuing a network call.
+      properties:
+        id:
+          type: string
+          description: Link record id (deterministic function of finding id + fingerprint).
+        org_id:
+          type: string
+          description: Owning organization (tenant scope; cross-tenant reads are impossible).
+        finding_id:
+          type: string
+          description: The synthetic-assurance finding this issue was created from.
+        fingerprint:
+          type: string
+          description: Stable finding fingerprint (org+target+assertion+failure-class) — the idempotency key.
+        repo:
+          type: string
+          description: Allow-listed repository as "owner/name".
+          examples:
+          - octo/demo
+        issue_number:
+          type: integer
+          description: GitHub issue number.
+        issue_url:
+          type: string
+          description: Canonical issue URL (html_url).
+        idempotency_key:
+          type: string
+          description: Stable sync idempotency key ("synth-finding:" + fingerprint).
+          examples:
+          - synth-finding:fp-abc123
+        synced_at:
+          type: string
+          format: date-time
+          description: Last successful sync (creation, update, or verified no-op).
+      required:
+      - id
+      - org_id
+      - finding_id
+      - fingerprint
+      - repo
+      - issue_number
+      - issue_url
+      - idempotency_key
+      - synced_at
+    SynthSyncResult:
+      type: object
+      description: |
+        Outcome of one idempotent sync round-trip (the wire projection of
+        `synth.SyncResult`). Exactly one of created/updated/unchanged is
+        true. Redaction note: issue titles and bodies are scrubbed through
+        the denylist redaction engine (authorization/cookie/token/secret/
+        password/api[_-]?key) before any data leaves the platform; the
+        response therefore can never echo unredacted customer secrets.
+      properties:
+        github_ref:
+          $ref: '#/components/schemas/SynthGitHubRef'
+        created:
+          type: boolean
+          description: True when this call created the issue.
+        updated:
+          type: boolean
+          description: True when this call updated an already-linked issue.
+        unchanged:
+          type: boolean
+          description: True when content matched and no write was issued.
+      required:
+      - github_ref
+      - created
+      - updated
+      - unchanged
+    SynthVerificationResult:
+      type: object
+      description: |
+        Outcome of a fix verification: the confirmed finding's deterministic
+        regression candidate was executed on an isolated runner (never
+        production — the runner seam enforces the environment write policy).
+        `outcome` is pass|fail|inconclusive; runner/harness errors map to
+        inconclusive, never to fail (a broken harness is not product
+        evidence). finding_id + fingerprint + journey_id link the verdict
+        back to the original finding and its generated candidate.
+      properties:
+        finding_id:
+          type: string
+          description: The original finding the verification was run for.
+        fingerprint:
+          type: string
+          description: The original finding's fingerprint.
+        journey_id:
+          type: string
+          description: The generated regression candidate that was executed.
+        outcome:
+          type: string
+          enum:
+          - pass
+          - fail
+          - inconclusive
+          description: |
+            pass = defect no longer reproduces; fail = defect reproduced;
+            inconclusive = harness/runner failure or non-terminal run status.
+        run_id:
+          type: string
+          description: Runner-assigned run id (empty when the runner errored before starting).
+        evidence_refs:
+          type: array
+          description: Redacted evidence artifact references produced by the run.
+          items:
+            type: string
+        detail:
+          type: string
+          description: Short human-readable explanation of the verdict.
+        checked_at:
+          type: string
+          format: date-time
+          description: When the verification ran.
+      required:
+      - finding_id
+      - fingerprint
+      - journey_id
+      - outcome
+      - run_id
+      - evidence_refs
+      - detail
+      - checked_at
+
+      # ---- wave-10 round-3 fragment: quality-gates.yaml (schemas) ----
+    QualityGateSuiteKind:
+      type: string
+      enum: [evaluations, synthetic_journeys, security_adversarial, canary_health]
+      description: >
+        The assurance suite families whose evidence a release gate
+        consumes (eval runs, synthetic journeys, adversarial/security
+        scenarios, canary health).
+    QualityGateSeverity:
+      type: string
+      enum: [info, low, medium, high, critical]
+    QualityGateSuiteRequirement:
+      type: object
+      required: [kind]
+      properties:
+        kind: { $ref: "#/components/schemas/QualityGateSuiteKind" }
+        min_coverage_pct:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Minimum suite coverage in percent (0 disables the gate).
+        min_pass_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Minimum case pass rate (0 disables the gate).
+        max_p95_ms:
+          type: integer
+          minimum: 0
+          description: Maximum tolerated p95 latency in ms (0 disables the gate).
+        max_severity_allowed:
+          allOf:
+          - { $ref: "#/components/schemas/QualityGateSeverity" }
+          description: >
+            Highest tolerated finding severity (a finding ranked above it
+            fails the check). MANDATORY for security_adversarial suites.
+        max_age_ms:
+          type: integer
+          minimum: 0
+          description: Evidence freshness window in ms — older evidence is stale and blocks (0 = never stale).
+        fail_closed:
+          type: boolean
+          description: >
+            Security-critical marker: ignores aggregate score balancing
+            and exceptions. MUST be true for security_adversarial suites
+            (structurally enforced — softer shapes are rejected with 422).
+    QualityGateException:
+      type: object
+      description: A time-bounded waiver. It overrides ONLY non-security suites and only while unexpired.
+      properties:
+        suite:
+          allOf:
+          - { $ref: "#/components/schemas/QualityGateSuiteKind" }
+          description: The waived suite kind ("" matches every non-security suite).
+        reason: { type: string }
+        approved_by:
+          type: string
+          description: The authenticated actor who approved the waiver (never read from a request body).
+        approved_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    QualityGatePolicy:
+      type: object
+      description: Versioned, tenant-scoped release-assurance policy (immutable versions; decisions cite version + evaluation_version).
+      properties:
+        id: { type: string }
+        org_id: { type: string }
+        name: { type: string }
+        version: { type: integer, minimum: 1 }
+        required_suites:
+          type: array
+          items: { $ref: "#/components/schemas/QualityGateSuiteRequirement" }
+        exceptions:
+          type: array
+          items: { $ref: "#/components/schemas/QualityGateException" }
+        active: { type: boolean }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    QualityGatePolicyInput:
+      type: object
+      required: [name, required_suites]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        required_suites:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/QualityGateSuiteRequirement" }
+        active:
+          type: boolean
+          description: Defaults to true when omitted.
+    QualityGateEvidenceSubject:
+      type: object
+      description: The artifact versions the evidence was collected against.
+      properties:
+        app_version: { type: string }
+        agent_id: { type: string }
+        agent_version: { type: integer }
+        model_id: { type: string }
+        prompt_version: { type: string }
+        tool_versions:
+          type: array
+          items: { type: string }
+        workflow_version: { type: string }
+    QualityGateEvidenceFinding:
+      type: object
+      properties:
+        severity: { $ref: "#/components/schemas/QualityGateSeverity" }
+        title: { type: string }
+    QualityGateEvidenceStatus:
+      type: string
+      enum: [completed, inconclusive]
+      description: inconclusive runs are explicitly NOT pass/fail (they block).
+    QualityGateSuiteResult:
+      type: object
+      properties:
+        status: { $ref: "#/components/schemas/QualityGateEvidenceStatus" }
+        coverage_pct: { type: number, minimum: 0, maximum: 100 }
+        cases: { type: integer, minimum: 0 }
+        passed: { type: integer, minimum: 0 }
+        p95_ms: { type: integer, minimum: 0 }
+        findings:
+          type: array
+          items: { $ref: "#/components/schemas/QualityGateEvidenceFinding" }
+    QualityGateEvidenceRecord:
+      type: object
+      description: >
+        Immutable, content-hashed suite evidence snapshot (app / agent /
+        model / prompt / tool / workflow versions + results + collected_at).
+        The store stamps a SHA-256 content hash; tampered records are
+        rejected (422 EVIDENCE_TAMPERED at evaluation).
+      properties:
+        id: { type: string }
+        org_id: { type: string }
+        suite: { $ref: "#/components/schemas/QualityGateSuiteKind" }
+        subject: { $ref: "#/components/schemas/QualityGateEvidenceSubject" }
+        result: { $ref: "#/components/schemas/QualityGateSuiteResult" }
+        collected_at: { type: string, format: date-time }
+        content_hash:
+          type: string
+          description: SHA-256 hex digest over the canonical record (stamped at write, verified on read).
+    QualityGateCheckStatus:
+      type: string
+      enum: [passed, failed, blocked, skipped, stale, inconclusive]
+      description: >
+        passed = thresholds met; failed = threshold (or hard security)
+        failure; blocked = no evidence for a required suite; skipped =
+        waived by an unexpired non-security exception; stale = evidence
+        older than max_age_ms; inconclusive = interrupted/empty run.
+    QualityGateCheckResult:
+      type: object
+      properties:
+        suite: { type: string }
+        status: { $ref: "#/components/schemas/QualityGateCheckStatus" }
+        reason:
+          type: string
+          description: Deterministic explanation quoting the observed value against the threshold (or the waiver/block cause).
+    QualityGateRecommendation:
+      type: string
+      enum: [promote, hold, abort, rollback]
+      description: >
+        promote = every suite passed (or waived); hold = evidence
+        missing/stale/inconclusive (wait for evidence; the canary keeps
+        running); abort = hard security failure (stop the release AND the
+        in-flight canary); rollback = proven quality regression (revert to
+        baseline). Precedence abort > rollback > hold > promote.
+    QualityGateDecision:
+      type: object
+      description: Deterministic evaluation output (same policy + evidence + instant => same decision).
+      properties:
+        policy_id: { type: string }
+        policy_version: { type: integer }
+        policy_evaluation_version:
+          type: string
+          description: Content hash of the exact rule set the decision ran against (audit-grade pin).
+        recommendation: { $ref: "#/components/schemas/QualityGateRecommendation" }
+        check_results:
+          type: array
+          items: { $ref: "#/components/schemas/QualityGateCheckResult" }
+        evaluated_at: { type: string, format: date-time }
+    QualityGatesError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+
+      # ---- wave-10 round-3 fragment: adversarial-evals.yaml (schemas) ----
+    AdversarialSetup:
+      type: object
+      description: Synthetic fixture facts of one scenario. Every value is synthetic — nothing addresses a real system.
+      required: [organization_id]
+      properties:
+        organization_id:
+          type: string
+          description: The attacking tenant whose enforcement configuration the scenario exercises.
+        tool_name:
+          type: string
+          description: Tool the payload steers toward (tool/secret kinds).
+        foreign_organization_id:
+          type: string
+          description: Victim tenant (cross-tenant kinds).
+        foreign_resource_id:
+          type: string
+          description: Foreign resource reference (dataset id, secret name).
+        agent_id:
+          type: string
+          description: Agent under test (delegation/output kinds).
+        target:
+          type: string
+          description: |
+            Optional network target REFERENCE. Allowlist: loopback hosts and
+            RFC 2606 reserved names only; production hosts are rejected at
+            pack registration.
+        via_untrusted_tool_output:
+          type: boolean
+          description: Marks indirect-injection framing (payload embedded in untrusted tool output).
+    AdversarialScenario:
+      type: object
+      description: One versioned adversarial test — a SAFE synthetic payload, the control boundary expected to block it, and the impact grade.
+      required: [id, name, kind, setup, attack_payload, expected_control, severity]
+      properties:
+        id:
+          type: string
+          description: Scenario id, unique within its pack, no whitespace.
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [direct_prompt_injection, indirect_prompt_injection, tool_permission_bypass, cross_tenant_data_access, secret_exposure, unsafe_delegation, output_policy_violation]
+        description:
+          type: string
+        setup:
+          $ref: '#/components/schemas/AdversarialSetup'
+        attack_payload:
+          type: string
+          maxLength: 8192
+          description: |
+            SAFE synthetic marker text (e.g. "IGNORE-PREVIOUS-AND-TOOL-CALL-<marker>").
+            Never executed, never aimed outside the target allowlist; must not
+            contain executable content (NUL, shebang, command substitution,
+            pipe-to-shell launchers).
+        expected_control:
+          type: string
+          enum: [policy_enforcer, runtime_tool_permission, tenant_store_guard, secrets_guard, delegation_gate, output_gate]
+        severity:
+          type: string
+          enum: [info, low, medium, high, critical]
+    AdversarialPack:
+      type: object
+      description: A versioned, named collection of scenarios (max 100).
+      required: [id, name, version, scenarios]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+          description: Required — packs are versioned; duplicate ids are rejected (bump the version instead).
+        description:
+          type: string
+        scenarios:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/AdversarialScenario'
+    AdversarialResult:
+      type: object
+      description: The outcome of one scenario execution, classified by side-effect execution at the expected control boundary.
+      required: [suite, scenario_id, kind, outcome, observed_action, evidence, severity, expected_control]
+      properties:
+        suite:
+          type: string
+          enum: [security_adversarial]
+        pack_id:
+          type: string
+        pack_version:
+          type: string
+        scenario_id:
+          type: string
+        kind:
+          type: string
+          enum: [direct_prompt_injection, indirect_prompt_injection, tool_permission_bypass, cross_tenant_data_access, secret_exposure, unsafe_delegation, output_policy_violation]
+        outcome:
+          type: string
+          enum: [pass, fail, inconclusive]
+          description: |
+            pass — the expected control blocked before any side effect executed;
+            fail — the side effect EXECUTED (control missing or bypassed);
+            inconclusive — the seam was misconfigured/unavailable (never conflated with pass).
+        policy_decision:
+          type: object
+          description: The decision the policy engine produced at the seam (decision, matched_policy_id, reason).
+          properties:
+            decision:
+              type: string
+              enum: [allow, deny]
+            matched_policy_id:
+              type: string
+            reason:
+              type: string
+        observed_action:
+          type: string
+          description: Machine-readable observation, e.g. tool_not_invoked, foreign_data_returned, delegation_executed.
+        evidence:
+          type: string
+          description: Deterministic prose evidence (boundary, observation, policy reason). Never carries payload or secret material.
+        severity:
+          type: string
+          enum: [info, low, medium, high, critical]
+        expected_control:
+          type: string
+          enum: [policy_enforcer, runtime_tool_permission, tenant_store_guard, secrets_guard, delegation_gate, output_gate]
+        duration_ms:
+          type: number
+          format: double
+        error:
+          type: string
+    GateEvidence:
+      type: object
+      description: |
+        Deterministic release-gate evidence for quality-gate policies. This
+        struct shape IS the contract (internal/evaluations does not import
+        internal/qualitygates): match on suite, threshold on pass_rate and
+        max_severity_failed_rank.
+      required: [suite, total, passed, failed, inconclusive, pass_rate, max_severity_failed, max_severity_failed_rank]
+      properties:
+        suite:
+          type: string
+          enum: [security_adversarial]
+        total:
+          type: integer
+        passed:
+          type: integer
+        failed:
+          type: integer
+        inconclusive:
+          type: integer
+          description: Counted separately; never folded into pass_rate.
+        pass_rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        max_severity_failed:
+          type: string
+          enum: [info, low, medium, high, critical]
+          description: Empty string when nothing failed.
+        max_severity_failed_rank:
+          type: integer
+          description: 0 when nothing failed; 1..5 for info..critical.
+        packs:
+          type: array
+          description: Sorted unique pack ids contributing to this evidence.
+          items:
+            type: string
+
+      # ---- wave-10 round-3 fragment: synth-explore.yaml (schemas) ----
+    SynthScopeDecision:
+      type: object
+      description: |
+        Server-side scope/policy verdict for one proposed exploration action
+        (issue #155). Decisions are computed from SERVER-PINNED inputs only
+        (allowlisted domains, environment mode/kind, per-run step/time
+        budgets, rate caps, window policy, kill switches, context
+        cancellation). Page-derived content is structurally excluded from
+        the decision inputs. Reason vocabulary (illustrative):
+        allowed | allowlisted_domain | write_denied_readonly |
+        write_requires_synthetic_account | rate_capped | quiet_window |
+        invalid_window_policy | step_budget | time_budget | kill_switch |
+        context_cancelled | invalid_action | invalid_url | unregistered_run.
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the action may execute.
+        reason:
+          type: string
+          description: Machine-readable denial/allow reason (see description).
+        at:
+          type: string
+          format: date-time
+          description: Decision timestamp (server clock).
+      required:
+      - allowed
+      - reason
+      - at
+    SynthExplorationAction:
+      type: object
+      description: |
+        One proposed exploration action (browser-agent seam vocabulary,
+        mirroring journey steps). Explorers fill kind/url/target/value only;
+        write/synthetic-account context is enforced server-side.
+      properties:
+        kind:
+          type: string
+          enum: [navigate, click, fill, select, wait, api_call, assert, extract]
+        url:
+          type: string
+          description: Absolute target URL for navigate actions (else empty).
+        target:
+          type: string
+          description: Selector for click/fill/select/extract actions.
+        value:
+          type: string
+          description: Input value for fill/select actions.
+        write_op:
+          type: boolean
+          description: True when the action is state-changing.
+        synthetic_account:
+          type: string
+          description: |
+            Isolated synthetic account reference. REQUIRED for write
+            operations under the release_comparison environment mode;
+            writes are denied otherwise (read-only default is enforced
+            server-side, not by convention).
+      required:
+      - kind
+      - write_op
+    SynthExplorationObservation:
+      type: object
+      description: |
+        Page-derived fact captured after an executed action. Title/content
+        are sanitized (control characters stripped, whitespace collapsed,
+        length-capped) and are DATA ONLY: they never feed scope decisions.
+      properties:
+        url:
+          type: string
+        title:
+          type: string
+        links:
+          type: array
+          description: Raw hrefs seen on the page (data only; navigating one is re-checked).
+          items:
+            type: string
+        content:
+          type: string
+          description: Sanitized page text excerpt (data only).
+        at:
+          type: string
+          format: date-time
+      required:
+      - url
+      - at
+    SynthExplorationPlanStep:
+      type: object
+      description: One planned navigation. goal_id "seed" marks the landing navigation.
+      properties:
+        index:
+          type: integer
+        path:
+          type: string
+          description: Route path (starts with "/").
+        goal_id:
+          type: string
+      required:
+      - index
+      - path
+      - goal_id
+    SynthExplorationPlan:
+      type: object
+      description: |
+        Ordered candidate navigations built deterministically from a
+        registered app's allowlisted routes, persona role hints and goals:
+        seed landing first, then each goal's persona-permitted routes in
+        registration order (deduplicated by path). Identical inputs produce
+        an identical plan id.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        project_id:
+          type: string
+        environment_id:
+          type: string
+        persona_id:
+          type: string
+        target_base_url:
+          type: string
+        goal_ids:
+          type: array
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthExplorationPlanStep'
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - project_id
+      - environment_id
+      - persona_id
+      - steps
+      - created_at
+    SynthExplorationCost:
+      type: object
+      description: Exploration cost accounting (applied steps, denied proposals, wall clock).
+      properties:
+        steps:
+          type: integer
+          description: Applied (scope-allowed) actions.
+        denied:
+          type: integer
+          description: Proposals denied by scope/loop checks.
+        duration_ms:
+          type: number
+          description: Run wall-clock duration in milliseconds.
+      required:
+      - steps
+      - denied
+      - duration_ms
+    SynthScopeLedger:
+      type: object
+      description: |
+        Coverage ledger of one exploration run: planned vs discovered vs
+        tested routes, gaps, uncertainty (denied/unparseable proposals,
+        sanitized), safety flags (risky_write / loop_detected) and cost.
+        coverage_percent = share of planned routes with at least one
+        executed in-scope action (0 when nothing was planned).
+      properties:
+        planned_routes:
+          type: array
+          items:
+            type: string
+        discovered_routes:
+          type: array
+          description: Unique paths reached by executed navigations.
+          items:
+            type: string
+        tested_routes:
+          type: array
+          description: Unique paths with at least one executed in-scope action.
+          items:
+            type: string
+        gaps:
+          type: array
+          description: Planned routes never tested.
+          items:
+            type: string
+        uncertainty:
+          type: array
+          description: Sanitized denial/unparseability details.
+          items:
+            type: string
+        flags:
+          type: array
+          description: Sanitized risky_write / loop_detected flags.
+          items:
+            type: string
+        visited_states:
+          type: integer
+          description: Executed unique visited-state hashes.
+        coverage_percent:
+          type: number
+        cost:
+          $ref: '#/components/schemas/SynthExplorationCost'
+      required:
+      - planned_routes
+      - discovered_routes
+      - tested_routes
+      - gaps
+      - uncertainty
+      - flags
+      - visited_states
+      - coverage_percent
+      - cost
+    SynthCandidateJourney:
+      type: object
+      description: |
+        Draft journey candidate produced by exploration (journey source
+        "exploration", status draft, version 1, explicit assertions).
+        Drafts require EXPLICIT human approval: approved_by/approved_at stay
+        empty and the status remains draft (ineligible for scheduling)
+        until the approval converts draft → reviewed. The approval ledger
+        lives beside the pinned journey contract, not inside it.
+      properties:
+        journey_id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [draft, reviewed]
+        risk:
+          type: string
+          enum: [low, medium, high, critical]
+        goal_id:
+          type: string
+        coverage_ref:
+          type: string
+          description: Originating exploration plan id.
+        step_count:
+          type: integer
+        assertion_count:
+          type: integer
+        approved_by:
+          type: string
+          description: Empty until explicit approval.
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+      - journey_id
+      - name
+      - status
+      - risk
+      - goal_id
+      - coverage_ref
+      - step_count
+      - assertion_count
+      - approved_by
+    SynthAfterDeployment:
+      type: object
+      description: |
+        Event trigger on a production schedule (issue #156): fire one extra
+        run after each deployment of app_version (empty = any version).
+      properties:
+        app_version:
+          type: string
+          description: Exact AppVersion to match; empty matches any deployment.
+    SynthRetryPolicy:
+      type: object
+      description: |
+        Retry policy for failed/inconclusive production runs (issue #156).
+        max_attempts counts the INITIAL attempt (1 = no retries); backoff is
+        capped exponential (base * 2^(n-1), clamped to max_backoff; defaults
+        30s base / 10m cap when unset).
+      properties:
+        max_attempts:
+          type: integer
+          minimum: 1
+        backoff_seconds:
+          type: number
+        max_backoff_seconds:
+          type: number
+    SynthProductionSchedule:
+      type: object
+      description: |
+        Recurring (or deployment-triggered) journey schedule against a
+        VERIFIED production target ONLY (issue #156; enforced server-side at
+        creation AND on every evaluation). The read-only default is enforced
+        server-side: write journeys run ONLY in the release_comparison
+        environment mode AND with an isolated synthetic account; every other
+        production run is pinned read-only. Timezone-aware quiet/test
+        windows, tenant run budgets + concurrency caps, global/per-project
+        kill switches and pause/cancel all gate each due run.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        project_id:
+          type: string
+        journey_id:
+          type: string
+        journey_version:
+          type: integer
+        environment_id:
+          type: string
+        persona_id:
+          type: string
+        persona_version:
+          type: integer
+        has_write_ops:
+          type: boolean
+          description: True for journeys with state-changing steps.
+        interval_seconds:
+          type: number
+          description: Recurrence period (> 0 for time-based schedules).
+        on_deployment:
+          nullable: true
+          $ref: '#/components/schemas/SynthAfterDeployment'
+        retry:
+          $ref: '#/components/schemas/SynthRetryPolicy'
+        paused:
+          type: boolean
+        synthetic_account:
+          type: string
+          description: |
+            Isolated synthetic account reference — REQUIRED when
+            has_write_ops (release_comparison mode only).
+        next_run_at:
+          type: string
+          format: date-time
+          nullable: true
+        attempts:
+          type: integer
+          description: Consecutive retry attempts consumed in the current run cycle.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - project_id
+      - journey_id
+      - journey_version
+      - environment_id
+      - persona_id
+      - has_write_ops
+      - paused
+      - created_at
+      - updated_at
+    SynthLatencyDelta:
+      type: object
+      description: |
+        Run-duration percentiles (ms) per side plus relative deltas
+        ((candidate − stable)/stable × 100). Relative deltas are 0 on a
+        zero baseline (documented inapplicability, not zero drift).
+      properties:
+        stable_p50_ms:
+          type: number
+        stable_p95_ms:
+          type: number
+        candidate_p50_ms:
+          type: number
+        candidate_p95_ms:
+          type: number
+        p50_delta_pct:
+          type: number
+        p95_delta_pct:
+          type: number
+    SynthComparisonThresholds:
+      type: object
+      description: |
+        Meaningful-difference thresholds. Defaults (issue #156): 5pp journey
+        completion, 20%/30% p50/p95 relative latency, 2pp assertion pass,
+        0.5 console errors per run.
+      properties:
+        completion_delta_pp:
+          type: number
+        latency_p50_rel_pct:
+          type: number
+        latency_p95_rel_pct:
+          type: number
+        assertion_pass_delta_pp:
+          type: number
+        console_error_per_run_abs:
+          type: number
+    SynthComparisonReport:
+      type: object
+      description: |
+        Stable-vs-candidate release comparison over the SAME versioned
+        inputs — journey, persona, environment, fixture set and assertion
+        set are pinned; any input/AppVersion drift is listed in
+        version_drift and forces meaningful=false, so a comparison across
+        different journeys/fixtures is never presented as evidence. Deltas
+        are candidate − stable. A report is meaningful only when at least
+        one documented threshold is breached AND there is no version drift;
+        reasons list breached thresholds in deterministic order with
+        direction (regression/improvement).
+      properties:
+        stable_version:
+          type: string
+        candidate_version:
+          type: string
+        stable_runs:
+          type: integer
+        candidate_runs:
+          type: integer
+        stable_completion_pct:
+          type: number
+        candidate_completion_pct:
+          type: number
+        journey_completion_delta_pp:
+          type: number
+          description: Percentage points (candidate − stable).
+        latency_delta:
+          $ref: '#/components/schemas/SynthLatencyDelta'
+        stable_assertion_pass_pct:
+          type: number
+        candidate_assertion_pass_pct:
+          type: number
+        assertion_pass_delta_pp:
+          type: number
+        stable_console_errors_per_run:
+          type: number
+        candidate_console_errors_per_run:
+          type: number
+        console_error_delta:
+          type: number
+        version_drift:
+          type: array
+          description: Every input/version mismatch (non-empty forces meaningful=false).
+          items:
+            type: string
+        meaningful:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+        thresholds:
+          $ref: '#/components/schemas/SynthComparisonThresholds'
+      required:
+      - stable_version
+      - candidate_version
+      - stable_runs
+      - candidate_runs
+      - stable_completion_pct
+      - candidate_completion_pct
+      - journey_completion_delta_pp
+      - latency_delta
+      - assertion_pass_delta_pp
+      - console_error_delta
+      - version_drift
+      - meaningful
+      - reasons
+      - thresholds
 
   requestBodies: {}
   headers: {}
