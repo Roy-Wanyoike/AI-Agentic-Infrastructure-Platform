@@ -417,6 +417,15 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service, dispatch 
 		if !enforceBudget(w, r, req.OrganizationID, req.AgentID, req.EstimatedCostCents, auditSvc) {
 			return
 		}
+		// issue #124: granular rate-limit gate (org + agent scopes) AFTER
+		// the policy/billing gates and BEFORE any run row or queue task
+		// exists — a denial answers 429 {"error":{"code":"rate_limited",
+		// ...}} with a Retry-After header and leaves no run behind. The
+		// gate (enforceRunRateLimits) and its seam (limiterGateVar) live
+		// in cmd/api/limiter.go; unwired = legacy always-allow.
+		if !enforceRunRateLimits(w, r, req.OrganizationID, req.AgentID) {
+			return
+		}
 		var runID string
 		var rs *runs.Service
 		if runsServiceVar != nil {

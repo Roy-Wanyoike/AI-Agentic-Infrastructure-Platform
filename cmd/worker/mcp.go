@@ -50,6 +50,10 @@ type orgRunnerCache struct {
 	recorder      runtime.StepRecorder
 	metrics       *observability.Metrics
 	enforcer      *policies.Enforcer
+	limiter       runtime.GranularLimiter // issue #124: granular rate-limit seam (nil-safe)
+	agentKeyAudit *audit.Service          // wave-8: agent-key tool-denial audit sink (nil-safe)
+	runtimeCfg    runtime.RuntimeConfig   // issue #107: runner-wide conversation-history/budget defaults (nil-safe)
+	eventPub      events.Publisher        // issue #107: run lifecycle event seam (nil-safe)
 	agentKeyAudit *audit.Service        // wave-8: agent-key tool-denial audit sink (nil-safe)
 	runtimeCfg    runtime.RuntimeConfig // issue #107: runner-wide conversation-history/budget defaults (nil-safe)
 	eventPub      events.Publisher      // issue #107: run lifecycle event seam (nil-safe)
@@ -136,6 +140,7 @@ func (c *orgRunnerCache) forOrg(ctx context.Context, orgID string) *runtime.Runn
 	}
 	runner.SetPolicyEnforcer(c.enforcer)
 	runner.SetAgentKeyAudit(c.agentKeyAudit) // wave-8: best-effort agentkey.tool_denied rows
+	runner.SetGranularLimiter(c.limiter)     // issue #124: granular rate-limit seam (nil = disabled)
 	if c.stopped {
 		// issue #107: the cache is draining (or drained) — a runner built
 		// after stopAll must refuse runs exactly like the stopped ones.
@@ -175,6 +180,15 @@ func (c *orgRunnerCache) setAgentKeyAudit(svc *audit.Service) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.agentKeyAudit = svc
+}
+
+// setGranularLimiter wires the granular rate-limit seam (issue #124) for
+// every runner built by this cache. Called once at startup before task
+// consumption; guarded by the cache mutex (the setAgentKeyAudit pattern).
+func (c *orgRunnerCache) setGranularLimiter(g runtime.GranularLimiter) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.limiter = g
 }
 
 // setRuntimeConfig wires the runner-wide runtime configuration (issue #107:

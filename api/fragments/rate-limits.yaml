@@ -1,0 +1,497 @@
+# AgentOS API — OpenAPI 3.1 fragment for the granular rate-limit surface
+# (issue #124).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/rate-limits.yaml`
+# passes.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation —
+#     NEW permissions limiter.read / limiter.write registered by
+#     internal/auth/permissions_limiter.go via the init() append pattern:
+#       - list (configuration, not credentials) -> limiter.read
+#         (OWNER/ADMIN/MEMBER/VIEWER — every role)
+#       - upsert/delete (a change re-throttles the org) -> limiter.write
+#         (OWNER/ADMIN, the policies.write tier)
+#   * structured error model {"error":{"code","message"}}
+#
+# ENFORCEMENT MODEL (internal/limiter). Limits are sliding-window counters
+# over Redis (key ratelimit:{org}:{scope}:{id}:{window}; one atomic
+# multi-window Lua script per check) with a per-process in-memory fallback
+# when Redis is absent or erroring; AGENTOS_LIMITER_FAIL_MODE selects the
+# infrastructure-failure behavior (open = default: allow through the
+# fallback; closed = deny). RPD is a ROLLING 24h window (not UTC midnight).
+# Resolution per check: subject-specific row > org default row > unlimited.
+# TPM counts tokens against the model scope with one-call granularity: the
+# call is checked pre-flight against the usage already recorded in the
+# window and the response's true token count is charged afterwards. Denials
+# consume nothing (atomic across all of the key's windows). The engine and
+# its hooks are no-ops when no limit is configured — the platform default
+# is unlimited.
+#
+# RUN-CREATION GATE. POST /runs enforcement (org + agent scopes) answers
+# 429 with the RateLimitedError envelope below and a Retry-After header
+# (seconds, >= 1) BEFORE any run row or queue task exists; the tool seam
+# records a rate_limited step error and the run continues; the model seam
+# fails the run before the provider call is issued.
+openapi: 3.1.0
+info:
+  title: AgentOS — granular rate limits (issue #124 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the granular per-scope rate-limit operations added
+  by issue #124. Limits are org-scoped sliding-window counters over four
+  scopes (org | agent | tool | model) with three dimensions (RPM, RPD over a
+  rolling 24h window, TPM for model tokens). A row with subject_id null is
+  the scope's ORG DEFAULT; a subject-specific row overrides it per agent /
+  tool / model; with no rows the scope is unlimited. Zero is "unlimited" for
+  a dimension, so enabled rows must set at least one positive dimension
+  (stage disabled rows instead — a disabled SUBJECT row is the documented
+  per-subject opt-out that suppresses the org default). The tenant is always
+  derived from the auth claims: there are no org-addressable path ids, so a
+  caller can never name a foreign tenant.
+paths:
+  /rate-limits:
+    get:
+      operationId: listRateLimits
+      summary: List the caller's organization's stored rate-limit rows (org defaults + subject rows)
+      description: |
+        Read operation (limiter.read — every role; limits are configuration,
+        not credentials). Returns every stored row of the caller's org
+        ordered deterministically, each carrying an `org_default` flag so
+        callers can tell the two resolution tiers apart without re-deriving
+        them. A scope absent from the list is unlimited by omission.
+      x-required-permission: limiter.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The org's rows (possibly empty — every scope unlimited).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitListResponse'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+  /rate-limits/{scope}:
+    put:
+      operationId: upsertRateLimitOrgDefault
+      summary: Upsert the scope's ORG DEFAULT limit row (subject_id null)
+      description: |
+        Write operation (limiter.write, OWNER/ADMIN). Body carries the
+        dimension values; omitted dimensions default to 0 (unlimited). The
+        org scope rejects any subject id (422). An enabled row must set at
+        least one positive dimension (422). Upsert is idempotent on
+        (org, scope, subject) and takes effect on the NEXT check (the
+        resolver cache is invalidated on write).
+      x-required-permission: limiter.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/RateLimitsScope'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RateLimitUpsertRequest'
+      responses:
+        '200':
+          description: Row stored (read-back of the normalized, timestamped row).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitUpsertResponse'
+        '400':
+          description: Malformed JSON body (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '422':
+          description: |
+            Validation error: unknown scope, a subject id on the org scope,
+            a negative dimension, or an all-zero enabled row (error.code
+            VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+    delete:
+      operationId: deleteRateLimitOrgDefault
+      summary: Delete the scope's ORG DEFAULT limit row
+      description: |
+        Write operation (limiter.write, OWNER/ADMIN). Removes the org
+        default so the scope resolves to unlimited (or to the surviving
+        subject rows). Deleting an absent row answers 404 NOT_FOUND.
+      x-required-permission: limiter.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/RateLimitsScope'
+      responses:
+        '200':
+          description: Row deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitDeleteResponse'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '404':
+          description: No row for (org, scope, subject) (error.code NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '422':
+          description: Unknown scope (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+  /rate-limits/{scope}/{subject_id}:
+    put:
+      operationId: upsertRateLimitSubject
+      summary: Upsert a subject-specific limit row (per agent / tool / model)
+      description: |
+        Write operation (limiter.write, OWNER/ADMIN). Overrides the scope's
+        org default for one subject (agent id, tool id or model name). An
+        enabled=false row is the documented per-subject OPT-OUT: it
+        suppresses the org default for that subject instead of re-throttling
+        it. The org scope rejects subject rows (422).
+      x-required-permission: limiter.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/RateLimitsScope'
+      - $ref: '#/components/parameters/RateLimitsSubjectID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RateLimitUpsertRequest'
+      responses:
+        '200':
+          description: Row stored (read-back of the normalized, timestamped row).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitUpsertResponse'
+        '400':
+          description: Malformed JSON body (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '422':
+          $ref: '#/components/responses/RateLimitsValidation'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+    delete:
+      operationId: deleteRateLimitSubject
+      summary: Delete a subject-specific limit row
+      description: |
+        Write operation (limiter.write, OWNER/ADMIN). The subject falls back
+        to the scope's org default (or unlimited when absent). Deleting an
+        absent row answers 404 NOT_FOUND.
+      x-required-permission: limiter.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/RateLimitsScope'
+      - $ref: '#/components/parameters/RateLimitsSubjectID'
+      responses:
+        '200':
+          description: Row deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitDeleteResponse'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '404':
+          description: No row for (org, scope, subject) (error.code NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '422':
+          description: Unknown scope (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    RateLimitsScope:
+      name: scope
+      in: path
+      required: true
+      description: One of org | agent | tool | model. The org scope has no subject.
+      schema:
+        type: string
+        enum:
+        - org
+        - agent
+        - tool
+        - model
+    RateLimitsSubjectID:
+      name: subject_id
+      in: path
+      required: true
+      description: Subject id — the agent id, tool id or model name the row applies to.
+      schema:
+        type: string
+        minLength: 1
+      examples:
+      - agent-support
+  responses:
+    RateLimitsUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitErrorEnvelope'
+    RateLimitsForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitErrorEnvelope'
+    RateLimitsValidation:
+      description: |
+        Validation error: unknown scope, a subject id on the org scope, a
+        negative dimension, or an all-zero enabled row (error.code
+        VALIDATION_ERROR).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitErrorEnvelope'
+  schemas:
+    RateLimit:
+      type: object
+      description: |
+        One stored limit row (the internal limiter.Config projection).
+        subject_id null marks the scope's ORG DEFAULT. Zero means unlimited
+        for a dimension; RPD is enforced over a ROLLING 24h window and TPM
+        over a one-minute window with one-call-granularity token accounting.
+      properties:
+        scope:
+          type: string
+          enum:
+          - org
+          - agent
+          - tool
+          - model
+        subject_id:
+          type: [string, 'null']
+          description: Agent id / tool id / model name; null = the org default.
+        rpm:
+          type: integer
+          minimum: 0
+          description: Requests per one-minute sliding window (0 = unlimited).
+        rpd:
+          type: integer
+          minimum: 0
+          description: Requests per ROLLING 24h sliding window (0 = unlimited).
+        tpm:
+          type: integer
+          minimum: 0
+          description: Tokens per one-minute sliding window, model scope (0 = unlimited).
+        enabled:
+          type: boolean
+          description: |
+            False disables the row; a disabled SUBJECT row suppresses the org
+            default for that subject (the per-subject opt-out).
+        org_default:
+          type: boolean
+          description: Convenience mirror of subject_id == null on list responses.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - scope
+      - subject_id
+      - rpm
+      - rpd
+      - tpm
+      - enabled
+    RateLimitUpsertRequest:
+      type: object
+      description: |
+        Upsert payload. Omitted dimensions default to 0 (unlimited); an
+        enabled row must set at least one positive dimension (stage with
+        enabled=false instead).
+      properties:
+        rpm:
+          type: integer
+          minimum: 0
+        rpd:
+          type: integer
+          minimum: 0
+        tpm:
+          type: integer
+          minimum: 0
+        enabled:
+          type: boolean
+          default: true
+    RateLimitListResponse:
+      type: object
+      properties:
+        limits:
+          type: array
+          description: All stored rows of the caller's org (org defaults and subject rows).
+          items:
+            $ref: '#/components/schemas/RateLimit'
+      required:
+      - limits
+    RateLimitUpsertResponse:
+      type: object
+      properties:
+        limit:
+          $ref: '#/components/schemas/RateLimit'
+      required:
+      - limit
+    RateLimitDeleteResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          description: Always true on success.
+        scope:
+          type: string
+        subject_id:
+          type: string
+          description: The deleted row's subject ("" for an org default).
+      required:
+      - deleted
+      - scope
+      - subject_id
+    RateLimitErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of VALIDATION_ERROR, NOT_FOUND, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    RateLimitedError:
+      type: object
+      description: |
+        The 429 envelope of the run-creation gate (POST /runs): the house
+        error shape plus the two issue-#124 additions (scope, retry_after).
+        Sent with a Retry-After header (seconds, ceil, >= 1) equal to
+        error.retry_after.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Always rate_limited for a granular denial.
+              examples:
+              - rate_limited
+            message:
+              type: string
+              description: Human-readable denial (names the scope, window and observed usage).
+            scope:
+              type: string
+              enum:
+              - org
+              - agent
+              - tool
+              - model
+              description: The scope whose window denied.
+            retry_after:
+              type: integer
+              minimum: 1
+              description: Seconds until the first denying window frees up (mirrors Retry-After).
+          required:
+          - code
+          - message
+          - scope
+          - retry_after
+      required:
+      - error

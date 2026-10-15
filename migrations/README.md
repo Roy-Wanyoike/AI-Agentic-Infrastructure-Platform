@@ -35,6 +35,7 @@ Current migration structure:
 - 030_virtual_keys.sql (wave-9 issue #139: gateway virtual keys with model allow-lists + enforced monthly spend caps)
 - 031_residency_policies.sql (issue #140: org data-residency policies + out-of-region evidence)
 - 033_pgvector.sql (issue #113: pgvector for knowledge_chunks — embedding_vec vector(1536) + HNSW cosine index; PGVECTOR-OPTIONAL: a pg_available_extensions guard keeps it a no-op NOTICE on plain Postgres)
+- 036_rate_limits.sql (issue #124: granular per-scope rate limits — rate_limits(organization_id, scope, NULLABLE subject_id, rpm, rpd, tpm, enabled); uniqueness via the expression index ux_rate_limits_subject (org, scope, COALESCE(subject_id,'')) — the functional PK over a nullable column; subject-specific > org default > unlimited)
 - 037_run_checkpoints.sql (issue #115: durable run checkpoints — run_checkpoints keyed PK (run_id, step_index) so end-of-step snapshot saves are idempotent replays; run_id FK cascades on run delete; created_at doubles as the recovery sweep's liveness heartbeat, idx_run_checkpoints_created walks it by recency)
 
 Migration conventions:
