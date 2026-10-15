@@ -428,6 +428,7 @@ func (a *app) routes() http.Handler {
 	// issue #82: MCP server registry (org-scoped; connectors RBAC matrix)
 	if a.mcpRegSvc != nil {
 		registerMcpRegistryRoutes(apiMux, a.mcpRegSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
+		registerMcpTrustRoutes(apiMux, a.mcpRegSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // wave-8 issue B: drift/pin/accept trust surface
 	}
 	// issue #48: API keys management (mint once / metadata list / revoke)
 	registerAPIKeysRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
