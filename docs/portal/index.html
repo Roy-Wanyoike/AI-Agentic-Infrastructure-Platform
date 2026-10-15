@@ -1,0 +1,1034 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AgentOS Developer Portal</title>
+<meta name="description" content="Self-service developer portal for the AgentOS API: generated API reference, interactive playground, SDK & CLI guides, and quickstart tutorials. Fully offline — no external assets." />
+<script src="./api-data.js"></script>
+<style>
+  /* Self-contained styles — no external fonts, no CDNs. */
+  :root {
+    --bg: #0d1117;
+    --bg-soft: #111823;
+    --panel: #161d2b;
+    --panel-2: #1b2434;
+    --border: #2a3548;
+    --text: #dbe4f0;
+    --muted: #8b98ab;
+    --faint: #647182;
+    --accent: #4da3ff;
+    --accent-soft: rgba(77, 163, 255, 0.12);
+    --green: #3fb950;
+    --amber: #d29922;
+    --purple: #a371f7;
+    --red: #f85149;
+    --cyan: #39c5cf;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); font-size: 0.9em; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+  pre { font-family: var(--mono); font-size: 13px; line-height: 1.5; }
+  h1, h2, h3, h4 { line-height: 1.25; margin: 0 0 12px; }
+  h1 { font-size: 26px; }
+  h2 { font-size: 21px; margin-top: 8px; }
+  h3 { font-size: 16px; color: var(--text); }
+  p { margin: 0 0 12px; }
+
+  .shell { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+  .topbar {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 20px;
+    background: var(--bg-soft);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 30;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; }
+  .brand-mark {
+    width: 26px; height: 26px; border-radius: 6px;
+    background: var(--accent-soft); border: 1px solid var(--accent);
+    color: var(--accent); display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px;
+  }
+  .pill {
+    font-size: 12px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+    background: var(--panel);
+    white-space: nowrap;
+  }
+  .topbar .spacer { flex: 1; }
+
+  nav.sidebar {
+    background: var(--bg-soft);
+    border-right: 1px solid var(--border);
+    padding: 16px 0 40px;
+    position: sticky; top: 47px;
+    height: calc(100vh - 47px);
+    overflow-y: auto;
+  }
+  .nav-group-title {
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--faint); padding: 14px 18px 6px;
+  }
+  .nav-link {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 18px; color: var(--text); font-size: 13.5px;
+    border-left: 2px solid transparent;
+  }
+  .nav-link:hover { background: var(--panel); text-decoration: none; }
+  .nav-link.active { border-left-color: var(--accent); background: var(--accent-soft); color: #fff; }
+  .nav-link .count { color: var(--faint); font-size: 11px; font-family: var(--mono); }
+  .nav-input {
+    display: block; width: calc(100% - 28px); margin: 4px 14px 6px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); padding: 6px 9px; font-size: 13px; font-family: var(--sans);
+  }
+  .nav-input:focus { outline: 1px solid var(--accent); }
+  .nav-sub { padding-left: 14px; }
+  .nav-link .chev { color: var(--faint); font-size: 11px; margin-right: 6px; }
+
+  main { padding: 26px 34px 80px; max-width: 1060px; min-width: 0; }
+  .lede { color: var(--muted); max-width: 72ch; }
+  .meta-line { color: var(--faint); font-size: 12.5px; font-family: var(--mono); margin-bottom: 18px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; margin: 0 0 16px;
+  }
+  .card h3:first-child { margin-top: 0; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } .shell { grid-template-columns: 1fr; } nav.sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border);} }
+
+  pre.code {
+    position: relative;
+    background: #0a0e15; border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; margin: 10px 0 16px;
+    color: #c9d6e8;
+    white-space: pre;
+  }
+  pre.code .lang { position: absolute; top: 6px; right: 10px; font-size: 10.5px; color: var(--faint); letter-spacing: .06em; text-transform: uppercase; }
+  .copy-btn {
+    position: absolute; top: 4px; right: 8px;
+    background: var(--panel-2); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 5px;
+    font-size: 11px; padding: 2px 8px; cursor: pointer;
+  }
+  .copy-btn:hover { color: var(--text); border-color: var(--accent); }
+  pre.code.has-lang .copy-btn { right: 8px; top: 4px; }
+  pre.code .lang { pointer-events: none; }
+
+  .method {
+    display: inline-block; font-family: var(--mono); font-weight: 700; font-size: 11px;
+    border-radius: 5px; padding: 2px 7px; min-width: 52px; text-align: center;
+    letter-spacing: 0.04em;
+  }
+  .m-get { color: #7ee787; background: rgba(63, 185, 80, 0.14); border: 1px solid rgba(63, 185, 80, 0.4); }
+  .m-post { color: #79c0ff; background: rgba(77, 163, 255, 0.12); border: 1px solid rgba(77, 163, 255, 0.4); }
+  .m-put { color: #e3b341; background: rgba(210, 153, 34, 0.12); border: 1px solid rgba(210, 153, 34, 0.4); }
+  .m-patch { color: #d2a8ff; background: rgba(163, 113, 247, 0.12); border: 1px solid rgba(163, 113, 247, 0.4); }
+  .m-delete { color: #ff7b72; background: rgba(248, 81, 73, 0.12); border: 1px solid rgba(248, 81, 73, 0.4); }
+  .m-head, .m-options, .m-trace { color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); }
+
+  table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 8px 0 14px; }
+  table.tbl th { text-align: left; color: var(--faint); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  table.tbl th, table.tbl td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.tbl tr:last-child td { border-bottom: 0; }
+  table.tbl td code { white-space: nowrap; }
+  .req { color: var(--red); font-size: 11px; font-weight: 700; margin-left: 4px; }
+  .opt { color: var(--faint); font-size: 11px; margin-left: 4px; }
+
+  .chip {
+    display: inline-block; font-size: 11.5px; font-family: var(--mono);
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px;
+    padding: 1px 9px; color: var(--muted); margin-right: 6px;
+  }
+  .chip.perm { color: var(--cyan); border-color: rgba(57, 197, 207, 0.35); }
+  .chip.auth { color: var(--amber); border-color: rgba(210, 153, 34, 0.35); }
+  .chip.public { color: var(--green); border-color: rgba(63, 185, 80, 0.35); }
+
+  .op-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 18px; }
+  .op-row {
+    display: flex; gap: 12px; align-items: baseline;
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel);
+  }
+  .op-row:hover { border-color: var(--accent); text-decoration: none; }
+  .op-row .path { font-family: var(--mono); font-size: 13.5px; color: var(--text); }
+  .op-row .sum { color: var(--muted); font-size: 12.5px; flex: 1; }
+
+  .notice {
+    border: 1px solid rgba(210, 153, 34, 0.45); background: rgba(210, 153, 34, 0.08);
+    border-radius: 8px; padding: 10px 14px; margin: 12px 0; font-size: 13.5px;
+  }
+  .notice.blue { border-color: rgba(77, 163, 255, 0.45); background: rgba(77, 163, 255, 0.07); }
+  .notice b { color: var(--text); }
+
+  /* Playground */
+  .pg-grid { display: grid; grid-template-columns: minmax(320px, 5fr) minmax(280px, 4fr); gap: 16px; align-items: start; }
+  @media (max-width: 980px) { .pg-grid { grid-template-columns: 1fr; } }
+  label.fld { display: block; font-size: 12px; color: var(--faint); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+  input.txt, select.sel, textarea.txt {
+    width: 100%; background: #0a0e15; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; font-size: 13.5px; font-family: var(--mono);
+  }
+  select.sel, input.txt[type="text"], input.txt[type="password"] { font-family: var(--mono); }
+  textarea.txt { min-height: 140px; resize: vertical; white-space: pre; }
+  input.txt:focus, select.sel:focus, textarea.txt:focus { outline: 1px solid var(--accent); }
+  .btn {
+    display: inline-block; background: var(--accent-soft); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 6px;
+    padding: 7px 16px; font-size: 13.5px; font-weight: 600; cursor: pointer;
+  }
+  .btn:hover { background: rgba(77, 163, 255, 0.2); }
+  .btn[disabled] { opacity: 0.5; cursor: wait; }
+  .btn.secondary { background: var(--panel-2); color: var(--muted); border-color: var(--border); }
+  .btn.secondary:hover { color: var(--text); }
+  .param-row { display: grid; grid-template-columns: 180px 1fr; gap: 8px; align-items: center; margin: 6px 0; }
+  .param-row .pname { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  #respStatus { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+  .st-ok { color: var(--green); } .st-err { color: var(--red); } .st-warn { color: var(--amber); }
+  pre.resp { max-height: 480px; overflow: auto; }
+  .hidden { display: none; }
+
+  details.schema { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); margin: 8px 0; }
+  details.schema > summary { cursor: pointer; padding: 9px 14px; font-family: var(--mono); font-size: 13.5px; }
+  details.schema > summary:hover { color: var(--accent); }
+  details.schema .schema-body { padding: 4px 16px 12px; }
+
+  .crumb { color: var(--faint); font-size: 12.5px; margin-bottom: 8px; font-family: var(--mono); }
+  .footnote { color: var(--faint); font-size: 12px; margin-top: 30px; border-top: 1px solid var(--border); padding-top: 14px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <span class="brand"><span class="brand-mark">A</span> AgentOS <span style="color:var(--muted);font-weight:400">Developer Portal</span></span>
+    <span class="pill" id="apiVersionPill">API —</span>
+    <span class="pill" id="apiCountsPill">—</span>
+    <span class="spacer"></span>
+    <a class="pill" href="https://github.com/Roy-Wanyoike/AI-Agentic-Infrastructure-Platform" target="_blank" rel="noreferrer">repo ↗</a>
+    <a class="pill" href="https://github.com/Roy-Wanyoike/AI-Agentic-Infrastructure-Platform/releases" target="_blank" rel="noreferrer">releases ↗</a>
+  </header>
+
+  <nav class="sidebar" id="sidebar">
+    <div class="nav-group-title">Guides</div>
+    <a class="nav-link" href="#/guide/quickstart" data-route="guide/quickstart">5-minute quickstart</a>
+    <a class="nav-link" href="#/guide/orchestration" data-route="guide/orchestration">Orchestration (delegate)</a>
+    <a class="nav-link" href="#/guide/workflows" data-route="guide/workflows">Workflows (DSL)</a>
+    <div class="nav-group-title">Reference</div>
+    <input class="nav-input" id="refSearch" type="text" placeholder="Search 236 operations…" />
+    <div id="refNav"></div>
+    <div class="nav-group-title">Schemas</div>
+    <a class="nav-link" href="#/schemas" data-route="schemas">Schema index</a>
+    <div class="nav-group-title">Build</div>
+    <a class="nav-link" href="#/playground" data-route="playground">API playground</a>
+    <a class="nav-link" href="#/sdk" data-route="sdk">SDKs &amp; CLI</a>
+    <a class="nav-link" href="#/changelog" data-route="changelog">Versions &amp; changelog</a>
+  </nav>
+
+  <main id="main">
+    <!-- ================= HOME / OVERVIEW ================= -->
+    <section id="page-home">
+      <h1>Build on AgentOS</h1>
+      <p class="lede">
+        Everything needed to integrate with the AgentOS platform REST API: a full
+        operation reference generated from <code>api/openapi.yaml</code>, an
+        in-browser playground, typed SDKs, and step-by-step quickstarts written
+        against the real contract.
+      </p>
+      <p class="meta-line" id="homeMeta"></p>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Start in 5 minutes</h3>
+          <p>Register an organization, create an agent, run it, watch events stream — five commands.</p>
+          <a class="btn" href="#/guide/quickstart">Open the quickstart</a>
+        </div>
+        <div class="card">
+          <h3>Try the API from here</h3>
+          <p>Point the playground at your deployment, paste a token, fire real requests.</p>
+          <a class="btn secondary" href="#/playground">Open the playground</a>
+        </div>
+        <div class="card">
+          <h3>SDKs &amp; CLI</h3>
+          <p>Typed Go client (<code>internal/sdk</code>), the <code>agentosctl</code> CLI, and recipes to generate Python/TypeScript clients from the spec.</p>
+          <a class="btn secondary" href="#/sdk">Browse SDKs</a>
+        </div>
+        <div class="card">
+          <h3>Reference generated from the spec</h3>
+          <p>All paths, operations, parameters, permissions, and schema names — rendered from <code>docs/portal/api-data.js</code>, regenerated by <code>scripts/gen_portal_docs.py</code>.</p>
+          <a class="btn secondary" href="#/reference">Browse the API</a>
+        </div>
+      </div>
+      <div class="notice blue">
+        <b>Offline by design.</b> This page loads zero external assets — styles, scripts, and
+        the API data file are local. Host it anywhere static files are served (see
+        <code>docs/portal/README.md</code>).
+      </div>
+    </section>
+
+    <!-- ================= REFERENCE ================= -->
+    <section id="page-reference" class="hidden">
+      <div class="crumb" id="refCrumb"></div>
+      <div id="refContent"></div>
+    </section>
+
+    <!-- ================= PLAYGROUND ================= -->
+    <section id="page-playground" class="hidden">
+      <h1>API playground</h1>
+      <p class="lede">Build a real request against any of the <span class="opCountInline">—</span> documented operations. Settings persist in this browser's <code>localStorage</code>; nothing is sent anywhere except the base URL you configure.</p>
+      <div class="notice">
+        <b>CORS is required and not on by default.</b> Browsers enforce the same-origin policy:
+        this playground can only call an API deployment that returns
+        <code>Access-Control-Allow-Origin</code> for the portal's origin (and allows the
+        <code>Authorization</code> / <code>X-API-Key</code> headers via
+        <code>Access-Control-Allow-Headers</code>). The Go API does not enable cross-origin
+        browser access out of the box — if requests fail with a CORS error, drive the API with
+        <code>agentosctl</code> or <code>curl</code> instead, or front both the portal and the API
+        with the same reverse proxy so they share an origin.
+      </div>
+      <div class="pg-grid">
+        <div>
+          <div class="card">
+            <h3>Request</h3>
+            <label class="fld" for="pgEndpoint">Endpoint</label>
+            <select class="sel" id="pgEndpoint"></select>
+            <div id="pgOpMeta" style="margin:8px 0 2px"></div>
+            <label class="fld" for="pgBase">Base URL</label>
+            <input class="txt" id="pgBase" type="text" spellcheck="false" />
+            <div id="pgParams"></div>
+            <label class="fld" for="pgBody">Request body (JSON) — <span id="pgBodySchema"></span></label>
+            <textarea class="txt" id="pgBody" spellcheck="false"></textarea>
+            <div style="margin-top:12px">
+              <button class="btn" id="pgSend">Send request</button>
+              <button class="btn secondary" id="pgReset">Reset settings</button>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <h3>Auth</h3>
+            <label class="fld" for="pgAuthMode">Scheme</label>
+            <select class="sel" id="pgAuthMode">
+              <option value="bearer">Bearer token — Authorization: Bearer &lt;token&gt;</option>
+              <option value="apikey">API key — X-API-Key: ak_…</option>
+              <option value="none">None (public endpoints only)</option>
+            </select>
+            <label class="fld" for="pgToken">Credential</label>
+            <input class="txt" id="pgToken" type="password" placeholder="paste token / ak_ key" spellcheck="false" />
+            <p style="font-size:12.5px;color:var(--faint);margin:10px 0 0">
+              Tokens come from <code>POST /auth/login</code>; API keys are minted with
+              <code>POST /api-keys</code> (self-service) or <code>POST /agents/{id}/keys</code>
+              (agent-scoped). Credentials are stored only in this browser.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Response</h3>
+            <div id="respStatus">—</div>
+            <div id="respMeta" style="color:var(--faint);font-size:12px;font-family:var(--mono);margin:4px 0 8px"></div>
+            <pre class="code resp" id="respBody">// Send a request to see the response.</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= SDK ================= -->
+    <section id="page-sdk" class="hidden">
+      <h1>SDKs &amp; CLI</h1>
+      <p class="lede">Three supported ways to talk to the API: the typed Go SDK, the <code>agentosctl</code> CLI, and generated Python/TypeScript clients.</p>
+
+      <h2>Go SDK — <code>internal/sdk</code></h2>
+      <p class="lede">
+        A stdlib-only, typed client that mirrors the HTTP surface in <code>api/openapi.yaml</code>.
+        It lives in the <code>agentos</code> module (importable from code inside this repository —
+        <code>cmd/agentosctl</code> is built on it; extracting it into a standalone public module is
+        tracked separately). It handles both credential styles, the API's mixed envelope shapes
+        (bare arrays/objects and wrapped envelopes), and the structured error model.
+      </p>
+<pre class="code" data-lang="go"><span class="lang">go</span><button class="copy-btn" type="button">copy</button>package main
+
+import (
+        "context"
+        "fmt"
+        "log"
+        "time"
+
+        "agentos/internal/sdk"
+)
+
+func main() {
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+
+        client := sdk.New(
+                sdk.WithBaseURL("http://localhost:8080"), // default; /v1 prefixing is handled
+                sdk.WithToken("eyJhbGciOi…"),             // bearer from POST /v1/auth/login
+                // or: sdk.WithAPIKey("ak_…")            // X-API-Key self-service key
+        )
+
+        // Create an agent (POST /v1/agents/create → 201, bare Agent object).
+        agent, err := client.CreateAgent(ctx, sdk.CreateAgentRequest{
+                Name:         "Support Agent",
+                Instructions: "Answer customer questions concisely",
+                Model:        "gpt-4o-mini",
+        })
+        if err != nil {
+                log.Fatal(err)
+        }
+
+        // Create and enqueue a run (POST /v1/runs → 201 {run_id, status}).
+        run, err := client.CreateRun(ctx, sdk.CreateRunRequest{
+                AgentID: agent.ID,
+                Input:   "What is 2+2?",
+        })
+        if err != nil {
+                log.Fatal(err)
+        }
+        fmt.Println("run", run.RunID, run.Status)
+
+        // Stream execution events (GET /v1/runs/{id}/events, text/event-stream).
+        events, err := client.StreamEvents(ctx, run.RunID)
+        if err != nil {
+                log.Fatal(err)
+        }
+        defer events.Close()
+        for {
+                ev, err := events.Next()
+                if err != nil {
+                        break // io.EOF when the run finishes
+                }
+                fmt.Println(ev.Type, ev.StepID)
+        }
+}</pre>
+      <p class="lede">Coverage today: agents, runs (create/get/list/steps/SSE stream), auth (login/register), API keys, workflows (create/execute/get run), knowledge, billing, usage costs, secrets, marketplace, connectors, SSO/SCIM. Every method takes a <code>context.Context</code> and honours cancellation; inject a custom transport with <code>sdk.WithHTTPClient</code>.</p>
+
+      <h2>CLI — <code>agentosctl</code></h2>
+      <p class="lede">Build it from a repo checkout (the binary lives at <code>cmd/agentosctl</code>):</p>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>go build -o agentosctl ./cmd/agentosctl
+
+# Configuration: env AGENTOS_URL / AGENTOS_TOKEN / AGENTOS_API_KEY
+# override the profile written to ~/.agentos/config.json by `login`.
+./agentosctl register -org "Acme AI" -email dev@example.com -password s3cret   # first OWNER user
+./agentosctl login -email dev@example.com -password s3cret
+
+./agentosctl agents create -name helper -instructions "be brief" -model gpt-4o-mini
+./agentosctl agents run AGENT_ID "what is 2+2?"
+./agentosctl runs watch RUN_ID          # follows the SSE event stream
+./agentosctl usage costs -group-by agent
+./agentosctl api-keys create -name ci-deploy
+
+# Every command accepts -json (before or after the command) for scripts:
+./agentosctl agents list --json</pre>
+
+      <h2>Generate a Python or TypeScript client</h2>
+      <p class="lede">
+        The spec is the single source of truth, so generated clients stay honest. Generate them
+        yourself with <a href="https://github.com/OpenAPITools/openapi-generator" target="_blank" rel="noreferrer">openapi-generator</a>
+        — generated SDKs are intentionally <b>not</b> vendored in this repository:
+      </p>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button># Prerequisite: openapi-generator-cli on PATH (npm i -g @openapitools/openapi-generator-cli)
+
+# Python (urllib3 transport, stdlib-friendly)
+openapi-generator-cli generate \
+  -i api/openapi.yaml \
+  -g python \
+  --library urllib3 \
+  --package-name agentos_client \
+  -o sdks/python
+
+# TypeScript (fetch runtime, works in browsers and Node 18+)
+openapi-generator-cli generate \
+  -i api/openapi.yaml \
+  -g typescript-fetch \
+  --npm-name @agentos/api-client \
+  -o sdks/typescript
+
+# Alternative TS runtime: -g typescript-axios (npm axios) or -g typescript-node.</pre>
+      <div class="notice blue">
+        <b>Spec-first rule:</b> regenerate clients after any contract change; never hand-edit
+        generated output. The portal's own reference data is regenerated the same way —
+        <code>python3 scripts/gen_portal_docs.py</code>.
+      </div>
+    </section>
+
+    <!-- ================= GUIDES ================= -->
+    <section id="page-guide-quickstart" class="hidden">
+      <h1>5-minute quickstart</h1>
+      <p class="lede">Register → create an agent → run it → watch it work. Every step below hits an endpoint documented in the reference (<code>auth</code>, <code>agents</code>, <code>runs</code> groups).</p>
+      <div class="notice blue">
+        <b>Zero-infra mode:</b> the API runs fully in-memory with an offline deterministic model
+        provider when no model credentials are configured, so this quickstart works on a laptop
+        with no database and no LLM keys. Start it with <code>go run ./cmd/api</code> (default
+        listen <code>:8080</code>).
+      </div>
+
+      <h3>1 — Register the organization's first OWNER user</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>curl -s http://localhost:8080/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"organization":"Acme AI","email":"owner@acme.dev","password":"s3cret-password"}'
+# 201 → {"organization":{"ID":"org-1","Name":"Acme AI"},"user":{...}}</pre>
+
+      <h3>2 — Log in and grab the bearer token</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>TOKEN=$(curl -s http://localhost:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"owner@acme.dev","password":"s3cret-password"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+# Token is HMAC-SHA256 JWT-style, 24h expiry. Use: Authorization: Bearer $TOKEN</pre>
+
+      <h3>3 — Create an agent</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>curl -s http://localhost:8080/api/v1/agents/create \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"Support Agent","instructions":"Answer questions concisely","model":"gpt-4o-mini"}'
+# 201 → Agent object (PascalCase keys): {"ID":"agent-1","Status":"DRAFT",...}
+AGENT_ID=$(... | python3 -c 'import json,sys; print(json.load(sys.stdin)["ID"])')</pre>
+      <p>Required fields: <code>name</code>, <code>instructions</code>, <code>model</code> (server-validated; 400 otherwise). The agent starts in <code>DRAFT</code> with an initial version 1.</p>
+
+      <h3>4 — Run it</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>curl -s http://localhost:8080/api/v1/runs \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"agent_id":"'"$AGENT_ID"'","input":"What is 2+2?"}'
+# 201 → {"run_id":"…","status":"queued"}   (execution happens on the worker)</pre>
+
+      <h3>5 — Watch events / inspect the result</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>curl -s -N http://localhost:8080/api/v1/runs/$RUN_ID/events \
+  -H "Authorization: Bearer $TOKEN"
+# text/event-stream: data: {"type":"step.started",...} … until terminal status
+
+curl -s http://localhost:8080/api/v1/runs/$RUN_ID      -H "Authorization: Bearer $TOKEN"   # final run object
+curl -s http://localhost:8080/api/v1/runs/$RUN_ID/steps -H "Authorization: Bearer $TOKEN"   # per-step timeline</pre>
+      <div class="card">
+        <h3>CLI equivalent</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>agentosctl register -org "Acme AI" -email owner@acme.dev -password s3cret-password
+agentosctl login -email owner@acme.dev -password s3cret-password
+agentosctl agents create -name helper -instructions "be brief" -model gpt-4o-mini
+agentosctl agents run AGENT_ID "what is 2+2?"
+agentosctl runs watch RUN_ID</pre>
+      </div>
+      <p><b>Next steps:</b> mint a self-service key (<code>POST /api-keys</code>), explore the <a href="#/reference/runs">runs reference</a>, or continue with the <a href="#/guide/orchestration">orchestration tutorial</a>.</p>
+    </section>
+
+    <section id="page-guide-orchestration" class="hidden">
+      <h1>Orchestration tutorial — agent-to-agent delegation</h1>
+      <p class="lede">AgentOS ships a supervisor/delegation executor: agents talk over an org-scoped message bus, and a delegator can hand a subtask to another agent, synchronously awaiting the response in its inbox.</p>
+
+      <h3>1 — Two agents</h3>
+      <p>Create a delegator and a worker (repeat the quickstart's step 3 twice), e.g. <code>orchestrator</code> and <code>researcher</code>.</p>
+
+      <h3>2 — Delegate a subtask</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>curl -s http://localhost:8080/api/v1/orchestration/delegate \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{
+        "from_agent_id": "agent-orchestrator",
+        "to_agent_id":   "agent-researcher",
+        "task":          "Summarize the incident timeline",
+        "parent_run_id": "",
+        "require_approval": false,
+        "depth": 0
+      }'
+# 202 → {"delegation_id":"…","child_run_id":"…","status":"pending","depth":0}</pre>
+      <p>
+        The call returns <b>202</b> immediately: without <code>require_approval</code> the child run
+        executes in the background and the outcome lands in the delegator's inbox as a response
+        message. With <code>require_approval: true</code> the delegation parks at the approval gate
+        (<code>status: "awaiting_approval"</code>, <code>approval_id</code> set) and never executes
+        until an operator approves it. Depth limits are enforced server-side; the ledger keeps the
+        delegation traceable across 4xx/5xx failures.
+      </p>
+
+      <h3>3 — Read the delegator's inbox</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>curl -s "http://localhost:8080/api/v1/orchestration/agents/agent-orchestrator/messages?limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+# newest-first retained inbox for the caller's organization</pre>
+      <p>For point-to-point messaging without a child run, use <code>POST /orchestration/messages</code> (<code>message_type</code>: <code>request</code>, <code>response</code>, <code>delegate</code>, or <code>broadcast</code> — a saturated inbox answers <code>409 INBOX_FULL</code> and may be retried). Supervisor strategies (round-robin / least-loaded / capability-match) are exposed at <code>POST /orchestration/supervisor/run</code>. Requires the <code>orchestration.write</code> / <code>orchestration.read</code> permissions.</p>
+      <p><a href="#/reference/orchestration">Open the orchestration reference →</a></p>
+    </section>
+
+    <section id="page-guide-workflows" class="hidden">
+      <h1>Workflow tutorial — create, validate, run</h1>
+      <p class="lede">Workflows are JSON-DSL graphs of agent, approval, and control-flow nodes executed durably with checkpoints. This tutorial validates a DSL, persists it, and executes it.</p>
+
+      <h3>1 — Validate the DSL before saving (stateless)</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>curl -s http://localhost:8080/api/v1/workflows/validate \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{
+        "dsl": {
+          "nodes": [
+            {"id":"n1","type":"agent","name":"Planner","config":{"agent_id":"agent-1","input":"{{input}}"}},
+            {"id":"n2","type":"approval","name":"Gate","config":{"action":"deploy","risk":"high"}}
+          ],
+          "edges": [ {"from":"n1","to":"n2","condition":"on_success"} ]
+        }
+      }'
+# 200 → {"valid":true}   |   422 → {"errors":[{"code","message","node_id"}]}</pre>
+
+      <h3>2 — Create the workflow (runs validation again)</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>curl -s http://localhost:8080/api/v1/workflows/create \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"Deploy Flow","description":"Plan then deploy with a sign-off gate","dsl":{…same dsl…}}'
+# 201 → WorkflowDetailResponse (draft, current_version 0)
+# invalid DSL → 422 with the typed error list (empty_graph, duplicate_node_id,
+# unknown_node_type, cycle_detected, invalid_edge_condition, …)</pre>
+
+      <h3>3 — Execute</h3>
+<pre class="code" data-lang="bash"><span class="lang">bash</span><button class="copy-btn" type="button">copy</button>curl -s http://localhost:8080/api/v1/workflows/$WORKFLOW_ID/execute \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"input":"Deploy the payments service"}'
+# workflow run id + queued status; approval nodes park at WAITING_APPROVAL
+
+curl -s http://localhost:8080/api/v1/workflow-runs/$WORKFLOW_RUN_ID       -H "Authorization: Bearer $TOKEN"  # status
+curl -s http://localhost:8080/api/v1/workflow-runs/$WORKFLOW_RUN_ID/nodes -H "Authorization: Bearer $TOKEN"  # per-node timeline</pre>
+      <p>Optionally re-validate the persisted draft with <code>POST /workflows/{id}/validate</code> (same error shape), and list executions with <code>GET /workflows/{id}</code>. Control-flow node types (if/switch/loop/retry/wait) take typed expressions validated server-side; parallel branches support <code>all</code>/<code>any</code>/<code>race</code>/<code>majority</code> aggregation.</p>
+      <p><a href="#/reference/workflows">Open the workflows reference →</a></p>
+    </section>
+
+    <!-- ================= SCHEMAS ================= -->
+    <section id="page-schemas" class="hidden">
+      <h1>Schema index</h1>
+      <p class="lede"><span id="schemaCountInline">—</span> named request/response schemas from <code>components.schemas</code>. Names link into the operation pages; click to expand property lists.</p>
+      <input class="nav-input" id="schemaSearch" type="text" placeholder="Filter schemas…" style="max-width:360px;margin-left:0" />
+      <div id="schemaList"></div>
+    </section>
+
+    <!-- ================= CHANGELOG ================= -->
+    <section id="page-changelog" class="hidden">
+      <h1>Versions &amp; changelog</h1>
+      <div class="card">
+        <h3>Where releases live</h3>
+        <p>Releases, tags, and per-release notes are published on GitHub:</p>
+        <p><a href="https://github.com/Roy-Wanyoike/AI-Agentic-Infrastructure-Platform/releases" target="_blank" rel="noreferrer">github.com/Roy-Wanyoike/AI-Agentic-Infrastructure-Platform/releases ↗</a></p>
+        <p>API changes are summarized in the release notes of the version that ships them.</p>
+      </div>
+      <div class="card">
+        <h3>API versioning policy</h3>
+        <ul style="margin:0;padding-left:20px;color:var(--muted)">
+          <li style="margin-bottom:8px">The contract is <b>semver</b>-versioned in <code>api/openapi.yaml</code> (<code>info.version</code>, currently <b id="verInline">—</b>). MAJOR = breaking, MINOR = additive, PATCH = docs/fixes.</li>
+          <li style="margin-bottom:8px">The canonical base path is <code>/api/v1</code>. A legacy root that serves identical <code>/v1/*</code> routes exists for old clients and is <b>deprecated</b> — new integrations must use <code>/api/v1</code>.</li>
+          <li style="margin-bottom:8px">Additive changes (new optional fields, new endpoints, new enum members that are documented as open) may land in MINOR releases without notice. Clients must ignore unknown JSON fields.</li>
+          <li style="margin-bottom:8px">Breaking changes ship only in MAJOR versions and are announced at least one MINOR ahead in release notes.</li>
+          <li style="margin-bottom:8px">Known current limitation, tracked in the spec with <code>x-unpaginated</code>: list endpoints (<code>GET /agents</code>, <code>GET /runs</code>) return full result sets today and will gain pagination in a future MINOR.</li>
+          <li>Some legacy handlers still return <code>text/plain</code> errors; the structured <code>{"error":{"code","message","request_id"}}</code> envelope is the authoritative model for new code.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Portal data freshness</h3>
+        <p>This reference was generated from <code>api/openapi.yaml</code> on <b id="genDateInline">—</b> by <code>scripts/gen_portal_docs.py</code>. Re-run that script after every contract change and commit the refreshed <code>docs/portal/api-data.js</code>.</p>
+      </div>
+    </section>
+
+    <div class="footnote">
+      AgentOS Developer Portal · generated reference data (<span id="footCounts">—</span>) · page is fully offline: no CDNs, no external fonts.
+    </div>
+  </main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var API = window.AGENTOS_API || { meta: {}, tags: [], groups: [], schemas: [] };
+  var meta = API.meta || {};
+
+  // ---------- tiny DOM + escaping helpers ----------
+  function $(sel, root) { return (root || document).querySelector(sel); }
+  function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function el(tag, cls, html) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (html != null) n.innerHTML = html;
+    return n;
+  }
+
+  // ---------- header meta ----------
+  var counts = meta.operationCount + ' operations · ' + meta.pathCount + ' paths · ' + meta.schemaCount + ' schemas';
+  $('#apiVersionPill').textContent = 'API v' + (meta.version || '?') + ' · OpenAPI ' + (meta.openapi || '?');
+  $('#apiCountsPill').textContent = counts;
+  $('#homeMeta').textContent = (meta.title || 'AgentOS API') + ' — generated ' + (meta.generated || '') + ' from ' + (meta.source || 'api/openapi.yaml');
+  $('#footCounts').textContent = counts;
+  $all('.opCountInline').forEach(function (n) { n.textContent = String(meta.operationCount); });
+  $('#schemaCountInline').textContent = String(meta.schemaCount);
+  $('#verInline').textContent = meta.version || '?';
+  $('#genDateInline').textContent = meta.generated || '?';
+  $('#refSearch').placeholder = 'Search ' + meta.operationCount + ' operations…';
+
+  // ---------- operation index ----------
+  var OPS = []; // flat index: {gi, oi, group, op}
+  (API.groups || []).forEach(function (g, gi) {
+    (g.operations || []).forEach(function (op, oi) {
+      OPS.push({ gi: gi, oi: oi, group: g, op: op, key: gi + '-' + oi });
+    });
+  });
+
+  // ---------- reference sidebar ----------
+  var refNav = $('#refNav');
+  (API.groups || []).forEach(function (g, gi) {
+    var a = el('a', 'nav-link',
+      '<span>' + esc(g.tag) + '</span><span class="count">' + (g.operations || []).length + '</span>');
+    a.href = '#/reference/' + encodeURIComponent(g.tag);
+    a.dataset.route = 'reference/' + g.tag;
+    refNav.appendChild(a);
+  });
+
+  // ---------- reference page ----------
+  function methodBadge(m) { return '<span class="method m-' + esc(m.toLowerCase()) + '">' + esc(m.toUpperCase()) + '</span>'; }
+
+  function authChip(auth) {
+    if (!auth || auth === 'public') return '<span class="chip public">public</span>';
+    return '<span class="chip auth">' + esc(auth) + '</span>';
+  }
+  function permChip(perm) { return perm ? '<span class="chip perm">' + esc(perm) + '</span>' : ''; }
+
+  function opDetail(op) {
+    var params = (op.params || []);
+    var html = '';
+    html += '<h2>' + methodBadge(op.method) + ' <code>' + esc(op.path) + '</code></h2>';
+    html += '<h3>' + esc(op.summary || op.operationId || '') + '</h3>';
+    html += '<div style="margin-bottom:10px">' + authChip(op.auth) + permChip(op.permission) +
+      (op.operationId ? '<span class="chip">operationId: ' + esc(op.operationId) + '</span>' : '') + '</div>';
+    if (op.description) html += '<p class="lede">' + esc(op.description) + '</p>';
+
+    if (params.length) {
+      html += '<h3>Parameters</h3><table class="tbl"><tr><th>Name</th><th>In</th><th>Type</th><th>Description</th></tr>';
+      params.forEach(function (p) {
+        html += '<tr><td><code>' + esc(p.name) + '</code>' + (p.required ? '<span class="req">required</span>' : '<span class="opt">optional</span>') +
+          '</td><td>' + esc(p.in) + '</td><td>' + esc(p.type) + '</td><td>' + esc(p.description || '') + '</td></tr>';
+      });
+      html += '</table>';
+    }
+    if (op.bodySchema) {
+      html += '<h3>Request body' + (op.bodyRequired ? ' <span class="req">required</span>' : ' <span class="opt">optional</span>') + '</h3>';
+      html += '<p>Schema: <code>' + esc(op.bodySchema) + '</code></p>';
+      if (op.bodyExample) html += '<pre class="code">' + esc(op.bodyExample) + '</pre>';
+    }
+    var resp = (op.responses || []);
+    if (resp.length) {
+      html += '<h3>Responses</h3><table class="tbl"><tr><th>Status</th><th>Schema</th><th>Description</th></tr>';
+      resp.forEach(function (r) {
+        html += '<tr><td><code>' + esc(r.status) + '</code></td><td>' +
+          (r.schema ? '<code>' + esc(r.schema) + '</code>' : '<span style="color:var(--faint)">—</span>') +
+          '</td><td>' + esc(r.description || '') + '</td></tr>';
+      });
+      html += '</table>';
+    }
+    html += '<p><a class="btn" href="#/playground/' + esc(op.key) + '">Open in playground →</a></p>';
+    return html;
+  }
+
+  function opRow(op) {
+    var a = el('a', 'op-row');
+    a.href = '#/op/' + op.key;
+    a.innerHTML = methodBadge(op.op.method) +
+      '<span class="path">' + esc(op.op.path) + '</span>' +
+      '<span class="sum">' + esc(op.op.summary || '') + '</span>';
+    return a;
+  }
+
+  function renderReference(tag, query) {
+    var crumb = $('#refCrumb'), content = $('#refContent');
+    crumb.textContent = '';
+    if (query) {
+      var q = query.toLowerCase();
+      var hits = OPS.filter(function (o) {
+        var op = o.op;
+        return (op.path + ' ' + op.method + ' ' + (op.summary || '') + ' ' + (op.operationId || '')).toLowerCase().indexOf(q) !== -1;
+      });
+      crumb.textContent = 'search: ' + query + ' — ' + hits.length + ' match(es)';
+      content.innerHTML = '';
+      var wrap = el('div', 'op-list');
+      hits.forEach(function (o) { wrap.appendChild(opRow(o)); });
+      content.appendChild(wrap);
+      return;
+    }
+    if (!tag) {
+      crumb.textContent = 'all groups';
+      content.innerHTML = '';
+      (API.groups || []).forEach(function (g) {
+        content.appendChild(el('h2', null, esc(g.tag) + ' <span style="color:var(--faint);font-size:14px">(' + g.operations.length + ')</span>'));
+        if (g.description) content.appendChild(el('p', 'lede', esc(g.description)));
+        var wrap = el('div', 'op-list');
+        g.operations.forEach(function (op, oi) {
+          var row = opRow({ op: op, key: (API.groups.indexOf(g)) + '-' + oi });
+          wrap.appendChild(row);
+        });
+        content.appendChild(wrap);
+      });
+      return;
+    }
+    var gi = -1;
+    (API.groups || []).forEach(function (g, i) { if (g.tag === tag) gi = i; });
+    if (gi === -1) { content.innerHTML = '<p>Unknown group.</p>'; return; }
+    var g = API.groups[gi];
+    crumb.textContent = 'reference / ' + g.tag;
+    content.innerHTML = '';
+    content.appendChild(el('h1', null, esc(g.tag)));
+    if (g.description) content.appendChild(el('p', 'lede', esc(g.description)));
+    var wrap = el('div', 'op-list');
+    g.operations.forEach(function (op, oi) { wrap.appendChild(opRow({ op: op, key: gi + '-' + oi })); });
+    content.appendChild(wrap);
+  }
+
+  function renderOperation(key) {
+    var o = null;
+    for (var i = 0; i < OPS.length; i++) if (OPS[i].key === key) { o = OPS[i]; break; }
+    var crumb = $('#refCrumb'), content = $('#refContent');
+    if (!o) { content.innerHTML = '<p>Unknown operation.</p>'; return; }
+    crumb.textContent = 'reference / ' + o.group.tag + ' / ' + o.op.method + ' ' + o.op.path;
+    content.innerHTML = '';
+    content.appendChild(el('div', null, opDetail(o.op)));
+  }
+
+  // ---------- schemas page ----------
+  function renderSchemas(filter) {
+    var list = $('#schemaList');
+    list.innerHTML = '';
+    var f = (filter || '').toLowerCase();
+    (API.schemas || []).forEach(function (s) {
+      if (f && s.name.toLowerCase().indexOf(f) === -1) return;
+      var d = el('details', 'schema');
+      var props = (s.properties || []).map(function (p) {
+        return '<tr><td><code>' + esc(p.name) + '</code></td><td>' + esc(p.type) +
+          (s.required && s.required.indexOf(p.name) !== -1 ? '<span class="req">required</span>' : '') + '</td></tr>';
+      }).join('');
+      d.innerHTML = '<summary>' + esc(s.name) + ' <span style="color:var(--faint)">' + esc(s.type) + '</span></summary>' +
+        '<div class="schema-body"><table class="tbl"><tr><th>Property</th><th>Type</th></tr>' +
+        (props || '<tr><td colspan="2" style="color:var(--faint)">no listed properties</td></tr>') + '</table></div>';
+      list.appendChild(d);
+    });
+    if (!list.children.length) list.innerHTML = '<p style="color:var(--faint)">No schemas match.</p>';
+  }
+  $('#schemaSearch').addEventListener('input', function (e) { renderSchemas(e.target.value); });
+
+  // ---------- playground ----------
+  var LS = {
+    base: 'portal.baseUrl', mode: 'portal.authMode', token: 'portal.token', endpoint: 'portal.endpoint'
+  };
+  function lsGet(k, d) { try { var v = window.localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } }
+  function lsSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
+  function lsDel(k) { try { window.localStorage.removeItem(k); } catch (e) {} }
+
+  var pgEndpoint = $('#pgEndpoint'), pgBase = $('#pgBase'), pgBody = $('#pgBody');
+  var pgAuthMode = $('#pgAuthMode'), pgToken = $('#pgToken'), pgParams = $('#pgParams');
+  var defaultBase = (meta.servers && meta.servers[0] && meta.servers[0].url && meta.servers[0].url.indexOf('/') === 0)
+    ? 'http://localhost:8080' + meta.servers[0].url
+    : 'http://localhost:8080/api/v1';
+
+  function currentOp() {
+    var key = pgEndpoint.value;
+    for (var i = 0; i < OPS.length; i++) if (OPS[i].key === key) return OPS[i];
+    return OPS[0];
+  }
+
+  function buildEndpointSelect() {
+    pgEndpoint.innerHTML = '';
+    (API.groups || []).forEach(function (g) {
+      var og = document.createElement('optgroup');
+      og.label = g.tag;
+      g.operations.forEach(function (op, oi) {
+        var gi = API.groups.indexOf(g);
+        var opt = document.createElement('option');
+        opt.value = gi + '-' + oi;
+        opt.textContent = op.method.toUpperCase() + ' ' + op.path + (op.summary ? ' — ' + op.summary : '');
+        og.appendChild(opt);
+      });
+      pgEndpoint.appendChild(og);
+    });
+  }
+
+  function sampleBody(op) {
+    if (op.bodyExample) return op.bodyExample;
+    var schema = op.bodySchema || '';
+    var skeleton = {};
+    var found = null;
+    (API.schemas || []).forEach(function (s) { if (s.name === schema) found = s; });
+    if (found) {
+      (found.properties || []).forEach(function (p) {
+        if (found.required && found.required.indexOf(p.name) !== -1) {
+          skeleton[p.name] = p.type.indexOf('[]') !== -1 ? [] :
+            (p.type === 'integer' || p.type === 'number') ? 0 : p.type === 'boolean' ? false : 'string';
+        }
+      });
+    }
+    return JSON.stringify(skeleton, null, 2);
+  }
+
+  function renderPlaygroundParams() {
+    var o = currentOp();
+    if (!o) return;
+    var op = o.op;
+    $('#pgOpMeta').innerHTML = authChip(op.auth) + permChip(op.permission) + (op.bodySchema ? '<span class="chip">body: ' + esc(op.bodySchema) + '</span>' : '');
+    $('#pgBodySchema').textContent = op.bodySchema ? op.bodySchema : 'no body for ' + op.method.toUpperCase();
+    pgBody.disabled = !op.bodySchema;
+    pgParams.innerHTML = '';
+    (op.params || []).forEach(function (p) {
+      var row = el('div', 'param-row');
+      row.innerHTML = '<span class="pname">' + esc(p.name) + ' <span style="color:var(--faint)">(' + esc(p.in) + (p.required ? ', required' : '') + ')</span></span>';
+      var input = document.createElement('input');
+      input.className = 'txt'; input.type = 'text'; input.spellcheck = false;
+      input.dataset.param = p.name; input.dataset.pin = p.in;
+      input.placeholder = p.type;
+      row.appendChild(input);
+      pgParams.appendChild(row);
+    });
+    pgBody.value = op.bodySchema ? sampleBody(op) : '';
+  }
+
+  function loadPlayground(selectedKey) {
+    buildEndpointSelect();
+    pgBase.value = lsGet(LS.base, defaultBase);
+    pgAuthMode.value = lsGet(LS.mode, 'bearer');
+    pgToken.value = lsGet(LS.token, '');
+    var saved = selectedKey || lsGet(LS.endpoint, '');
+    if (saved) {
+      for (var i = 0; i < pgEndpoint.options.length; i++) {
+        if (pgEndpoint.options[i].value === saved) { pgEndpoint.selectedIndex = i; break; }
+      }
+    }
+    renderPlaygroundParams();
+  }
+
+  pgEndpoint.addEventListener('change', function () {
+    lsSet(LS.endpoint, pgEndpoint.value);
+    renderPlaygroundParams();
+  });
+  pgBase.addEventListener('input', function () { lsSet(LS.base, pgBase.value); });
+  pgAuthMode.addEventListener('change', function () { lsSet(LS.mode, pgAuthMode.value); });
+  pgToken.addEventListener('input', function () { lsSet(LS.token, pgToken.value); });
+  $('#pgReset').addEventListener('click', function () {
+    [LS.base, LS.mode, LS.token, LS.endpoint].forEach(lsDel);
+    loadPlayground();
+  });
+
+  $('#pgSend').addEventListener('click', function () {
+    var o = currentOp();
+    if (!o) return;
+    var op = o.op;
+    var base = (pgBase.value || '').replace(/\/+$/, '');
+    var path = op.path;
+    var query = [];
+    $all('input[data-param]', pgParams).forEach(function (input) {
+      var v = input.value.trim();
+      if (!v) return;
+      if (input.dataset.pin === 'path') path = path.replace('{' + input.dataset.param + '}', encodeURIComponent(v));
+      else query.push(encodeURIComponent(input.dataset.param) + '=' + encodeURIComponent(v));
+    });
+    var url = base + path + (query.length ? '?' + query.join('&') : '');
+    var headers = {};
+    var mode = pgAuthMode.value, token = pgToken.value.trim();
+    if (mode === 'bearer' && token) headers['Authorization'] = 'Bearer ' + token;
+    if (mode === 'apikey' && token) headers['X-API-Key'] = token;
+    var init = { method: op.method.toUpperCase(), headers: headers };
+    var bodyText = pgBody.value.trim();
+    if (op.bodySchema && bodyText) {
+      headers['Content-Type'] = 'application/json';
+      init.body = bodyText;
+    }
+    var btn = $('#pgSend');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    $('#respStatus').textContent = '…';
+    $('#respMeta').textContent = op.method.toUpperCase() + ' ' + url;
+    $('#respBody').textContent = '// waiting';
+    var t0 = (window.performance && performance.now) ? performance.now() : Date.now();
+    fetch(url, init).then(function (res) {
+      var t1 = (window.performance && performance.now) ? performance.now() : Date.now();
+      return res.text().then(function (text) { return { res: res, text: text, ms: Math.round(t1 - t0) }; });
+    }).then(function (out) {
+      var res = out.res;
+      var cls = res.status < 300 ? 'st-ok' : res.status < 500 ? 'st-warn' : 'st-err';
+      $('#respStatus').innerHTML = '<span class="' + cls + '">HTTP ' + res.status + ' ' + esc(res.statusText) + '</span>';
+      var hdrs = [];
+      try { res.headers.forEach(function (v, k) { hdrs.push(k + ': ' + v); }); } catch (e) {}
+      $('#respMeta').textContent = op.method.toUpperCase() + ' ' + url + '  ·  ' + out.ms + ' ms' +
+        (hdrs.length ? '  ·  ' + hdrs.slice(0, 6).join(' | ') : '  ·  (headers hidden by CORS)');
+      var pretty = out.text;
+      try { pretty = JSON.stringify(JSON.parse(out.text), null, 2); } catch (e) {}
+      $('#respBody').textContent = pretty || '(empty body)';
+      btn.disabled = false; btn.textContent = 'Send request';
+    }).catch(function (err) {
+      $('#respStatus').innerHTML = '<span class="st-err">Request failed</span>';
+      $('#respBody').textContent = String(err && err.message || err) +
+        '\n\nLikely a CORS/same-origin failure: the browser blocked the cross-origin call.\n' +
+        'Either enable CORS on the API for this portal\'s origin (Access-Control-Allow-Origin +\n' +
+        'Access-Control-Allow-Headers for Authorization / X-API-Key / Content-Type) or drive the\n' +
+        'API with agentosctl / curl. See the note at the top of this page.';
+      btn.disabled = false; btn.textContent = 'Send request';
+    });
+  });
+
+  // ---------- copy buttons ----------
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('.copy-btn') : null;
+    if (!btn) return;
+    var pre = btn.parentElement;
+    var text = pre.textContent.replace(/^copy\n?/, '').replace(/\n?copy$/, '').trim();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = 'copied'; setTimeout(function () { btn.textContent = 'copy'; }, 1200);
+      });
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); btn.textContent = 'copied'; setTimeout(function () { btn.textContent = 'copy'; }, 1200); } catch (err) {}
+      document.body.removeChild(ta);
+    }
+  });
+
+  // ---------- search box ----------
+  $('#refSearch').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { location.hash = '#/search/' + encodeURIComponent(e.target.value.trim()); }
+  });
+
+  // ---------- router ----------
+  var sections = ['home', 'reference', 'playground', 'sdk', 'guide-quickstart', 'guide-orchestration', 'guide-workflows', 'schemas', 'changelog'];
+  function show(name) {
+    sections.forEach(function (s) {
+      var n = $('#page-' + s);
+      if (n) n.classList.toggle('hidden', s !== name);
+    });
+    $all('.nav-link').forEach(function (a) {
+      a.classList.toggle('active', a.dataset.route === name.replace('guide-', 'guide/').replace('reference-all', 'reference'));
+    });
+    window.scrollTo(0, 0);
+  }
+
+  function route() {
+    var h = location.hash.replace(/^#\/?/, '');
+    var parts = h.split('/');
+    var page = parts[0] || 'home';
+    if (page === 'reference') {
+      show('reference');
+      renderReference(decodeURIComponent(parts[1] || ''), null);
+    } else if (page === 'op') {
+      show('reference');
+      renderOperation(parts[1] || '');
+    } else if (page === 'search') {
+      show('reference');
+      renderReference(null, decodeURIComponent(h.slice('search/'.length)));
+    } else if (page === 'playground') {
+      show('playground');
+      loadPlayground(parts[1]);
+    } else if (page === 'sdk') { show('sdk'); }
+    else if (page === 'schemas') { show('schemas'); renderSchemas($('#schemaSearch').value); }
+    else if (page === 'changelog') { show('changelog'); }
+    else if (page === 'guide' && parts[1]) { show('guide-' + parts[1]); }
+    else { show('home'); }
+  }
+  window.addEventListener('hashchange', route);
+  route();
+})();
+</script>
+</body>
+</html>

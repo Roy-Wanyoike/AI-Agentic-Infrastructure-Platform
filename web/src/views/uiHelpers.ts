@@ -7,13 +7,16 @@ import type { Run } from '../lib/api/types'
 export const navItems = [
   'Overview',
   'Agents',
+  'Agent Builder',
   'Runs',
   'Workflows',
+  'Workflow Builder',
   'Approvals',
   'Evaluations',
   'Versions',
   'Usage',
   'Billing',
+  'Cost Analytics',
   'Knowledge',
   'Memory',
   'Analytics',
@@ -27,6 +30,7 @@ export const navItems = [
   'Secrets',
   'Security',
   'Settings',
+  'Portal',
 ] as const
 
 export type ViewName = (typeof navItems)[number]
@@ -39,13 +43,16 @@ export type ViewName = (typeof navItems)[number]
 export const navIcons: Record<ViewName, string> = {
   Overview: '◎',
   Agents: '⬡',
+  'Agent Builder': '✦',
   Runs: '▷',
   Workflows: '⑂',
+  'Workflow Builder': '◈',
   Approvals: '✓',
   Evaluations: '⚗',
   Versions: '⎌',
   Usage: '◔',
   Billing: '¤',
+  'Cost Analytics': '∑',
   Knowledge: '❖',
   Memory: '≡',
   Analytics: '◫',
@@ -59,6 +66,7 @@ export const navIcons: Record<ViewName, string> = {
   Secrets: '✷',
   Security: '§',
   Settings: '⚙',
+  Portal: '⌗',
 }
 
 /** Platform-aware shortcut hint for the ⌘K command palette. */

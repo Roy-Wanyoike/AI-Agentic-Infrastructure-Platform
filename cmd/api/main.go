@@ -49,6 +49,7 @@ import (
 	"agentos/internal/scheduler"
 	"agentos/internal/scim"
 	"agentos/internal/secrets"
+	"agentos/internal/simulation"
 	"agentos/internal/sso"
 	"agentos/internal/streaming"
 	"agentos/internal/synth"
@@ -138,6 +139,13 @@ type app struct {
 	// (AssertExecutionAllowed) is consumed by the worker tracks (#148/#155).
 	synthSvc *synth.Service
 
+	// issue #133: cross-platform simulation engine (shared core identity +
+	// per-platform behavior overlays: social/market/network). In-memory in
+	// BOTH modes this round (no simulation migration is assigned — same
+	// documented scope decision as internal/orchestration); the durable
+	// artifact is the SimulationResult the HTTP surface renders.
+	simSvc *simulation.Service
+
 	// issue #124: granular rate limits (org/agent/tool/model scopes).
 	// Dual-mode: the config store is Postgres-backed when a DSN is
 	// configured (migration 036 rate_limits) and in-memory otherwise;
@@ -168,6 +176,13 @@ type app struct {
 	// stores in BOTH modes this round (no migration assigned; the Postgres
 	// store is a documented follow-up — orchestrator pre-assigns it).
 	qualityGateSvc *qualitygates.Service
+
+	// issue #129: LLM-driven auto-configuration — natural language to
+	// agent/workflow configuration DRAFTS (never auto-applied). Mode
+	// independent: the LLM seam is model-backed when a provider is
+	// configured via env, deterministic-heuristic otherwise. Both modes
+	// return validated drafts only; there is no store seam at all.
+	configGenSvc *configGenService
 }
 
 // newApp builds the service graph. When db is non-nil every service is
@@ -372,6 +387,11 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	// Postgres store is a documented follow-up with a pre-assigned
 	// migration, see the qualitygates package header).
 	a.qualityGateSvc = qualitygates.NewService(qualitygates.NewInMemoryPolicyStore(), qualitygates.NewInMemoryEvidenceStore())
+	// issue #133: cross-platform simulation engine — one service for BOTH
+	// API modes (in-memory store by design this round; see the simSvc
+	// field comment). Determinism (seed + injectable clock) is the
+	// engine's contract, so no wall-clock configuration lives here.
+	a.simSvc = simulation.NewService()
 	// wave-2: evaluation runner + service. Issue #15: the API process now
 	// shares the worker's env-driven provider construction — when
 	// OPENAI_API_KEY is set, eval cases execute against the configured
@@ -381,6 +401,10 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	// zero-infrastructure development is unchanged.
 	provider, haveProvider := models.ProviderFromEnv(a.logr)
 	a.evalRunner = runtime.NewRunnerWithOptions(a.agentsSvc, nil, runtime.WithProvider(provider))
+	// issue #129: LLM-driven auto-configuration. Reuses the SAME
+	// provider seam the evaluation runner resolved above: model-backed
+	// generation when configured, deterministic heuristics otherwise.
+	a.configGenSvc = newConfigGenService(provider, haveProvider)
 	if haveProvider {
 		a.logr.Info("eval runner: live model provider configured", "provider", provider.Name())
 	} else {
@@ -621,6 +645,8 @@ func (a *app) routes() http.Handler {
 	registerLimiterRoutes(apiMux, a.limiterSvc, a.authSvc, a.apiKeysSvc)                                        // issue #124: granular rate limits
 	registerQualityGateRoutes(apiMux, a.qualityGateSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)                    // issue #152: unified release quality gates
 	registerSynthRoutes(apiMux, a.synthSvc, a.authSvc, a.apiKeysSvc)                                            // issue #147: synthetic assurance registry
+	registerConfigGenRoutes(apiMux, a.configGenSvc, a.authSvc, a.apiKeysSvc)                                    // issue #129: LLM-driven auto-configuration
+	registerSimulationRoutes(apiMux, a.simSvc, a.authSvc, a.apiKeysSvc)                                         // issue #133: cross-platform simulation engine
 	registerRunLifecycleRoutes(apiMux, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)                          // issue #115: run pause/resume/cancel
 	registerRunTraceRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)                                          // issue #114: run trace exposure
 	// issue #28: agent marketplace

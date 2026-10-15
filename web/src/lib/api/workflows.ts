@@ -280,3 +280,17 @@ export async function executeWorkflow(id: string, input: string): Promise<Workfl
 export async function getWorkflowRun(id: string): Promise<WorkflowRun> {
   return normalizeWorkflowRun(await apiFetch<unknown>(`/workflow-runs/${encodeURIComponent(id)}`))
 }
+
+// validateWorkflowDsl — issue #109 pre-save validation: POST /workflows/validate
+// runs the FULL backend ValidateDSL rule set (structure, per-type config,
+// control-flow wiring, expression syntax, cycles) against an ad-hoc DSL
+// document without creating or modifying anything. Returns { valid: true } on
+// 200; a 422 body {"errors":[{code,message,node_id}]} surfaces as an ApiError
+// that callers decode with extractValidationIssues.
+export async function validateWorkflowDsl(dsl: WorkflowDsl): Promise<{ valid: boolean }> {
+  await apiFetch<unknown>('/workflows/validate', {
+    method: 'POST',
+    body: JSON.stringify({ dsl }),
+  })
+  return { valid: true }
+}
