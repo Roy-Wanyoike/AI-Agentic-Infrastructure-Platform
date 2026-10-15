@@ -47,14 +47,20 @@ func (r *Registry) List() []ToolInfo {
 }
 
 // DefaultRegistry returns a fresh registry preloaded with the platform's
-// built-in tools (the same set cmd/worker registers: calculator and
-// http_request). Callers may register additional tools on top of it. It is
-// used for the read-only /v1/tools listing; registering into it has no effect
-// on any other process's registry.
+// built-in tools: calculator + http_request (issue #18) plus the six
+// expanded-catalog tools from issue #111 (database_query, search,
+// code_execute, webhook, json_transform, file_storage) registered ADDITIVELY
+// through catalog_builtin.go. The expanded tools fail closed until their
+// operator seams are wired (see BuiltinCatalogOptions), so the default set is
+// safe in every process. Callers may register additional tools on top of it.
+// It is used for the read-only /v1/tools listing and the MCP default
+// registry; registering into it has no effect on any other process's
+// registry.
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
 	r.Register(NewCalculatorTool())
 	r.Register(NewHTTPRequestTool())
+	_ = RegisterBuiltinCatalog(r) // issue #111 wiring line (catalog_builtin.go; cannot fail — fail-closed defaults)
 	return r
 }
 

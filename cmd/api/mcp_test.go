@@ -175,8 +175,9 @@ func TestMcpToolsListRBACMatrix(t *testing.T) {
 		}
 		res, _ := decoded["result"].(map[string]any)
 		tools, _ := res["tools"].([]any)
-		if len(tools) != 2 {
-			t.Fatalf("%s should see calculator + http_request, got %v", name, decoded)
+		// issue #111: calculator + http_request + the six expanded-catalog tools.
+		if len(tools) != 8 {
+			t.Fatalf("%s should see the 8-tool built-in catalog, got %v", name, decoded)
 		}
 	}
 
@@ -198,7 +199,8 @@ func TestMcpToolsListRBACMatrix(t *testing.T) {
 		t.Fatalf("api-key tools/list should be 200, got %d", rr.Code)
 	}
 	res, _ := decoded["result"].(map[string]any)
-	if tools, _ := res["tools"].([]any); len(tools) != 2 {
+	// issue #111: the catalog now carries 8 built-in tools.
+	if tools, _ := res["tools"].([]any); len(tools) != 8 {
 		t.Fatalf("api-key caller should see the catalog: %v", decoded)
 	}
 }
@@ -305,7 +307,13 @@ func TestMcpCrossTenantCatalogIdenticalAndOrgFree(t *testing.T) {
 	if string(firstJSON) != string(secondJSON) {
 		t.Fatalf("catalog must be identical across tenants:\n%s\n%s", firstJSON, secondJSON)
 	}
-	if strings.Contains(string(firstJSON), "organization") || strings.Contains(string(firstJSON), "org") {
+	// The catalog must not carry organization FIELDS. (Issue #111 note: tool
+	// descriptions may legitimately contain the word "org-scoped", so this
+	// checks the org key names rather than a bare substring.)
+	if strings.Contains(string(firstJSON), `"organization_id"`) ||
+		strings.Contains(string(firstJSON), `"org_id"`) ||
+		strings.Contains(string(firstJSON), `"organizationId"`) ||
+		strings.Contains(string(firstJSON), `"organization"`) {
 		t.Fatalf("catalog payload must not carry organization fields: %s", firstJSON)
 	}
 }

@@ -1,0 +1,437 @@
+# AgentOS API — OpenAPI 3.1 fragment for the expanded built-in tool catalog
+# (issue #111).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (copied VERBATIM from
+# api/fragments/apikeys.yaml, api/fragments/secrets.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/tools-catalog.yaml`
+# passes.
+#
+# Conventions reused from the base spec (api/fragments/tools-audit.yaml):
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation.
+#     No new permission enum was introduced: GET /tools reuses agents.read
+#     (internal/auth has no tools.read constant; the same fallback the
+#     knowledge routes use — orchestrator decision, documented in
+#     cmd/api/tools.go). Tool EXECUTION is not exposed over REST: the six
+#     new tools execute inside agent runs (runtime enforcer seam,
+#     internal/policies AuthorizeToolCall) and through MCP tools/call.
+#   * structured error model {"error":{"code","message"}}
+#
+# The tool INPUT/OUTPUT schemas below mirror internal/tools DescribeTool()
+# exactly (catalog_test.go asserts every expanded-catalog tool publishes an
+# object schema with required keys). Tool calls additionally surface an
+# optional estimated_cost_cents argument that the policy engine's
+# max_cost_cents condition evaluates (internal/policies policy.go).
+#
+# SECURITY: the catalog is runtime surface, not tenant data — responses carry
+# no organization fields. database_query audits every query with the SQL text
+# SHA-256 + row count and NEVER logs parameter values; webhook signatures
+# cover "{timestamp}.{body}" via the secrets seam; the search endpoint, its
+# API key (AGENTOS_SEARCH_API_URL/AGENTOS_SEARCH_API_KEY) and the file
+# storage backend are operator-wired seams, never tool-input credentials.
+openapi: 3.1.0
+info:
+  title: AgentOS — expanded built-in tool catalog (issue #111 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the issue #111 tool catalog: six built-in tools
+  (database_query, search, code_execute, webhook, json_transform,
+  file_storage) registered additively next to calculator and http_request
+  (internal/tools/catalog_builtin.go, wired by the ONE line in
+  DefaultRegistry). Every tool publishes a JSON-Schema-style input contract
+  through DescribeTool() and is listed by GET /tools. Each parameter/output
+  schema below matches the Go implementation's contract exactly.
+paths:
+  /tools:
+    get:
+      operationId: listRegisteredTools
+      summary: List the runtime's registered tools (name, description, input schema)
+      description: |
+        Read-only catalog of the agent tool registry. The built-in set is
+        calculator + http_request (issue #18) plus the six issue #111 tools
+        (database_query, search, code_execute, webhook, json_transform,
+        file_storage); anything else registered by the serving process is
+        listed too. Tools without wired operator seams remain listed but
+        fail closed at execution time (e.g. database_query without a
+        connection provider returns an error; webhook with an empty
+        allow-list denies every target). Tool registrations are runtime
+        surface (not tenant data), so the response carries no organization
+        fields; access is still authenticated and RBAC-gated.
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Tools]
+      responses:
+        '200':
+          description: The registered tools, sorted by name; each entry carries the tool's input schema when it publishes one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolListResponse'
+        '401': { description: Missing or invalid credentials (see main spec auth responses). }
+        '403': { description: Authenticated but not permitted (agents.read). }
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolCatalogErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    ToolInfo:
+      type: object
+      description: |
+        One read-only registry entry. description/input_schema are omitted
+        for tools that publish no catalog metadata (they still execute).
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Registry key the model uses in tool calls (e.g. "database_query").
+        description:
+          type: string
+          description: Human-readable summary of what the tool does and its security posture.
+        input_schema:
+          type: object
+          description: JSON-Schema-style contract the tool arguments must satisfy (see the per-tool schemas below).
+          additionalProperties: true
+    ToolListResponse:
+      type: object
+      required: [tools]
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolInfo'
+    ToolCatalogErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of INTERNAL_ERROR (500); 401/403 use the shared auth responses.
+              examples:
+              - INTERNAL_ERROR
+            message: { type: string }
+    ToolCommonArgs:
+      type: object
+      description: Arguments every expanded-catalog tool accepts in addition to its own.
+      properties:
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine (max_cost_cents condition, internal/policies).
+        timeout_ms:
+          type: integer
+          description: Optional per-call deadline in milliseconds; each tool clamps it to its own hard ceiling.
+    DatabaseQueryInput:
+      type: object
+      description: database_query — ONE parameterized statement per call against an org-scoped connector database. Read-only by default (SELECT/WITH/EXPLAIN/SHOW); values travel exclusively through prepared-statement binding (never interpolated); multi-statement text is rejected.
+      required: [connection, sql]
+      properties:
+        connection:
+          type: string
+          description: Org-scoped connector name holding the database DSN (resolved server-side through the connectors service + secret_ref; never a raw DSN).
+        sql:
+          type: string
+          description: Exactly one statement with $1-style placeholders (max 64 KiB). Read-only mode allows SELECT/WITH/EXPLAIN/SHOW as the first keyword.
+        params:
+          type: object
+          additionalProperties: true
+          description: Bound arguments — an array binds positionally ($1..$n); an object binds in sorted key order. Values never touch the SQL text.
+        row_limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
+          description: Maximum returned rows; extra rows set truncated=true.
+        readonly:
+          type: boolean
+          default: true
+          description: Defaults to true; false unlocks single DML statements only on connections provisioned for writes.
+        timeout_ms:
+          type: integer
+          default: 10000
+          description: Query deadline in milliseconds (capped at 60000).
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    DatabaseQueryOutput:
+      type: object
+      required: [columns, rows, row_count, truncated]
+      properties:
+        columns:
+          type: array
+          items: { type: string }
+          description: Result column names (duplicates are suffixed _2, _3, ... deterministically).
+        rows:
+          type: array
+          description: Row objects keyed by column name; driver values are JSON-normalized (NULL -> null, timestamps -> RFC3339Nano strings).
+          items:
+            type: object
+            additionalProperties: true
+        row_count:
+          type: integer
+          description: Number of returned rows (<= row_limit).
+        truncated:
+          type: boolean
+          description: true when more rows existed than row_limit allowed.
+    SearchInput:
+      type: object
+      description: search — three modes. web queries the operator-configured endpoint (AGENTOS_SEARCH_API_URL/AGENTOS_SEARCH_API_KEY); knowledge queries the organization's knowledge base; hybrid runs both, merges, de-duplicates (URL, falling back to the knowledge chunk id) and re-ranks by score deterministically.
+      required: [query]
+      properties:
+        query:
+          type: string
+          maxLength: 1024
+          description: Search query.
+        mode:
+          type: string
+          enum: [web, knowledge, hybrid]
+          description: Backend selection; defaults to web when an endpoint is configured, else knowledge. A failing hybrid side degrades with a warning; both failing is an error.
+        k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+          description: Maximum results.
+        timeout_ms:
+          type: integer
+          default: 10000
+          description: Web-mode deadline in milliseconds (capped at 60000).
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    SearchResult:
+      type: object
+      description: Normalized result shape every mode returns.
+      required: [title, snippet, score, source]
+      properties:
+        title: { type: string }
+        url: { type: string, description: Present for web results. }
+        snippet: { type: string }
+        score: { type: number }
+        source:
+          type: string
+          enum: [web, knowledge]
+        id:
+          type: string
+          description: Knowledge chunk id (knowledge results only).
+        document_id:
+          type: string
+          description: Knowledge document id (knowledge results only).
+        chunk_ordinal:
+          type: integer
+          description: Knowledge chunk ordinal (knowledge results only).
+        citation:
+          type: string
+          description: Knowledge citation string (knowledge results only).
+    SearchOutput:
+      type: object
+      required: [mode, query, results, count, warnings]
+      properties:
+        mode: { type: string, enum: [web, knowledge, hybrid] }
+        query: { type: string }
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+        count: { type: integer }
+        warnings:
+          type: array
+          items: { type: string }
+          description: Hybrid-mode degradation notices (e.g. one backend failing).
+    CodeExecInput:
+      type: object
+      description: code_execute — runs a snippet in a FRESH child process of its own process group. Network is disabled BEST-EFFORT via a scrubbed environment (no portable user-space socket block; AGENTOS_TOOL_SANDBOX=exec or a network namespace is required for a hard kill switch). Output capped, deadline-driven process-group kill, snippet temp files removed on every path.
+      required: [language, code]
+      properties:
+        language:
+          type: string
+          enum: [python, javascript, go]
+        code:
+          type: string
+          maxLength: 131072
+          description: Snippet source (max 128 KiB). For go, a complete package main file.
+        timeout_ms:
+          type: integer
+          default: 15000
+          description: Execution deadline in milliseconds (capped at 60000).
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    CodeExecOutput:
+      type: object
+      required: [language, stdout, stderr, exit_code, truncated, duration_ms]
+      properties:
+        language: { type: string }
+        stdout: { type: string }
+        stderr: { type: string }
+        exit_code: { type: integer }
+        truncated:
+          type: boolean
+          description: true when stdout/stderr were cut at the output cap.
+        duration_ms: { type: integer }
+    WebhookInput:
+      type: object
+      description: |
+        webhook — delivers to an OPERATOR-ALLOW-LISTED URL (default deny;
+        scheme/host/port must match and the path must be the entry path or a
+        descendant). Signed with HMAC-SHA256 over "{timestamp}.{body}" via the
+        secrets seam — headers "X-AgentOS-Signature" carries "sha256=<hex>"
+        and "X-AgentOS-Timestamp" the unix seconds; receivers must enforce a
+        5-minute replay window before verifying. SSRF protection resolves the
+        host and refuses loopback/private/link-local (169.254.169.254
+        included), CGNAT and multicast destinations, re-checked at dial level.
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: Absolute http(s) URL on the configured allow-list.
+        method:
+          type: string
+          enum: [GET, POST]
+          default: POST
+        body:
+          type: string
+          description: POST body (signed together with the timestamp).
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: Optional extra request headers.
+        fire_and_forget:
+          type: boolean
+          description: true returns {delivered,status,signed} without the receiver's body.
+        timeout_ms:
+          type: integer
+          default: 10000
+          description: Delivery deadline in milliseconds (capped at 60000).
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    WebhookOutput:
+      type: object
+      required: [delivered, status, signed]
+      properties:
+        delivered:
+          type: boolean
+          description: true when the receiver answered 2xx (request-response mode).
+        status:
+          type: integer
+          description: Receiver HTTP status code.
+        body:
+          type: string
+          description: Receiver response body, truncated at 32 KiB (absent in fire-and-forget mode).
+        signed:
+          type: boolean
+          description: true when the delivery carried an HMAC signature.
+    JSONTransformInput:
+      type: object
+      description: json_transform — minimal jq-like reshaping; pure and deterministic (identical input always yields byte-identical output; no I/O). Ops apply in order, each replacing the current document with its result.
+      required: [data, ops]
+      properties:
+        data:
+          description: Input JSON value (max 1 MiB encoded).
+        ops:
+          type: array
+          maxItems: 16
+          description: |
+            pick{path} — select the value at a dot/bracket path ("a.b[0]", 'items["weird.key"]'; a leading "$" is optional).
+            filter{path?,field?,cmp,value?} — keep array elements matching a field-op-value predicate (cmp in ==,!=,<,<=,>,>=,contains,exists; ordering comparisons on mismatched/non-comparable types exclude the element, jq-like).
+            map{path?,template} — map array elements through an object template whose string values starting with "$" are path sub-expressions into the element ("$" = the element; missing sub-paths resolve to null).
+            template{body} — build objects from "{{path}}" placeholders (a string that is exactly one placeholder splices the typed value; missing paths are an error).
+          items:
+            type: object
+            additionalProperties: true
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    JSONTransformOutput:
+      type: object
+      required: [result, ops_applied]
+      properties:
+        result:
+          description: The transformed JSON value (max 1 MiB encoded; larger results are refused, never truncated).
+        ops_applied:
+          type: integer
+    FileStorageInput:
+      type: object
+      description: file_storage — org-scoped upload/download/list/delete over the StorageBackend seam (built-in InMemoryStorageBackend is per-process and non-durable; a connector-backed HTTP impl and S3 support are documented follow-up work, NOT provided). Paths are sanitized by REJECTION (no absolute paths, no ".."/"." segments, no backslashes or control characters, max 512 bytes); objects are capped at 10 MiB; the organization comes from the run scope, never from tool input.
+      required: [operation]
+      properties:
+        operation:
+          type: string
+          enum: [upload, download, list, delete]
+        path:
+          type: string
+          maxLength: 512
+          description: Relative object path (upload/download/delete; no leading '/', no '..' segments).
+        content:
+          type: string
+          description: upload only — object content (max 10 MiB).
+        content_type:
+          type: string
+          default: application/octet-stream
+          description: upload only — MIME type.
+        prefix:
+          type: string
+          description: list only — optional path prefix filter.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
+          description: list only — maximum entries.
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    FileStorageObject:
+      type: object
+      description: One metadata listing entry (content is never returned by list).
+      required: [path, size, content_type]
+      properties:
+        path: { type: string }
+        size: { type: integer }
+        content_type: { type: string }
+    FileStorageOutput:
+      type: object
+      description: Shape depends on the operation — upload returns {operation,path,size,content_type}; download adds {content}; list returns {operation,prefix,objects,count}; delete returns {operation,path,deleted}.
+      required: [operation]
+      properties:
+        operation: { type: string, enum: [upload, download, list, delete] }
+        path: { type: string }
+        size: { type: integer }
+        content_type: { type: string }
+        content:
+          type: string
+          description: download only — the object's bytes as a string (text-oriented; keep uploads UTF-8 for faithful round-trips).
+        prefix: { type: string }
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileStorageObject'
+        count: { type: integer }
+        deleted: { type: boolean }
