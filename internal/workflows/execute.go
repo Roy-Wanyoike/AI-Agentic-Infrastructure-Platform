@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,10 @@ type Engine struct {
 	Queue        *queue.Queue
 	Approvals    *approvals.Service
 	StepExecutor StepExecutor
+	// OrgQuota (issue #110) optionally caps concurrent workflow branches per
+	// organization; nil means unlimited (the global
+	// AGENTOS_MAX_WORKFLOW_PARALLELISM ceiling still applies).
+	OrgQuota OrgParallelQuota
 }
 
 // ExecutionResult is the POST /workflows/{id}/execute response body.
@@ -219,6 +224,10 @@ type dagExecutor struct {
 	// decision, never as scheduler roots.
 	refs       map[string][]string
 	referenced map[string]bool
+
+	// mu guards the run-expansion result fields (result.RunIDs/lastRunID)
+	// against concurrent branch dispatch from parallel waves (issue #110).
+	mu sync.Mutex
 
 	ready     []string // pending node ids, kept sorted by topo index
 	loopStack []loopFrame
@@ -531,8 +540,10 @@ func (x *dagExecutor) executeNode(id string) error {
 		return x.executeRetryNode(node, started)
 	case NodeWaitUntil:
 		return x.executeWaitUntilNode(node, started)
+	case NodeParallel:
+		return x.executeParallelNode(node, started)
 	default:
-		// Structural nodes (parallel/delay/webhook/end) record a completed
+		// Structural nodes (delay/webhook/end) record a completed
 		// node run without an agent run of their own (pre-#109 contract).
 		finished := time.Now().UTC()
 		x.svc.recordNodeRun(x.ctx, x.orgID, &NodeRun{
@@ -565,14 +576,22 @@ func (x *dagExecutor) executeWorkNode(node Node, started time.Time) error {
 	return nil
 }
 
-// dispatchStep executes one node's business step. With a custom StepExecutor
-// it runs synchronously and returns the executor's JSON output; without one it
-// falls back to the historical run-expansion dispatch (create agent/tool run +
-// enqueue + return the run reference as the node output).
+// dispatchStep executes one node's business step on the executor's own
+// context (sequential paths: loop bodies, retry targets).
 func (x *dagExecutor) dispatchStep(node Node) (json.RawMessage, error) {
+	return x.dispatchStepCtx(x.ctx, node)
+}
+
+// dispatchStepCtx executes one node's business step on an explicit context —
+// parallel branches (issue #110) run on their per-branch cancellation/timeout
+// context so losers observe any/race/fail_fast decisions. With a custom
+// StepExecutor it runs synchronously and returns the executor's JSON output;
+// without one it falls back to the historical run-expansion dispatch (create
+// agent/tool run + enqueue + return the run reference as the node output).
+func (x *dagExecutor) dispatchStepCtx(ctx context.Context, node Node) (json.RawMessage, error) {
 	runInput := x.resolveStepInput(node)
 	if x.exec != nil {
-		out, err := x.exec.ExecuteStep(x.ctx, StepRequest{
+		out, err := x.exec.ExecuteStep(ctx, StepRequest{
 			OrganizationID: x.orgID,
 			WorkflowID:     x.workflowID,
 			WorkflowRunID:  x.workflowRunID,
@@ -589,13 +608,13 @@ func (x *dagExecutor) dispatchStep(node Node) (json.RawMessage, error) {
 		}
 		return out, nil
 	}
-	return x.dispatchRunExpansion(node, runInput)
+	return x.dispatchRunExpansion(ctx, node, runInput)
 }
 
 // dispatchRunExpansion is the default StepExecutor behavior: it creates the
 // agent/tool run, records the pending node run, enqueues the worker task and
 // reports {"run_id": ...} as the node output.
-func (x *dagExecutor) dispatchRunExpansion(node Node, runInput string) (json.RawMessage, error) {
+func (x *dagExecutor) dispatchRunExpansion(ctx context.Context, node Node, runInput string) (json.RawMessage, error) {
 	started := time.Now().UTC()
 	engine := x.engine
 	if engine.Runs == nil || engine.Queue == nil {
@@ -615,7 +634,7 @@ func (x *dagExecutor) dispatchRunExpansion(node Node, runInput string) (json.Raw
 		enqueue(engine.Queue, taskTypeFor(node), x.orgID, node.Config, x.workflowRunID, node.ID, "", runInput)
 		return json.RawMessage(`{}`), nil
 	}
-	run, err := engine.Runs.CreateRunCtx(x.ctx, x.orgID, agentID, runInput)
+	run, err := engine.Runs.CreateRunCtx(ctx, x.orgID, agentID, runInput)
 	if err != nil {
 		nodeRun.Status = RunStatusFailed
 		nodeRun.Error = err.Error()
@@ -627,8 +646,10 @@ func (x *dagExecutor) dispatchRunExpansion(node Node, runInput string) (json.Raw
 	nodeRun.RunID = run.ID
 	x.svc.recordNodeRun(x.ctx, x.orgID, nodeRun)
 	enqueue(engine.Queue, taskTypeFor(node), x.orgID, node.Config, x.workflowRunID, node.ID, run.ID, runInput)
+	x.mu.Lock()
 	x.result.RunIDs = append(x.result.RunIDs, run.ID)
 	x.lastRunID = run.ID
+	x.mu.Unlock()
 	out, _ := json.Marshal(map[string]any{"run_id": run.ID})
 	return out, nil
 }
