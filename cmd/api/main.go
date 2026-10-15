@@ -176,6 +176,13 @@ type app struct {
 	// stores in BOTH modes this round (no migration assigned; the Postgres
 	// store is a documented follow-up — orchestrator pre-assigns it).
 	qualityGateSvc *qualitygates.Service
+
+	// issue #129: LLM-driven auto-configuration — natural language to
+	// agent/workflow configuration DRAFTS (never auto-applied). Mode
+	// independent: the LLM seam is model-backed when a provider is
+	// configured via env, deterministic-heuristic otherwise. Both modes
+	// return validated drafts only; there is no store seam at all.
+	configGenSvc *configGenService
 }
 
 // newApp builds the service graph. When db is non-nil every service is
@@ -394,6 +401,10 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	// zero-infrastructure development is unchanged.
 	provider, haveProvider := models.ProviderFromEnv(a.logr)
 	a.evalRunner = runtime.NewRunnerWithOptions(a.agentsSvc, nil, runtime.WithProvider(provider))
+	// issue #129: LLM-driven auto-configuration. Reuses the SAME
+	// provider seam the evaluation runner resolved above: model-backed
+	// generation when configured, deterministic heuristics otherwise.
+	a.configGenSvc = newConfigGenService(provider, haveProvider)
 	if haveProvider {
 		a.logr.Info("eval runner: live model provider configured", "provider", provider.Name())
 	} else {
@@ -634,6 +645,7 @@ func (a *app) routes() http.Handler {
 	registerLimiterRoutes(apiMux, a.limiterSvc, a.authSvc, a.apiKeysSvc)                                        // issue #124: granular rate limits
 	registerQualityGateRoutes(apiMux, a.qualityGateSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)                    // issue #152: unified release quality gates
 	registerSynthRoutes(apiMux, a.synthSvc, a.authSvc, a.apiKeysSvc)                                            // issue #147: synthetic assurance registry
+	registerConfigGenRoutes(apiMux, a.configGenSvc, a.authSvc, a.apiKeysSvc)                                    // issue #129: LLM-driven auto-configuration
 	registerSimulationRoutes(apiMux, a.simSvc, a.authSvc, a.apiKeysSvc)                                         // issue #133: cross-platform simulation engine
 	registerRunLifecycleRoutes(apiMux, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)                          // issue #115: run pause/resume/cancel
 	registerRunTraceRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)                                          // issue #114: run trace exposure
