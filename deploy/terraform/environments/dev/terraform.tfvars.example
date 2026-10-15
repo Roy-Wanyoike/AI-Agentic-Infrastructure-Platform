@@ -1,0 +1,5 @@
+# Example tfvars for the dev environment.
+# cp terraform.tfvars.example terraform.tfvars  (terraform.tfvars is gitignored)
+kubeconfig_context = "k3d-agentos-dev"
+namespace          = "agentos"
+image_tag          = "0.1.0"
