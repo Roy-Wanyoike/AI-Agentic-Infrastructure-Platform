@@ -1,0 +1,156 @@
+{
+  "tool": "agentload",
+  "tool_version": "1.0.0",
+  "scenario": "sustained",
+  "base": "http://127.0.0.1:8080",
+  "started_at": "2026-10-15T14:35:19.6010734Z",
+  "duration_s": 20.001125461,
+  "config": {
+    "base": "http://127.0.0.1:8080",
+    "baseline_duration_s": 10,
+    "duration_s": 20,
+    "error_threshold": 0.05,
+    "fan_out": 3,
+    "knee_factor": 2,
+    "max_workers": 256,
+    "prefix": "/v1",
+    "ramp_factor": 2,
+    "ramp_start": 1,
+    "ramp_step_s": 3,
+    "recovery_timeout_s": 60,
+    "recovery_tolerance": 1.2,
+    "rps": 60,
+    "sample_interval_s": 5,
+    "spike_duration_s": 30,
+    "spike_multiplier": 10,
+    "timeout_s": 5,
+    "warmup_s": 3,
+    "workers": 16
+  },
+  "ops": [
+    {
+      "op": "create_run",
+      "requests": 1200,
+      "errors": 0,
+      "client_drops": 0,
+      "error_rate": 0,
+      "rps": 59.99662380698867,
+      "p50_ms": 0.294,
+      "p95_ms": 0.408,
+      "p99_ms": 0.72,
+      "mean_ms": 0.3232975,
+      "max_ms": 4.018,
+      "status_codes": {
+        "201": 1200
+      }
+    },
+    {
+      "op": "healthz",
+      "requests": 120,
+      "errors": 0,
+      "client_drops": 0,
+      "error_rate": 0,
+      "rps": 5.999662380698868,
+      "p50_ms": 0.117,
+      "p95_ms": 0.196,
+      "p99_ms": 0.28,
+      "mean_ms": 0.13293333333333332,
+      "max_ms": 0.817,
+      "status_codes": {
+        "200": 120
+      }
+    }
+  ],
+  "setup_ops": [
+    {
+      "op": "setup.agent",
+      "requests": 3,
+      "errors": 0,
+      "client_drops": 0,
+      "error_rate": 0,
+      "rps": 0.1499915595174717,
+      "p50_ms": 0.136,
+      "p95_ms": 1.261,
+      "p99_ms": 1.261,
+      "mean_ms": 0.49933333333333335,
+      "max_ms": 1.261,
+      "status_codes": {
+        "200": 2,
+        "201": 1
+      }
+    },
+    {
+      "op": "setup.provision",
+      "requests": 2,
+      "errors": 0,
+      "client_drops": 0,
+      "error_rate": 0,
+      "rps": 0.09999437301164779,
+      "p50_ms": 59.102,
+      "p95_ms": 59.447,
+      "p99_ms": 59.447,
+      "mean_ms": 59.2745,
+      "max_ms": 59.447,
+      "status_codes": {
+        "200": 1,
+        "201": 1
+      }
+    }
+  ],
+  "totals": {
+    "requests": 1320,
+    "errors": 0,
+    "client_drops": 0,
+    "error_rate": 0,
+    "rps": 65.99628618768755
+  },
+  "resources": {
+    "interval_s": 5,
+    "samples": 5,
+    "errors": 0,
+    "families": {
+      "agentos_queue_length": {
+        "start": 30000,
+        "end": 31199,
+        "delta": 1199,
+        "slope_per_s": 59.97529907216935
+      },
+      "agentos_request_duration_seconds_bucket": {
+        "start": 406944,
+        "end": 34306,
+        "delta": -372638,
+        "slope_per_s": -22989.389842790628
+      },
+      "agentos_request_duration_seconds_count": {
+        "start": 33997,
+        "end": 2889,
+        "delta": -31108,
+        "slope_per_s": -1919.6754662906105
+      },
+      "agentos_request_duration_seconds_sum": {
+        "start": 28.092850817999842,
+        "end": 9.989336248999997,
+        "delta": -18.103514568999845,
+        "slope_per_s": -1.2863929931482712
+      },
+      "http_request_duration_seconds": {
+        "start": 0.000030284,
+        "end": 0.000195783,
+        "delta": 0.000165499,
+        "slope_per_s": 0.000006621357858196289
+      },
+      "http_requests_total": {
+        "start": 6157,
+        "end": 6157,
+        "delta": 0,
+        "slope_per_s": -9.163437003766738
+      }
+    },
+    "client_goroutines": 25
+  },
+  "extra": {
+    "agent_id": "dc64b8d1-8b8f-4f87-b0a3-7a312d64573f",
+    "note": "runs stay QUEUED in in-memory mode (no worker); the measured op is the create-run request path"
+  },
+  "client_goroutines": 25
+}
