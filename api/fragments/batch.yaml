@@ -1,0 +1,690 @@
+# AgentOS API — OpenAPI 3.1 fragment for the batch/bulk operations surface
+# (issue #123).
+#
+# Merge target: api/openapi.yaml. Paths WITHOUT the /api/v1 prefix (routes
+# mount on apiMux and are served under both /v1 and /api/v1).
+#
+# Convention note (apikeys.yaml / orchestration-exec.yaml pattern): security
+# scheme names used by `security:` are declared in this fragment's own
+# components.securitySchemes (VERBATIM base definitions from
+# api/fragments/apikeys.yaml), so
+# `python3 scripts/check_fragment_refs.py api/fragments/batch.yaml` passes
+# standalone. Folding is last-key-wins (identity re-definition).
+#
+# Contract notes:
+#   * Every submission is ATOMIC on whole-request validity: no items,
+#     ambiguous selectors, empty patch, an environment outside the documented
+#     set, or a batch over the item cap (env AGENTOS_BATCH_MAX_ITEMS, default
+#     100) is a 422 BEFORE any item runs — nothing executes, nothing is
+#     stored.
+#   * Partial failure is ISOLATED per item (bounded pool, default concurrency
+#     4, hard cap 32): one failing item never aborts the batch. The response
+#     is 200 when every item succeeded and 207 with the SAME
+#     {batch_id, status, summary, items} body when any item failed or was
+#     cancelled — items carry {ref, status, error?, <result fields>}.
+#   * Tenant scope comes EXCLUSIVELY from the auth claims: no batch address
+#     is org-qualified on the wire, so a cross-org GET /batch/{id} reads as
+#     404 (never 403, never a leak).
+#   * POST /batch/secrets values appear in exactly one wire place (the
+#     request body); responses, items, events and audit rows carry metadata
+#     only (name, key_version) — the value is never echoed.
+#   * Progress rides the EXISTING SSE stream seam: additive "batch.updated"
+#     events keyed by the batch id, consumed via GET /batch/{id}/events.
+#   * Storage is in-memory BY DESIGN this round (no batch migration
+#     assigned); a restart clears batch history.
+#   * RBAC (x-required-permission; NEW issue #123 grants,
+#     internal/auth/permissions_batch.go):
+#     batch.read  (OWNER/ADMIN/MEMBER/VIEWER) — batch progress is an
+#                 observability surface;
+#     batch.write (OWNER/ADMIN/MEMBER) — submissions create real runs, mutate
+#                 agents/secrets and consume model tokens (the execution tier
+#                 of runs.execute); VIEWER excluded.
+openapi: 3.1.0
+info:
+  title: AgentOS — batch operations (issue #123 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the batch/bulk operations added by issue #123:
+  one agent over N inputs, N agents over a shared input, bulk workflow
+  triggers, bulk agent updates, bulk deploys, bulk run cancellations and
+  bulk secret creation — each tracked as a batch job with per-item states,
+  a bounded-concurrency pool, per-item failure isolation, cancel semantics
+  and SSE progress. Submissions block until the batch settles and answer
+  200 (all items succeeded) or 207 (any item failed/cancelled) with the
+  full {batch_id, status, summary, items} body; whole-request invalidity is
+  a 422 before any item runs.
+paths:
+  /batch/runs:
+    post:
+      operationId: createBatchRuns
+      summary: Run one agent over N inputs or N agents over one input (batch)
+      description: >
+        Body is either {agent_id, inputs[]} (one agent, one item per input;
+        item ref is the input index) or {agent_ids[], input} (one item per
+        agent, shared input). Every item creates a REAL run
+        (CreateRunCtx) and enqueues the same "agent.run" task the single-run
+        path uses, then blocks until the batch settles.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchRunsRequest" }
+      responses:
+        "200":
+          description: Every item succeeded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRunsResponse" }
+        "207":
+          description: >
+            Multi-Status. Partial failure: at least one item failed or was
+            cancelled; the body carries the same batch record plus the
+            per-item error strings. run_ids contains ONLY the succeeded
+            items' run ids, in submission order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRunsResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+        "408":
+          description: >
+            BATCH_WAIT_INTERRUPTED — the wait was interrupted (client
+            disconnect/timeout); the batch keeps running and the client can
+            re-attach via GET /batch/{id} or GET /batch/{id}/events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+
+  /batch/workflows/{id}/trigger:
+    post:
+      operationId: triggerBatchWorkflow
+      summary: Trigger one workflow execution per input (batch)
+      description: >
+        The workflow target is resolved ONCE before any item runs (unknown
+        workflow -> 404); empty inputs -> 422. Each item expands the
+        workflow DAG for one input and reports its workflow_run_id.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: "#/components/parameters/BatchWorkflowID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchWorkflowTriggerRequest" }
+      responses:
+        "200":
+          description: Every item succeeded (workflow_run_ids in submission order).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchWorkflowTriggerResponse" }
+        "207":
+          description: Partial failure — items carry per-item errors; workflow_run_ids lists succeeded executions only.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchWorkflowTriggerResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "404":
+          description: >
+            NOT_FOUND — the workflow does not exist in the caller's
+            organization (atomic pre-flight; nothing ran).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/agents/update:
+    post:
+      operationId: updateBatchAgents
+      summary: Apply one validated patch to N agents (batch)
+      description: >
+        The patch is validated ONCE for the whole request (422 before any
+        item) and applied per agent with per-item results. Unknown agents
+        are failed items, never a batch abort.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchAgentUpdateRequest" }
+      responses:
+        "200":
+          description: Every agent patched (updated_agent_ids in submission order).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchAgentUpdateResponse" }
+        "207":
+          description: Partial failure — unknown agents surface as failed items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchAgentUpdateResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/agents/deploy:
+    post:
+      operationId: deployBatchAgents
+      summary: Create one deployment per agent (batch)
+      description: >
+        Uses the exact single-deploy call (CreateDeploymentCtx) per item. An
+        explicit version deploys every agent at that version; when omitted,
+        each item resolves the agent's latest published version (an agent
+        without one is a failed item). environment defaults to production.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchAgentDeployRequest" }
+      responses:
+        "200":
+          description: Every deployment created (deployment_ids in submission order).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchAgentDeployResponse" }
+        "207":
+          description: Partial failure — agents without a published version surface as failed items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchAgentDeployResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/runs/cancel:
+    post:
+      operationId: cancelBatchRuns
+      summary: Cancel N runs (batch)
+      description: >
+        The single-run cancel semantics (idempotent for already-cancelled
+        runs, invalid-transition for terminal ones) applied per item.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchRunCancelRequest" }
+      responses:
+        "200":
+          description: Every run cancelled (cancelled_run_ids in submission order).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRunCancelResponse" }
+        "207":
+          description: Partial failure — terminal runs surface as failed items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRunCancelResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/secrets:
+    post:
+      operationId: createBatchSecrets
+      summary: Create N encrypted secrets (batch)
+      description: >
+        One encrypted secret per item through the secrets service. Values
+        exist ONLY in the request body — responses carry the name and the
+        envelope key version, never the value.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchSecretsRequest" }
+      responses:
+        "200":
+          description: Every secret created (`created` lists the secret names).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchSecretsResponse" }
+        "207":
+          description: Partial failure — duplicate/invalid names surface as failed items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchSecretsResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/{id}:
+    get:
+      operationId: getBatch
+      summary: Poll one batch record (per-item states, summary, timestamps)
+      description: >
+        The polling surface for a submitted batch. A batch from another
+        organization reads as not-found (404), never 403.
+      x-required-permission: batch.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: "#/components/parameters/BatchID"
+      responses:
+        "200":
+          description: The batch record (any status).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRecord" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "404":
+          description: NOT_FOUND — unknown id or a batch owned by another organization.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+
+  /batch/{id}/events:
+    get:
+      operationId: streamBatchEvents
+      summary: SSE progress stream for one batch
+      description: >
+        Additive "batch.updated" progress events on the existing stream seam
+        (text/event-stream), keyed by the batch id: {batch_id, completed,
+        total, item_states}. The org-scope check runs before the stream is
+        opened.
+      x-required-permission: batch.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: "#/components/parameters/BatchID"
+      responses:
+        "200":
+          description: text/event-stream of batch.updated progress events.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "404":
+          description: NOT_FOUND — unknown id or a batch owned by another organization.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+        "503":
+          description: STREAMING_UNAVAILABLE — the event stream service is not wired.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+
+  /batch/{id}/cancel:
+    post:
+      operationId: cancelBatch
+      summary: Cancel a running batch (idempotent on terminal batches)
+      description: >
+        Cancels the batch: in-flight items' contexts fire and pending items
+        never run. Idempotent on terminal batches. Audit-logged
+        (batch.cancelled) best-effort.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: "#/components/parameters/BatchID"
+      responses:
+        "200":
+          description: The (cancelled) batch record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRecord" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "404":
+          description: NOT_FOUND — unknown id or a batch owned by another organization.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    BatchID:
+      name: id
+      in: path
+      required: true
+      description: Batch id (UUID, as returned by the submission response).
+      schema:
+        type: string
+        minLength: 1
+    BatchWorkflowID:
+      name: id
+      in: path
+      required: true
+      description: Workflow id (UUID) to trigger once per input.
+      schema:
+        type: string
+        minLength: 1
+  responses:
+    BatchUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BatchErrorEnvelope'
+    BatchForbidden:
+      description: >
+        Authenticated but lacking the required batch permission
+        (batch.write excludes VIEWER on every submission surface).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BatchErrorEnvelope'
+    BatchValidation:
+      description: >
+        VALIDATION_ERROR — atomic whole-request validation failed (no items,
+        ambiguous selectors, empty patch, invalid environment, oversized
+        batch over AGENTOS_BATCH_MAX_ITEMS). Nothing ran.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BatchErrorEnvelope'
+  schemas:
+    BatchErrorEnvelope:
+      type: object
+      description: Structured error model shared with the base spec.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (VALIDATION_ERROR, NOT_FOUND, UNAUTHORIZED, ...).
+            message:
+              type: string
+          required: [code, message]
+      required: [error]
+
+    BatchItem:
+      type: object
+      description: One batch item's outcome. Result metadata (run_id, deployment_id, name, ...) is flattened onto the item; a failed item carries the error string.
+      properties:
+        ref:
+          type: string
+          description: Caller-facing reference — the agent id, the input index or the secret name.
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, cancelled]
+        error:
+          type: string
+          description: The failure reason (present exactly when status is failed).
+        run_id:
+          type: string
+          description: runs items — the created run id.
+        task_id:
+          type: string
+          description: runs items — the enqueued "agent.run" task id.
+        workflow_run_id:
+          type: string
+          description: workflow items — the created workflow run id.
+        agent_id:
+          type: string
+          description: agent-update items — the patched agent id.
+        deployment_id:
+          type: string
+          description: agent-deploy items — the created deployment id.
+        version:
+          type: integer
+          description: agent-deploy items — the deployed version.
+        environment:
+          type: string
+          description: agent-deploy items — the deployment environment.
+        name:
+          type: string
+          description: secret items — the secret name (never the value).
+        key_version:
+          type: integer
+          description: secret items — the envelope key version.
+      required: [ref, status]
+
+    BatchSummary:
+      type: object
+      description: Rollup of the item states.
+      properties:
+        total:
+          type: integer
+        succeeded:
+          type: integer
+        failed:
+          type: integer
+        cancelled:
+          type: integer
+      required: [total, succeeded, failed, cancelled]
+
+    BatchRecord:
+      type: object
+      description: Full batch job record (GET /batch/{id} and POST /batch/{id}/cancel).
+      properties:
+        batch_id:
+          type: string
+        organization_id:
+          type: string
+        type:
+          type: string
+          enum: [runs, workflows, agent_update, agent_deploy, run_cancel, secrets]
+        status:
+          type: string
+          description: running while any item is unsettled; completed or cancelled when terminal.
+        max_concurrency:
+          type: integer
+          description: The effective pool size (clamped to the hard cap 32).
+        summary: { $ref: "#/components/schemas/BatchSummary" }
+        total:
+          type: integer
+        completed:
+          type: integer
+          description: Items in a terminal state.
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/BatchItem" }
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+      required: [batch_id, organization_id, type, status, summary, total, completed, items, created_at, updated_at]
+
+    BatchRunsRequest:
+      type: object
+      description: Either {agent_id, inputs[]} or {agent_ids[], input} — never both selectors.
+      properties:
+        agent_id:
+          type: string
+          description: One agent to run over every entry of inputs.
+        agent_ids:
+          type: array
+          items: { type: string }
+          description: N agents run over the shared input.
+        input:
+          type: string
+          description: Shared input for the agent_ids form.
+        inputs:
+          type: array
+          items: { type: string }
+          description: One input per item for the single-agent form.
+        max_concurrency:
+          type: integer
+          description: Pool size hint (default 4, clamped to the hard cap 32).
+    BatchRunsResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          run_ids:
+            type: array
+            items: { type: string }
+            description: The succeeded items' run ids in submission order.
+        required: [run_ids]
+
+    BatchWorkflowTriggerRequest:
+      type: object
+      properties:
+        inputs:
+          type: array
+          items: { type: string }
+          description: One workflow execution per entry.
+        max_concurrency:
+          type: integer
+      required: [inputs]
+    BatchWorkflowTriggerResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          workflow_id:
+            type: string
+          workflow_run_ids:
+            type: array
+            items: { type: string }
+        required: [workflow_id, workflow_run_ids]
+
+    BatchAgentPatch:
+      type: object
+      description: At least one field must be set; name/instructions/model must be non-blank when present.
+      properties:
+        name: { type: string }
+        description: { type: string }
+        instructions: { type: string }
+        model: { type: string }
+    BatchAgentUpdateRequest:
+      type: object
+      properties:
+        agent_ids:
+          type: array
+          items: { type: string }
+        patch: { $ref: "#/components/schemas/BatchAgentPatch" }
+        max_concurrency:
+          type: integer
+      required: [agent_ids, patch]
+    BatchAgentUpdateResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          updated_agent_ids:
+            type: array
+            items: { type: string }
+        required: [updated_agent_ids]
+
+    BatchAgentDeployRequest:
+      type: object
+      properties:
+        agent_ids:
+          type: array
+          items: { type: string }
+        version:
+          type: integer
+          description: Explicit version for every agent; when omitted each item resolves the agent's latest published version.
+        environment:
+          type: string
+          enum: [development, staging, production]
+          description: Defaults to production.
+        max_concurrency:
+          type: integer
+      required: [agent_ids]
+    BatchAgentDeployResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          environment:
+            type: string
+          deployment_ids:
+            type: array
+            items: { type: string }
+        required: [environment, deployment_ids]
+
+    BatchRunCancelRequest:
+      type: object
+      properties:
+        run_ids:
+          type: array
+          items: { type: string }
+        max_concurrency:
+          type: integer
+      required: [run_ids]
+    BatchRunCancelResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          cancelled_run_ids:
+            type: array
+            items: { type: string }
+        required: [cancelled_run_ids]
+
+    BatchSecretsRequest:
+      type: object
+      properties:
+        secrets:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              value: { type: string, writeOnly: true }
+            required: [name, value]
+        max_concurrency:
+          type: integer
+      required: [secrets]
+    BatchSecretsResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          created:
+            type: array
+            items: { type: string }
+            description: The created secret names (values are never echoed).
+        required: [created]
+
+    BatchSubmission:
+      type: object
+      description: The settled batch body shared by every submission response (200 or 207).
+      properties:
+        batch_id:
+          type: string
+        status:
+          type: string
+          description: completed when every item settled; the 207 form still reports completed with failed/cancelled items.
+        summary: { $ref: "#/components/schemas/BatchSummary" }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/BatchItem" }
+      required: [batch_id, status, summary, items]
