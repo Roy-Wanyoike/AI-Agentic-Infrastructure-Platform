@@ -1,0 +1,24 @@
+# Staging overlay (issue #117): namespace agentos-staging, 2 replicas,
+# staging sizes, staging host, TLS placeholder kept off (wire cert-manager).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agentos-staging
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+images:
+  - name: ghcr.io/roy-wanyoike/agentos-api
+    newTag: 0.1.0
+  - name: ghcr.io/roy-wanyoike/agentos-worker
+    newTag: 0.1.0
+  - name: ghcr.io/roy-wanyoike/agentos-web
+    newTag: 0.1.0
+
+patches:
+  - path: patch-replicas.yaml
+  - path: patch-hpa.yaml
+  - path: patch-configmap.yaml
+  - path: patch-ingress.yaml

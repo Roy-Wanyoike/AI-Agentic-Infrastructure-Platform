@@ -1,0 +1,89 @@
+# Dashboard (web) Deployment (issue #117).
+#
+# Image: built by Dockerfile.web -- nginx:alpine serving the Vite SPA from
+# /usr/share/nginx/html with deploy/nginx.conf (same-origin /api proxy).
+# nginx:alpine's master process runs as root (official image default), so
+# runAsNonRoot is NOT set here; everything else stays hardened. For a
+# fully non-root variant switch the image to nginxinc/nginx-unprivileged
+# (listens on 8080) and adjust ports/readOnlyRootFilesystem mounts.
+#
+# Probes: httpGet / -- kubelet issues the request, no in-container tooling
+# required (the compose-level wget healthcheck is irrelevant to k8s).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-web
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-web
+    app.kubernetes.io/component: web
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentos-web
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: agentos
+        app.kubernetes.io/name: agentos-web
+        app.kubernetes.io/component: web
+    spec:
+      serviceAccountName: agentos-web
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: ghcr.io/roy-wanyoike/agentos-web:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # nginx needs to write its pid file and cache dirs; both are
+            # redirected to tmpfs volumes below so the root fs stays RO.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: run
+              mountPath: /var/run
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+      terminationGracePeriodSeconds: 30

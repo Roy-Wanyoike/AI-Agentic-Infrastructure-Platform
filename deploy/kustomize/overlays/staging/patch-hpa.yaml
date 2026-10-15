@@ -1,0 +1,16 @@
+# Staging: modest HPA bounds.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentos-api
+spec:
+  minReplicas: 2
+  maxReplicas: 6
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentos-worker
+spec:
+  minReplicas: 2
+  maxReplicas: 10

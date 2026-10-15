@@ -1,0 +1,148 @@
+# ============================================================================
+# REFERENCE STATEFUL DEPENDENCIES (issue #117) -- DEV / SMALL-STAGE ONLY.
+#
+# The Postgres/Redis/NATS StatefulSets in this directory are a convenient
+# single-node reference stack for dev clusters and tiny staging environments.
+# They run ONE replica each, with simple PVCs and no backup/HA story.
+#
+# FOR PRODUCTION USE MANAGED SERVICES:
+#   * Postgres -> AWS RDS / GCP CloudSQL  (deploy/terraform/modules/database)
+#   * Redis    -> ElastiCache / Memorystore (deploy/terraform/modules/redis)
+#   * NATS     -> see deploy/terraform/modules/nats/README.md (guidance for
+#                 self-managing NATS on k8s with the nats-server helm chart)
+# Then point the app at the managed endpoints (deploy/README.md "BYO
+# database"): remove the StatefulSets and update agentos-config / Secret.
+# ============================================================================
+
+# Postgres 16 (matches docker-compose.yml / docker-compose.prod.yml versions).
+# volumeClaimTemplates -> /var/lib/postgresql/data survives pod rescheduling.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: agentos-postgres
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-postgres
+    app.kubernetes.io/component: database
+spec:
+  serviceName: agentos-postgres-hs
+  replicas: 1 # REFERENCE ONLY: single node, no HA -- use managed RDS/CloudSQL
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentos-postgres
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: agentos
+        app.kubernetes.io/name: agentos-postgres
+        app.kubernetes.io/component: database
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999 # postgres user in the official image
+        runAsGroup: 999
+        fsGroup: 999 # PVC ownership for the postgres data dir
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: pg
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: agentos-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: agentos-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentos-secrets
+                  key: POSTGRES_PASSWORD
+          # pg_isready readiness: official image ships a shell, unlike app images.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "agentos", "-d", "agentos"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "agentos", "-d", "agentos"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+        # storageClassName: "" # uncomment to pin a class
+---
+# Headless service required by the StatefulSet (stable network identity).
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentos-postgres-hs
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-postgres
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: agentos-postgres
+  ports:
+    - name: pg
+      port: 5432
+---
+# Stable ClusterIP used by the app via DATABASE_URL in the Secret.
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentos-postgres
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-postgres
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: agentos-postgres
+  ports:
+    - name: pg
+      port: 5432
+      targetPort: pg

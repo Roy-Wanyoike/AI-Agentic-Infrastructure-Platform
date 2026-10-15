@@ -1,0 +1,27 @@
+# Production overlay (issue #117): namespace agentos-prod, 3 replicas,
+# production resources, TLS on, prod ingress host.
+# Secrets: inject agentos-secrets via sealed-secrets/external-secrets BEFORE
+# the first apply (see deploy/README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agentos-prod
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+images:
+  - name: ghcr.io/roy-wanyoike/agentos-api
+    newTag: 0.1.0 # bump with releases; prefer digest pinning for prod
+  - name: ghcr.io/roy-wanyoike/agentos-worker
+    newTag: 0.1.0
+  - name: ghcr.io/roy-wanyoike/agentos-web
+    newTag: 0.1.0
+
+patches:
+  - path: patch-replicas.yaml
+  - path: patch-resources.yaml
+  - path: patch-hpa.yaml
+  - path: patch-configmap.yaml
+  - path: patch-ingress.yaml
