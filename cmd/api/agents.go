@@ -197,6 +197,10 @@ func registerAgentsLifecycleRoutes(apiMux *http.ServeMux, agentsSvc *agents.Serv
 	}
 	apiMux.Handle("PUT /agents/{id}", wrap(auth.PermissionAgentsWrite, http.HandlerFunc(updateAgentHandler(agentsSvc, auditSvc))))
 	apiMux.Handle("DELETE /agents/{id}", wrap(auth.PermissionAgentsWrite, http.HandlerFunc(deleteAgentHandler(agentsSvc, runsSvc, auditSvc))))
+	// issue #106: lifecycle state machine — POST /agents/{id}/transition
+	// (agents.write; the handler audits through the service-level auditor
+	// seam wired in newApp, which is why auditSvc is not passed here).
+	apiMux.Handle("POST /agents/{id}/transition", wrap(auth.PermissionAgentsWrite, http.HandlerFunc(transitionAgentHandler(agentsSvc))))
 }
 
 // writeJSONAL serializes v with the given status (distinct name avoids
@@ -421,4 +425,94 @@ func deleteAgentHandler(service *agents.Service, runsSvc *runs.Service, auditSvc
 		}
 		writeJSONAL(w, http.StatusOK, map[string]any{"deleted": true, "id": agentID})
 	}
+}
+
+// --- Issue #106: agent lifecycle state machine ------------------------------
+//
+// POST /agents/{id}/transition {target_state} moves one agent of the
+// caller's tenant along the enforced state machine
+// (internal/agents/lifecycle.go):
+//
+//	draft → building → active → paused/disabled → archived
+//
+// Semantics:
+//   - RBAC: agents.write (exactly OWNER/ADMIN), enforced by the wrap in
+//     registerAgentsLifecycleRoutes.
+//   - target_state is case-insensitive ("active" and "ACTIVE" both work);
+//     unknown states answer 422 VALIDATION_ERROR.
+//   - Illegal current → target moves answer 409 CONFLICT with the typed
+//     *TransitionError message (carrying current and target); the agent is
+//     untouched.
+//   - Foreign/unknown agents answer 404 with no existence leak (tenant
+//     guard inside the service).
+//   - Success returns 200 with the updated agent in the same PascalCase
+//     representation as GET /agents/{id}.
+//   - Audit: the transition records agent.state_changed through the
+//     service-level auditor seam (agents.Service.SetAuditor wired in
+//     newApp), so every caller of TransitionState — API, CLI, worker — is
+//     audited exactly once.
+
+// transitionAgentHandler serves POST /agents/{id}/transition.
+func transitionAgentHandler(service *agents.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agentID := r.PathValue("id")
+		if strings.TrimSpace(agentID) == "" {
+			writeErrorAL(w, http.StatusNotFound, "AGENT_NOT_FOUND", "agent not found")
+			return
+		}
+		var req struct {
+			TargetState string `json:"target_state"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErrorAL(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
+			return
+		}
+		target, ok := agents.ParseAgentState(req.TargetState)
+		if !ok {
+			writeErrorAL(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR",
+				fmt.Sprintf("unknown target_state %q; valid states are: %s", req.TargetState, strings.Join(agentLifecycleStateNames(), ", ")))
+			return
+		}
+		updated, err := service.TransitionStateWithAgent(r.Context(), claimsOrg(r), agentID, target)
+		if err != nil {
+			switch {
+			case errors.Is(err, agents.ErrAgentNotFound):
+				// Cross-organization and unknown agents are the same 404 —
+				// no existence leak across tenants.
+				writeErrorAL(w, http.StatusNotFound, "AGENT_NOT_FOUND", "agent not found")
+			case errors.Is(err, agents.ErrUnknownAgentState):
+				writeErrorAL(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
+			case errors.Is(err, agents.ErrInvalidTransition):
+				writeErrorAL(w, http.StatusConflict, "INVALID_TRANSITION", err.Error())
+			default:
+				writeErrorAL(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error")
+			}
+			return
+		}
+		// Same wire shape as GET /agents/{id}: the agent struct (PascalCase).
+		writeJSONAL(w, http.StatusOK, updated)
+	}
+}
+
+// claimsOrg extracts the caller's tenant from the auth claims. The
+// RequireAuthOrAPIKey outer middleware guarantees the claims exist by the
+// time the handler runs; an empty org is treated as unauthorized (defense in
+// depth for direct test wirings).
+func claimsOrg(r *http.Request) string {
+	claims, err := auth.ExtractClaims(r.Context())
+	if err != nil {
+		return ""
+	}
+	return claims.OrganizationID
+}
+
+// agentLifecycleStateNames lists the valid target_state values for error
+// messages (table order, canonical uppercase).
+func agentLifecycleStateNames() []string {
+	states := agents.AllAgentStates()
+	names := make([]string, 0, len(states))
+	for _, state := range states {
+		names = append(names, string(state))
+	}
+	return names
 }

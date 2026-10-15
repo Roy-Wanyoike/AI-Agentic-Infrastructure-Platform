@@ -66,6 +66,9 @@ type Service struct {
 	agents   map[string]*Agent
 	versions map[string][]*AgentVersion
 	store    Store
+	// auditor is the optional lifecycle audit seam (issue #106); wired via
+	// SetAuditor (lifecycle.go), structurally satisfied by *audit.Service.
+	auditor AgentAuditor
 }
 
 func NewService() *Service {
