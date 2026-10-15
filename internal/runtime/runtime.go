@@ -31,6 +31,8 @@ import (
 	"time"
 
 	"agentos/internal/agents"
+	"agentos/internal/apikeys"
+	"agentos/internal/audit"
 	"agentos/internal/models"
 	"agentos/internal/observability"
 	"agentos/internal/policies"
@@ -199,6 +201,11 @@ type Runner struct {
 	// context (policies.WithRunScope). See WithPolicyEnforcer /
 	// SetPolicyEnforcer.
 	policy *policies.Enforcer
+	// agentKeyAudit is optional (nil-safe DI, wave-8 agent identity v1):
+	// when wired, a tool invocation denied by an agent key's allow-list
+	// writes a best-effort audit row (action agentkey.tool_denied). See
+	// WithAgentKeyAudit / SetAgentKeyAudit.
+	agentKeyAudit *audit.Service
 }
 
 // Option configures a Runner.
@@ -227,6 +234,14 @@ func WithMetrics(m *observability.Metrics) Option {
 // invoked. Passing nil keeps the legacy always-allow behavior (nil-safe DI).
 func WithPolicyEnforcer(e *policies.Enforcer) Option {
 	return func(r *Runner) { r.policy = e }
+}
+
+// WithAgentKeyAudit attaches the audit sink for agent-key tool denials
+// (wave-8, agent identity v1): when an agent key requests a tool outside its
+// allow-list, a best-effort agentkey.tool_denied row is written with the key
+// id, agent id and tool name. Passing nil disables the row (nil-safe DI).
+func WithAgentKeyAudit(svc *audit.Service) Option {
+	return func(r *Runner) { r.agentKeyAudit = svc }
 }
 
 // WithLimits overrides max model steps and max total runtime. Values <= 0
@@ -283,6 +298,16 @@ func (r *Runner) SetPolicyEnforcer(e *policies.Enforcer) {
 		return
 	}
 	r.policy = e
+}
+
+// SetAgentKeyAudit attaches (or clears, via nil) the agent-key denial audit
+// sink after construction. Nil-safe on the receiver; wire before runs are in
+// flight (the Runner is not lock-protected).
+func (r *Runner) SetAgentKeyAudit(svc *audit.Service) {
+	if r == nil {
+		return
+	}
+	r.agentKeyAudit = svc
 }
 
 // NewRunnerWithOptions builds a Runner with options applied.
@@ -418,6 +443,16 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 					Output: policyObservation(&decision),
 					Error:  policyStepError(code, "calculator", decision),
 					Policy: policyStepField(decision),
+				})
+			} else if err := r.authorizeAgentKeyTool(ctx, "calculator"); err != nil {
+				// Wave-8 agent identity: the same least-privilege
+				// gate as the provider loop, with skip semantics
+				// (the run completes through the offline-fallback
+				// answer below; the denial is visible on the step).
+				r.record(ctx, run.ID, Step{
+					Index: 1, Type: StepTypeTool, Name: "calculator",
+					Status: StepFailed, Input: expr,
+					Error: err.Error(),
 				})
 			} else if out, ok := r.runCalculator(expr); ok {
 				r.record(ctx, run.ID, Step{
@@ -566,6 +601,13 @@ func (r *Runner) executeTool(ctx context.Context, name string, args map[string]a
 	if decision, code, blocked := r.checkToolPolicy(ctx, name); blocked {
 		return "", &ToolPolicyError{Tool: name, Code: code, Decision: &decision}
 	}
+	// Wave-8 agent identity: an agent-key caller may only invoke tools in
+	// its key's allow-list (nil allow-list = all tools). The seam is
+	// nil-safe: every human/JWT/user-key caller reads nil claims here and
+	// passes unchanged.
+	if err := r.authorizeAgentKeyTool(ctx, name); err != nil {
+		return "", err
+	}
 	if r.toolRegistry == nil {
 		return "", fmt.Errorf("tool %q is not registered", name)
 	}
@@ -589,6 +631,28 @@ func (r *Runner) executeTool(ctx context.Context, name string, args map[string]a
 		return "", err
 	}
 	return formatToolResult(result), nil
+}
+
+// authorizeAgentKeyTool consults the agent-key least-privilege seam (wave-8,
+// agent identity v1): apikeys.AuthorizeAgentKeyTool decides from the claims
+// stamped on the execution context (nil claims = not an agent-key caller =
+// allowed). A denial additionally writes the best-effort agentkey.tool_denied
+// audit row when an audit sink is wired (observability must never break
+// execution); the returned error carries the machine-readable
+// agent_key_tool_not_allowed code and surfaces on the recorded tool step.
+func (r *Runner) authorizeAgentKeyTool(ctx context.Context, name string) error {
+	claims := apikeys.AgentKeyClaimsFromContext(ctx)
+	err := apikeys.AuthorizeAgentKeyTool(claims, name)
+	if err == nil || r.agentKeyAudit == nil || claims == nil {
+		return err
+	}
+	_, _ = r.agentKeyAudit.LogCtx(ctx, claims.AgentID, apikeys.AgentKeyToolDeniedAction, claims.OrganizationID,
+		"agent-keys/"+claims.KeyID, map[string]any{
+			"key_id":   claims.KeyID,
+			"agent_id": claims.AgentID,
+			"tool":     name,
+		})
+	return err
 }
 
 // checkToolPolicy consults the optional governance seam (nil enforcer =

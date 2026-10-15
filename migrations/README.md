@@ -27,6 +27,9 @@ Current migration structure:
 - 021_canary_policy.sql
 - 022_marketplace_signing.sql
 - 023_auth_lifecycle.sql (issue #76)
+- 024_notifications_subscriptions.sql (issue #83)
+- 025_mcp_registry.sql (issue #82)
+- 027_agent_api_keys.sql (wave-8: agent-scoped API keys with tool allow-lists)
 
 Migration conventions:
 
