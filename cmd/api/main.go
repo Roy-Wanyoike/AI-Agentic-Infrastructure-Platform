@@ -21,6 +21,7 @@ import (
 	"agentos/internal/approvals"
 	"agentos/internal/audit"
 	"agentos/internal/auth"
+	"agentos/internal/batch"
 	"agentos/internal/billing"
 	"agentos/internal/compliance"
 	"agentos/internal/config"
@@ -128,6 +129,13 @@ type app struct {
 	// migration is assigned); the durable trail lives in the runs rows and
 	// approvals rows the seams write.
 	orchestrationSvc *orchestration.Service
+
+	// issue #123: batch operations — bulk runs/workflows/agent/secret
+	// execution with job tracking, bounded concurrency, partial-failure
+	// responses and SSE progress. In-memory in BOTH modes this round (no
+	// batch migration is assigned); the batch.Store seam keeps the service
+	// dual-mode-ready.
+	batchSvc *batch.Service
 }
 
 // newApp builds the service graph. When db is non-nil every service is
@@ -299,6 +307,13 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	}
 	a.a2aSvc.SetAgentChecker(a.agentsSvc)
 	a.a2aSvc.SetAuditor(a.auditSvc)
+	// issue #123: batch operations — one service for BOTH API modes (the
+	// job tracker is in-memory by design; see the batchSvc field comment).
+	// Progress events ride the shared SSE stream service and lifecycle
+	// rows land in the audit trail through the same seams as runs.
+	a.batchSvc = batch.NewService()
+	a.batchSvc.SetStreamer(a.streamSvc)
+	a.batchSvc.SetAuditor(a.auditSvc)
 	// wave-2: evaluation runner + service. Issue #15: the API process now
 	// shares the worker's env-driven provider construction — when
 	// OPENAI_API_KEY is set, eval cases execute against the configured
@@ -510,10 +525,11 @@ func (a *app) routes() http.Handler {
 	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #52: organizations & membership management (last-owner guarded)
 	registerOrganizationRoutes(apiMux, a.orgsSvc, a.identities, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc)          // issue #140: org region pinning + data-flow residency checks + posture
-	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)      // issue #122: agent export/import/clone
-	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)  // issue #108: agent-to-agent orchestration executor
-	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                      // issue #109: workflow DSL validation endpoint
+	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc)                        // issue #140: org region pinning + data-flow residency checks + posture
+	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)                    // issue #122: agent export/import/clone
+	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)                // issue #108: agent-to-agent orchestration executor
+	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                                    // issue #109: workflow DSL validation endpoint
+	registerBatchRoutes(apiMux, a.batchSvc, newBatchSeams(a), a.streamSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #123: batch operations
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks
