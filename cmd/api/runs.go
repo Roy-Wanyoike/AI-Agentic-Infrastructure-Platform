@@ -200,10 +200,6 @@ func recordPolicyEvaluationStep(ctx context.Context, orgID, runID string, verdic
 	}
 }
 
-// writeRunError emits the structured {"error":{"code","message"}} envelope
-// used by the quota enforcement paths (issue #47). The legacy handlers below
-// keep their historical http.Error plain-text responses; only the new
-// contract-shaped denials use this envelope.
 // enforceAgentActiveForRun is the issue #106 lifecycle state gate for run
 // creation: only agents in the ACTIVE state accept runs (draft/building are
 // not wired yet, paused/disabled are suspended, archived is terminal).
@@ -252,6 +248,10 @@ func enforceAgentActiveForRun(w http.ResponseWriter, r *http.Request, orgID, age
 	return false
 }
 
+// writeRunError emits the structured {"error":{"code","message"}} envelope
+// used by the quota enforcement paths (issue #47). The legacy handlers below
+// keep their historical http.Error plain-text responses; only the new
+// contract-shaped denials use this envelope.
 func writeRunError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
