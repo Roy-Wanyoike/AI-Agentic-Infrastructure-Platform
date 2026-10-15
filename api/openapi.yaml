@@ -7146,8 +7146,872 @@ paths:
         "403": { $ref: "#/components/responses/AgentKeyForbidden" }
         "404": { $ref: "#/components/responses/AgentKeyNotFound" }
 
+# ---- wave-9 fragment: a2a.yaml (paths) ----
+  /a2a/agents:
+    post:
+      operationId: createA2AAgentCard
+      summary: Publish an org agent as an A2A Agent Card
+      description: |
+        Validates and publishes one org-scoped Agent Card. The card MUST link
+        an agent that exists in the caller's organization (client-supplied
+        org ids are ignored — scope comes from the auth claims). Audited
+        (a2a.card_published).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/A2ACardInput'
+      responses:
+        '201':
+          description: Card published (registry row).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2ACardEnvelope'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+        '401':
+          $ref: '#/components/responses/A2AUnauthorized'
+        '403':
+          $ref: '#/components/responses/A2AForbidden'
+        '422':
+          description: Validation error (missing name/version, unknown or cross-org agent, bad endpoint_url).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+    get:
+      operationId: listA2AAgentCards
+      summary: List the caller org's Agent Cards
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: connectors.read (MEMBER+)
+      responses:
+        '200':
+          description: Registry rows of exactly one organization (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2ACardListEnvelope'
+        '401':
+          $ref: '#/components/responses/A2AUnauthorized'
+        '403':
+          $ref: '#/components/responses/A2AForbidden'
+  /a2a/agents/{id}:
+    get:
+      operationId: getA2AAgentCard
+      summary: Get one Agent Card (registry row)
+      description: Unknown and foreign-tenant ids are the same 404 (no existence leak).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: connectors.read (MEMBER+)
+      parameters:
+        - $ref: '#/components/parameters/A2ACardID'
+      responses:
+        '200':
+          description: The registry row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2ACardEnvelope'
+        '401':
+          $ref: '#/components/responses/A2AUnauthorized'
+        '404':
+          description: Unknown or foreign id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+    patch:
+      operationId: patchA2AAgentCard
+      summary: Update an Agent Card (partial semantics)
+      description: |
+        Nil fields keep the stored value; provided fields replace it. A
+        changed agent link is re-validated against the same org. Audited
+        (a2a.card_updated).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      parameters:
+        - $ref: '#/components/parameters/A2ACardID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/A2ACardPatch'
+      responses:
+        '200':
+          description: Updated registry row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2ACardEnvelope'
+        '401':
+          $ref: '#/components/responses/A2AUnauthorized'
+        '403':
+          $ref: '#/components/responses/A2AForbidden'
+        '404':
+          description: Unknown or foreign id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+        '422':
+          description: The patched state fails validation (e.g. empty name, unknown agent re-link).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+    delete:
+      operationId: deleteA2AAgentCard
+      summary: Delete an Agent Card
+      description: Hard-deletes the card; the discovery surface stops answering. Audited (a2a.card_deleted).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.write (OWNER/ADMIN)
+      parameters:
+        - $ref: '#/components/parameters/A2ACardID'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2ADeletedEnvelope'
+        '401':
+          $ref: '#/components/responses/A2AUnauthorized'
+        '403':
+          $ref: '#/components/responses/A2AForbidden'
+        '404':
+          description: Unknown or foreign id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+  /a2a/agents/{id}/card:
+    get:
+      operationId: getA2ACanonicalAgentCard
+      summary: Discover the canonical A2A Agent Card
+      description: |
+        The A2A discovery surface: renders the canonical Agent Card JSON
+        (camelCase wire vocabulary, no platform internals) consumable by a
+        generic A2A client. Available to every authenticated member of the
+        org (VIEWER included).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: agents.read (all roles)
+      parameters:
+        - $ref: '#/components/parameters/A2ACardID'
+      responses:
+        '200':
+          description: The canonical Agent Card.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2ACanonicalCard'
+        '401':
+          $ref: '#/components/responses/A2AUnauthorized'
+        '404':
+          description: Unknown or foreign id (no existence leak)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+  /a2a/agents/{id}/message:
+    post:
+      operationId: sendA2AAgentMessage
+      summary: Receive an inbound A2A message for one card
+      description: |
+        Inbound A2A-style message: validates the card, resolves the card's
+        target agent, creates a platform run (run persisted via the runs
+        service, task enqueued as "agent.run") and returns the ids with
+        status "submitted". The message payload is NEVER audited — only ids
+        and byte counts (a2a.message_received).
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: runs.execute (OWNER/ADMIN/MEMBER)
+      parameters:
+        - $ref: '#/components/parameters/A2ACardID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/A2AMessageRequest'
+      responses:
+        '202':
+          description: Message accepted and routed to the card's agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AMessageResult'
+        '401':
+          $ref: '#/components/responses/A2AUnauthorized'
+        '403':
+          $ref: '#/components/responses/A2AForbidden'
+        '404':
+          description: Unknown or foreign card (no existence leak)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+        '422':
+          description: Empty message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+        '503':
+          description: No run sink wired (degraded deployment)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+  /a2a/delegate:
+    post:
+      operationId: delegateA2AMessage
+      summary: Delegate a message to a remote A2A agent (governed)
+      description: |
+        Outbound delegation: resolves the target card (registered card_id —
+        org-scoped — or a live card_url fetch), evaluates the wired
+        DelegationGate policy hook, then POSTs the message envelope to the
+        card endpoint with a bounded timeout. A gate denial never touches the
+        wire and returns the policy-style 403 delegation_denied verdict
+        (audited a2a.delegation_denied); a completed call returns the outcome
+        (status "submitted" on 2xx, "failed" otherwise; audited
+        a2a.delegated). Message payloads are never logged.
+      security:
+        - bearerToken: []
+        - apiKey: []
+      x-required-permission: runs.execute (OWNER/ADMIN/MEMBER)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/A2ADelegateRequest'
+      responses:
+        '200':
+          description: Delegation executed (the remote answered; outcome is the payload).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2ADelegateResult'
+        '401':
+          $ref: '#/components/responses/A2AUnauthorized'
+        '403':
+          description: Policy denial (no wire call was made).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2ADelegationDenied'
+        '404':
+          description: Unknown or foreign card_id (no existence leak)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+        '422':
+          description: Validation error (missing message/target, unfetchable or invalid card_url).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+        '502':
+          description: The target endpoint was unreachable (transport error, timeout).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A2AError'
+
+# ---- wave-9 fragment: approvals-enterprise.yaml (paths) ----
+  /approvals/{id}/delegate:
+    post:
+      operationId: delegateApproval
+      summary: Delegate a pending approval to an organization member
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ApprovalId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApprovalDelegationInput" }
+      responses:
+        "200":
+          description: Delegation recorded (approval + chain entry).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval: { $ref: "#/components/schemas/Approval" }
+                  delegation: { $ref: "#/components/schemas/ApprovalDelegation" }
+        "400": { $ref: "#/components/responses/ApprovalsEnterpriseBadRequest" }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+        "404": { $ref: "#/components/responses/ApprovalsEnterpriseNotFound" }
+        "409": { $ref: "#/components/responses/ApprovalsEnterpriseAlreadyDecided" }
+        "422": { $ref: "#/components/responses/ApprovalsEnterpriseValidationError" }
+  /approvals/escalate-due:
+    post:
+      operationId: escalateDueApprovals
+      summary: Sweep pending approvals past their escalation SLA
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The approvals escalated by this call.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  escalated:
+                    type: array
+                    items: { $ref: "#/components/schemas/Approval" }
+                  count: { type: integer }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+  /approvals/escalation-policy:
+    get:
+      operationId: getApprovalEscalationPolicy
+      summary: Get the org escalation SLA policy (disabled default when unset)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/ApprovalEscalationPolicy" }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+    put:
+      operationId: setApprovalEscalationPolicy
+      summary: Write the org escalation SLA policy
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApprovalEscalationPolicyInput" }
+      responses:
+        "200":
+          description: The stored policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/ApprovalEscalationPolicy" }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+        "422": { $ref: "#/components/responses/ApprovalsEnterpriseValidationError" }
+  /approvals/evidence:
+    get:
+      operationId: exportApprovalEvidence
+      summary: Byte-deterministic NDJSON oversight snapshot for a window
+      description: >
+        Newline-delimited JSON: one line per approval event (requested,
+        delegated, delegation_expired, escalated, first_decision, decided —
+        including dual-control pairs) ordered by (created_at, id), then the
+        trailing {"type":"evidence_head","count":N} anchor. Pure read; never
+        mutates approval state. Two exports over unchanged data are
+        byte-identical (hashable for WORM storage).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: Window start (inclusive, RFC3339; open when omitted).
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: Window end (inclusive, RFC3339; open when omitted).
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [jsonl], default: jsonl }
+      responses:
+        "200":
+          description: NDJSON snapshot (X-Evidence-Count carries the event count).
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/ApprovalsEnterpriseBadRequest" }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+
+# ---- wave-9 fragment: compliance.yaml (paths) ----
+  /compliance/controls:
+    get:
+      operationId: listComplianceControls
+      summary: Control catalog with framework mapping and live evidence for the caller's organization
+      description: |
+        Static control catalog (identity & access, tenant isolation &
+        secrets, logging & audit, human oversight, risk & policy, lifecycle
+        & change management, supply chain, residency) rendered with, per
+        control, the satisfying platform primitives, framework tags
+        (SOC2_TSC_*, ISO42001_A_*, EUAI_ACT_ART_*, NIST_AIRMF_*) and live
+        evidence pointers measured at request time (e.g. the audit chain
+        head hash + length from ChainHead, approval/policy/canary/MCP
+        counts). Collectors that fail degrade that control to an explicit
+        `static_pointer` evidence entry with note "live evidence
+        unavailable" — the report never fails as a whole.
+      x-required-permission: audit.read
+      security:
+        - bearerToken: []
+        - apiKey: []
+      responses:
+        "200":
+          description: Control-mapping report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComControlsReport" }
+        "401": { $ref: "#/components/responses/ComUnauthorized" }
+        "403": { $ref: "#/components/responses/ComForbidden" }
+  /compliance/agents/{id}/technical-doc:
+    get:
+      operationId: getAgentTechnicalDoc
+      summary: Per-agent technical documentation (EU AI Act Annex IV style) generated from platform data
+      description: |
+        Annex-IV-STYLE document assembled from the agent's own records:
+        identity, version history, evaluation evidence (datasets, completed
+        runs, case-weighted pass rate), deployment + canary promotion policy
+        state, effective tool surface (from agent-scoped key allow-lists —
+        "unrestricted" when no active key constrains it), agent-relevant
+        policy bindings, and the tenant's audit posture (chain head + last
+        30-day entry count). `format=md` renders deterministic Markdown with
+        a stable section order; `format=json` (default) renders the
+        structured document. Unknown or foreign agents answer 404 without an
+        existence leak.
+      x-required-permission: audit.read
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, md], default: json }
+      responses:
+        "200":
+          description: |
+            The technical document — structured JSON, or deterministic
+            Markdown when format=md.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComTechDoc" }
+            text/markdown:
+              schema:
+                type: string
+                description: Deterministic Markdown (stable section order 1..7).
+        "400": { $ref: "#/components/responses/ComBadRequest" }
+        "401": { $ref: "#/components/responses/ComUnauthorized" }
+        "403": { $ref: "#/components/responses/ComForbidden" }
+        "404": { $ref: "#/components/responses/ComNotFound" }
+  /compliance/evidence:
+    get:
+      operationId: exportComplianceEvidence
+      summary: Deterministic JSONL compliance evidence bundle for a fixed window
+      description: |
+        One JSON object per line, fixed order: header
+        ({type:"compliance_evidence", org, from, to}), audit chain anchor
+        ({type:"audit_chain_head", head_hash, chain_length,
+        entries_in_window, chain_version}), policy summary, human-oversight
+        (approval) summary, access-lifecycle summary (api_keys, agent_keys),
+        footer ({type:"evidence_end", generated_for_window:true}).
+        BYTE-DETERMINISTIC for unchanged data + fixed window: there is no
+        generation timestamp (the inclusive [from, to] window is the only
+        time coordinate), so the file (or its sha256) can be parked in WORM
+        storage. NEVER includes secret material, audit metadata bodies or
+        message payloads — counts, hashes and bounds only.
+      x-required-permission: audit.read
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, description: "RFC3339 or YYYY-MM-DD (midnight UTC; inclusive)." }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, description: "RFC3339 or YYYY-MM-DD (end of day UTC for date-only; inclusive)." }
+      responses:
+        "200":
+          description: NDJSON evidence bundle.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: JSONL lines in the fixed order documented above.
+        "400": { $ref: "#/components/responses/ComBadRequest" }
+        "401": { $ref: "#/components/responses/ComUnauthorized" }
+        "403": { $ref: "#/components/responses/ComForbidden" }
+
+# ---- wave-9 fragment: gateway.yaml (paths) ----
+  /gateway/keys:
+    post:
+      operationId: createGatewayKey
+      summary: Mint a virtual key (plaintext vk_… returned exactly once)
+      description: |
+        Write operation (users.manage, OWNER/ADMIN). Body carries label,
+        optional models allow-list, optional monthly_limit_cents and
+        optional expires_at. The server generates the secret (`vk_` + 32
+        random bytes), persists only its SHA-256 hash, and returns the
+        plaintext EXACTLY ONCE as the top-level `plaintext` sibling of the
+        key metadata — this is the only response in the whole API that
+        carries the credential. Minting is audit-logged
+        (`gateway.key_created`, no key material in metadata).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GatewayKeyCreateRequest'
+      responses:
+        '201':
+          description: |
+            Key minted. `id` and `plaintext` sit top-level (create
+            contract); `key` is the redacted metadata view (never the
+            plaintext or the hash).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayKeyCreatedResponse'
+        '400':
+          description: |
+            Validation error (error.code VALIDATION_ERROR): missing/blank
+            label, negative limit, malformed models / expires_at.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+    get:
+      operationId: listGatewayKeys
+      summary: List virtual keys of the caller's organization (no hashes, no secrets)
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Key list (possibly empty; structurally secret-free).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GatewayKey'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+  /gateway/keys/{id}:
+    get:
+      operationId: getGatewayKey
+      summary: Get one virtual key (redacted view)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: users.manage
+      parameters:
+        - $ref: '#/components/parameters/GatewayKeyId'
+      responses:
+        '200':
+          description: The key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key:
+                    $ref: '#/components/schemas/GatewayKey'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+        '404':
+          $ref: '#/components/responses/GatewayNotFound'
+    patch:
+      operationId: updateGatewayKey
+      summary: Update label / allow-list / monthly limit / expiry
+      description: |
+        Partial update: omitted members are unchanged. `models` accepts the
+        full nil-vs-empty contract (null = ALL models allowed, [] = NONE,
+        else the exact list); `expires_at: null` clears the expiry.
+        Unknown/foreign ids are 404 with no existence leak.
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/GatewayKeyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GatewayKeyUpdateRequest'
+      responses:
+        '200':
+          description: Updated key (redacted view).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key:
+                    $ref: '#/components/schemas/GatewayKey'
+        '400':
+          description: Validation error (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+        '404':
+          $ref: '#/components/responses/GatewayNotFound'
+    delete:
+      operationId: revokeGatewayKey
+      summary: Revoke a virtual key (idempotent, terminal)
+      description: |
+        Flips the key to revoked; revocation is terminal and keeps the row
+        for audit. Re-revoking an already-revoked key stays 204. A revoked
+        key stops resolving at the authentication path (same 404 collapse
+        as unknown/foreign credentials).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/GatewayKeyId'
+      responses:
+        '204':
+          description: Revoked (or already revoked).
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+        '404':
+          $ref: '#/components/responses/GatewayNotFound'
+  /gateway/keys/{id}/spend:
+    get:
+      operationId: getGatewayKeySpend
+      summary: Month-to-date spend view for one virtual key
+      description: |
+        The (key, month UTC) ledger view the enforcement gate reads.
+        `?month=YYYY-MM` selects a bucket (default: the current UTC month).
+        `remaining_cents` is null for unlimited keys (limit sentinel 0).
+        A ledger read failure is a 500 — the endpoint never reports a false
+        zero. Unknown/foreign key ids are 404.
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/GatewayKeyId'
+        - name: month
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+            description: Ledger month bucket in UTC ("YYYY-MM").
+      responses:
+        '200':
+          description: Spend view for the requested month.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewaySpendView'
+        '400':
+          description: Malformed month parameter (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+        '404':
+          $ref: '#/components/responses/GatewayNotFound'
+
+# ---- wave-9 fragment: residency.yaml (paths) ----
+  /residency/policy:
+    get:
+      operationId: getResidencyPolicy
+      summary: Get the caller's organization residency policy
+      description: Returns the effective policy. An org without a stored policy is "unpinned" (default, 200).
+      x-required-permission: connectors.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        "200":
+          description: The effective policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/ResidencyPolicy" }
+                  mode: { $ref: "#/components/schemas/ResidencyMode" }
+        "401": { $ref: "#/components/responses/ResidencyUnauthorized" }
+        "403": { $ref: "#/components/responses/ResidencyForbidden" }
+        "500": { $ref: "#/components/responses/ResidencyInternal" }
+    put:
+      operationId: updateResidencyPolicy
+      summary: Pin / update the organization residency policy
+      description: >
+        Upserts the policy (OWNER/ADMIN). Validation failures are 400
+        VALIDATION_ERROR; the change is audited as residency.policy_updated.
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResidencyPolicyInput" }
+      responses:
+        "200":
+          description: Updated (mode is computed from the stored policy).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/ResidencyPolicy" }
+                  mode: { $ref: "#/components/schemas/ResidencyMode" }
+        "400": { $ref: "#/components/responses/ResidencyValidationError" }
+        "401": { $ref: "#/components/responses/ResidencyUnauthorized" }
+        "403": { $ref: "#/components/responses/ResidencyForbidden" }
+        "500": { $ref: "#/components/responses/ResidencyInternal" }
+  /residency/posture:
+    get:
+      operationId: getResidencyPosture
+      summary: Residency posture of the caller's organization
+      description: Compliance view — mode, pinning state and the last out-of-region evidence (flagged allow or strict deny).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        "200":
+          description: The posture.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResidencyPosture" }
+        "401": { $ref: "#/components/responses/ResidencyUnauthorized" }
+        "403": { $ref: "#/components/responses/ResidencyForbidden" }
+        "500": { $ref: "#/components/responses/ResidencyInternal" }
+  /residency/check:
+    post:
+      operationId: checkResidency
+      summary: Explicit data-flow residency check for one URL
+      description: >
+        Classifies the URL host against the documented region table and
+        evaluates the org policy. Allowed verdicts are 200; strict denials
+        are 403 with code "residency_violation" (fail-closed for
+        unclassifiable endpoints, reason "unclassifiable_endpoint"). Both
+        outcomes are audited (residency.check / residency.violation).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, description: The endpoint URL to classify (host used; query strings are never stored). }
+      responses:
+        "200":
+          description: Allowed (in-region, flagged observe-mode, or unpinned).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verdict: { $ref: "#/components/schemas/ResidencyVerdict" }
+        "400": { $ref: "#/components/responses/ResidencyValidationError" }
+        "401": { $ref: "#/components/responses/ResidencyUnauthorized" }
+        "403": { $ref: "#/components/responses/ResidencyViolation" }
+        "500": { $ref: "#/components/responses/ResidencyInternal" }
+
 components:
   parameters:
+    # ---- wave-9 fragment: a2a.yaml (parameters) ----
+    A2ACardID:
+      name: id
+      in: path
+      required: true
+      description: Agent Card id (UUID, as returned at publication).
+      schema:
+        type: string
+
+    # ---- wave-9 fragment: approvals-enterprise.yaml (parameters) ----
+    ApprovalId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+
+    # ---- wave-9 fragment: gateway.yaml (parameters) ----
+    GatewayKeyId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+
     # ---- wave-8 fragment: budgets.yaml (parameters) ----
     BudgetId:
       name: id
@@ -7388,6 +8252,64 @@ components:
         type: string
 
   securitySchemes:
+    # ---- wave-9 fragment: a2a.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-9 fragment: approvals-enterprise.yaml (securitySchemes) ----
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: >-
+        HMAC-SHA256 JWT-style token from POST /auth/login (24h expiry) — the
+        main spec's bearerToken scheme — or the X-API-Key API-key path; see
+        the main spec's securitySchemes.
+
+    # ---- wave-9 fragment: compliance.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-9 fragment: gateway.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-9 fragment: residency.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
     bearerToken:
       type: http
       scheme: bearer
@@ -7427,6 +8349,124 @@ components:
 
         '
   responses:
+    # ---- wave-9 fragment: a2a.yaml (responses) ----
+    A2AUnauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/A2AError'
+    A2AForbidden:
+      description: Authenticated principal lacks the required permission
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/A2AError'
+
+    # ---- wave-9 fragment: approvals-enterprise.yaml (responses) ----
+    ApprovalsEnterpriseBadRequest:
+      description: Malformed request (bad JSON body or RFC3339 bound).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseForbidden:
+      description: Not permitted for this role (evidence needs OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseNotFound:
+      description: Unknown id or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseAlreadyDecided:
+      description: The approval is not pending.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseValidationError:
+      description: Validation error (empty delegatee, non-member delegatee, bad policy, inverted window).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+
+    # ---- wave-9 fragment: compliance.yaml (responses) ----
+    ComUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ComError" }
+    ComForbidden:
+      description: Authenticated but not permitted (audit.read is OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ComError" }
+    ComNotFound:
+      description: Unknown or foreign agent — no existence leak.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ComError" }
+    ComBadRequest:
+      description: Invalid request (format must be json|md; window from/to required, RFC3339 or YYYY-MM-DD, from <= to).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ComError" }
+
+    # ---- wave-9 fragment: gateway.yaml (responses) ----
+    GatewayUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayErrorEnvelope'
+    GatewayForbidden:
+      description: Not permitted for this tier (gateway surface is OWNER/ADMIN).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayErrorEnvelope'
+    GatewayNotFound:
+      description: Unknown id or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayErrorEnvelope'
+
+    # ---- wave-9 fragment: residency.yaml (responses) ----
+    ResidencyValidationError:
+      description: Validation error (invalid region, empty strict policy, empty url).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyError" }
+    ResidencyUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyError" }
+    ResidencyForbidden:
+      description: Not permitted for this tier (reads MEMBER+, writes/posture/check OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyError" }
+    ResidencyViolation:
+      description: >
+        Strict-mode residency denial. error.code is "residency_violation"
+        and the error object carries url_host, region, reason, strict_mode
+        and mode.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyViolationError" }
+    ResidencyInternal:
+      description: Internal error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyError" }
+
     # ---- wave-8 fragment: audit-chain.yaml (responses) ----
     AudUnauthorized:
       description: Missing or invalid credentials.
@@ -13725,6 +14765,857 @@ components:
         revoked_at: { type: string, format: date-time, nullable: true }
         last_used_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
+
+      # ---- wave-9 fragment: a2a.yaml (schemas) ----
+    A2AError:
+      type: object
+      description: Structured error envelope (mirrors the base spec error model).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: >
+                Machine-readable code, e.g. AGENT_CARD_NOT_FOUND,
+                VALIDATION_ERROR, CARD_FETCH_FAILED, RUN_SINK_UNAVAILABLE,
+                DELEGATION_UNREACHABLE, INVALID_REQUEST.
+            message:
+              type: string
+    A2ACapabilities:
+      type: object
+      description: A2A capabilities block (flags serialize explicitly — absent vs false is not ambiguous).
+      properties:
+        streaming:
+          type: boolean
+        push_notifications:
+          type: boolean
+          description: snake_case on the registry row; the canonical card renders pushNotifications.
+        state_transition_history:
+          type: boolean
+          description: snake_case on the registry row; the canonical card renders stateTransitionHistory.
+    A2ASkill:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+    A2ACardInput:
+      type: object
+      required: [agent_id, name, version]
+      properties:
+        agent_id:
+          type: string
+          description: An agent that exists in the caller's organization.
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        version:
+          type: string
+        provider:
+          type: object
+          properties:
+            organization:
+              type: string
+            url:
+              type: string
+        endpoint_url:
+          type: string
+          format: uri
+          description: Where A2A message envelopes are POSTed (http/https); optional at publish time, required for delegation.
+        capabilities:
+          $ref: '#/components/schemas/A2ACapabilities'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/A2ASkill'
+        auth_scheme:
+          type: string
+          description: SCHEME NAME the endpoint expects ("bearer", "oauth2", "none"); defaults to "none". Never a credential value.
+        preferred_transport:
+          type: string
+          enum: [JSONRPC, GRPC, HTTP+JSON]
+          default: JSONRPC
+    A2ACardPatch:
+      type: object
+      description: Partial update — omitted fields keep the stored value; skills are replaced when present.
+      properties:
+        agent_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        provider:
+          type: object
+          properties:
+            organization:
+              type: string
+            url:
+              type: string
+        endpoint_url:
+          type: string
+        capabilities:
+          $ref: '#/components/schemas/A2ACapabilities'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/A2ASkill'
+        auth_scheme:
+          type: string
+        preferred_transport:
+          type: string
+    A2ACard:
+      type: object
+      description: The registry row (explicit field allowlist; auth_scheme is a scheme NAME).
+      properties:
+        id:
+          type: string
+        organization_id:
+          type: string
+        agent_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        provider:
+          type: object
+          properties:
+            organization:
+              type: string
+            url:
+              type: string
+        endpoint_url:
+          type: string
+        capabilities:
+          $ref: '#/components/schemas/A2ACapabilities'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/A2ASkill'
+        auth_scheme:
+          type: string
+        preferred_transport:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    A2ACardEnvelope:
+      type: object
+      required: [agent_card]
+      properties:
+        agent_card:
+          $ref: '#/components/schemas/A2ACard'
+    A2ACardListEnvelope:
+      type: object
+      required: [agent_cards]
+      properties:
+        agent_cards:
+          type: array
+          items:
+            $ref: '#/components/schemas/A2ACard'
+    A2ADeletedEnvelope:
+      type: object
+      required: [deleted, id]
+      properties:
+        deleted:
+          type: boolean
+        id:
+          type: string
+    A2ACanonicalCard:
+      type: object
+      description: >
+        The canonical A2A Agent Card — the wire contract of the discovery
+        surface (camelCase; platform internals excluded).
+      required: [name, version, url, capabilities, skills]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        provider:
+          type: object
+          properties:
+            organization:
+              type: string
+            url:
+              type: string
+        url:
+          type: string
+          description: The endpoint message envelopes are POSTed to.
+        capabilities:
+          type: object
+          properties:
+            streaming:
+              type: boolean
+            pushNotifications:
+              type: boolean
+            stateTransitionHistory:
+              type: boolean
+        skills:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              description:
+                type: string
+              tags:
+                type: array
+                items:
+                  type: string
+        authentication:
+          type: object
+          description: Present when the card declares an auth scheme.
+          properties:
+            schemes:
+              type: array
+              items:
+                type: string
+        preferredTransport:
+          type: string
+          enum: [JSONRPC, GRPC, HTTP+JSON]
+    A2AMessageRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: The inbound message text (routed to the card's agent as the run input; never logged).
+    A2AMessageResult:
+      type: object
+      required: [status]
+      properties:
+        card_id:
+          type: string
+        agent_id:
+          type: string
+        run_id:
+          type: string
+        task_id:
+          type: string
+        status:
+          type: string
+          enum: [submitted]
+    A2ADelegateRequest:
+      type: object
+      required: [message]
+      description: Exactly one of card_id / card_url; card_id wins when both are present.
+      properties:
+        card_id:
+          type: string
+          description: A REGISTERED card of the caller's org (org-scoped 404 otherwise).
+        card_url:
+          type: string
+          format: uri
+          description: Fetch the card live from a well-known URL (GET, bounded by the delegation timeout).
+        message:
+          type: string
+          description: The message text; POSTed as an A2A envelope {role, parts, kind} to the card endpoint. Never logged.
+    A2ADelegateResult:
+      type: object
+      required: [status, http_status, latency_ms]
+      properties:
+        status:
+          type: string
+          enum: [submitted, failed]
+          description: submitted on a 2xx remote answer, failed otherwise (the call completed; the delegation did not).
+        http_status:
+          type: integer
+        latency_ms:
+          type: integer
+          format: int64
+        card_id:
+          type: string
+          description: Empty for URL-resolved (unregistered) cards.
+        endpoint:
+          type: string
+        verdict:
+          type: string
+          description: >
+            Recorded gate verdict: "allowed_no_gate" (no gate wired — the
+            documented default), "allowed", or the gate's own decision string.
+    A2ADelegationDenied:
+      type: object
+      description: Policy-style refusal (HTTP 403) — the gate denied BEFORE any wire call.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [delegation_denied]
+            message:
+              type: string
+        verdict:
+          type: object
+          properties:
+            decision:
+              type: string
+              enum: [delegation_denied]
+            reason:
+              type: string
+              description: Operator-facing policy explanation (never a payload).
+
+      # ---- wave-9 fragment: approvals-enterprise.yaml (schemas) ----
+    ApprovalsEnterpriseError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, description: "dual_control_self_approval on the two-person-rule conflict." }
+            message: { type: string }
+    ApprovalDelegationInput:
+      type: object
+      required: [to_user]
+      properties:
+        to_user: { type: string, description: Organization member receiving the assignment. }
+        note: { type: string }
+        expires_at: { type: string, format: date-time, description: Optional expiry; expired delegations lazily return the approval to the queue. }
+    ApprovalDelegation:
+      type: object
+      properties:
+        id: { type: string }
+        organization_id: { type: string }
+        approval_id: { type: string }
+        from_user: { type: string }
+        to_user: { type: string }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+    ApprovalEscalationPolicyInput:
+      type: object
+      properties:
+        target_status:
+          type: string
+          enum: [pending, partially_approved]
+          default: pending
+          description: The pending-state marker the SLA clock applies to.
+        sla_minutes:
+          type: integer
+          minimum: 0
+          description: Minutes an approval may wait; 0 disables the sweep.
+    ApprovalEscalationPolicy:
+      type: object
+      properties:
+        organization_id: { type: string }
+        target_status: { type: string, enum: [pending, partially_approved] }
+        sla_minutes: { type: integer }
+        updated_by: { type: string }
+        updated_at: { type: string, format: date-time }
+    Approval:
+      type: object
+      description: >
+        The wave-2 approval record with additive oversight fields (all
+        optional): require_dual, first_approver, first_decision,
+        first_decided_at, delegated_to, delegated_by, delegation_note,
+        delegation_expires_at, escalated_at, escalation_reason
+        ("sla_breach"), escalation_deadline. Dual-controlled approvals use
+        status "partially_approved" between the two decisions.
+      properties:
+        id: { type: string }
+        organization_id: { type: string }
+        run_id: { type: string }
+        workflow_run_id: { type: string }
+        resource: { type: string }
+        action: { type: string }
+        reason: { type: string }
+        risk: { type: string, enum: [low, medium, high] }
+        status: { type: string, enum: [pending, partially_approved, approved, rejected, cancelled] }
+        requester: { type: string }
+        approver: { type: string }
+        decision_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time, nullable: true }
+        require_dual: { type: boolean }
+        first_approver: { type: string }
+        first_decision: { type: string, enum: [approved, rejected] }
+        first_decided_at: { type: string, format: date-time, nullable: true }
+        delegated_to: { type: string }
+        delegated_by: { type: string }
+        delegation_note: { type: string }
+        delegation_expires_at: { type: string, format: date-time, nullable: true }
+        escalated_at: { type: string, format: date-time, nullable: true }
+        escalation_reason: { type: string }
+        escalation_deadline: { type: string, format: date-time, nullable: true }
+
+      # ---- wave-9 fragment: compliance.yaml (schemas) ----
+    ComError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    ComEvidence:
+      type: object
+      required: [kind, source]
+      properties:
+        kind:
+          type: string
+          enum: [live, static_pointer]
+        source: { type: string }
+        value:
+          description: Measured value for kind=live (counts, hashes, states).
+        surface:
+          type: string
+          description: Pointer to the implementing surface for kind=static_pointer.
+        note: { type: string }
+    ComControl:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        satisfied_by:
+          type: array
+          items: { type: string }
+        frameworks:
+          type: array
+          items:
+            type: string
+            description: "SOC2_TSC_*, ISO42001_A_*, EUAI_ACT_ART_*, NIST_AIRMF_* tags."
+        evidence:
+          type: array
+          items: { $ref: "#/components/schemas/ComEvidence" }
+    ComDomain:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        controls:
+          type: array
+          items: { $ref: "#/components/schemas/ComControl" }
+    ComControlsReport:
+      type: object
+      properties:
+        organization_id: { type: string }
+        generated_at: { type: string, description: RFC3339 UTC. }
+        catalog_version: { type: string }
+        frameworks:
+          type: array
+          items: { type: string }
+        domains:
+          type: array
+          items: { $ref: "#/components/schemas/ComDomain" }
+    ComTechDoc:
+      type: object
+      description: |
+        Annex-IV-style per-agent technical document (see the endpoint
+        description for the section semantics; the JSON field order is part
+        of the determinism contract).
+      properties:
+        agent:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            description: { type: string }
+            model: { type: string }
+            status: { type: string }
+            created_at: { type: string }
+            updated_at: { type: string }
+        organization_id: { type: string }
+        generated_at: { type: string }
+        framework_reference: { type: string }
+        versions:
+          type: array
+          description: Ascending configuration versions.
+          items:
+            type: object
+            properties:
+              version: { type: integer }
+              status: { type: string }
+              created_at: { type: string }
+              published_at: { type: string }
+              published_by: { type: string }
+        evaluations:
+          type: object
+          properties:
+            datasets: { type: integer }
+            dataset_cases: { type: integer }
+            completed_runs: { type: integer }
+            pass_rate: { type: number }
+            total_cost_cents: { type: number }
+            last_run_at: { type: string }
+            note: { type: string }
+        deployments:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              environment: { type: string }
+              status: { type: string }
+              version: { type: integer }
+              canary:
+                type: object
+                nullable: true
+                properties:
+                  canary_version: { type: integer }
+                  weight_percent: { type: integer }
+                  active: { type: boolean }
+              promotion_policy:
+                type: object
+                nullable: true
+                properties:
+                  min_pass_rate: { type: number }
+                  min_canary_runs: { type: integer }
+                  max_p95_latency_ms: { type: integer }
+                  max_cost_per_run_cents: { type: integer }
+                  window_start: { type: string }
+              recorded_decision:
+                type: object
+                nullable: true
+                properties:
+                  action: { type: string, enum: [promote, rollback] }
+                  reason: { type: string }
+                  decided_at: { type: string }
+                  pass_rate: { type: number }
+                  runs_counted: { type: integer }
+        tool_surface:
+          type: object
+          properties:
+            mode: { type: string, enum: [allowlist, unrestricted] }
+            tools:
+              type: array
+              items: { type: string }
+            agent_keys: { type: integer }
+            note: { type: string }
+        policy_bindings:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              effect: { type: string, enum: [allow, deny] }
+              resource_type: { type: string }
+              actions:
+                type: array
+                items: { type: string }
+              enabled: { type: boolean }
+              priority: { type: integer }
+              require_approval: { type: boolean }
+        audit_posture:
+          type: object
+          properties:
+            chain_head: { type: string }
+            chain_length: { type: integer }
+            entries_last_30_days: { type: integer }
+            note: { type: string }
+
+      # ---- wave-9 fragment: gateway.yaml (schemas) ----
+    GatewayErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: >
+                VALIDATION_ERROR | GATEWAY_KEY_NOT_FOUND |
+                spend_limit_exceeded (HTTP 402) | model_not_allowed
+                (HTTP 403) on guarded completions.
+            message:
+              type: string
+    GatewayKeyCreateRequest:
+      type: object
+      required: [label]
+      properties:
+        label:
+          type: string
+          minLength: 1
+        models:
+          description: >
+            Allow-list contract: absent or null = ALL models allowed;
+            [] = NONE; else the exact model ids (case-insensitive; a
+            "vendor/model" id also matches its bare suffix).
+          oneOf:
+            - type: "null"
+            - type: array
+              items:
+                type: string
+        monthly_limit_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+          description: Monthly spend ceiling in USD cents; 0 = unlimited.
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional expiry; enforced at the authentication path.
+    GatewayKeyUpdateRequest:
+      type: object
+      properties:
+        label:
+          type: string
+          minLength: 1
+        models:
+          description: >
+            Absent = unchanged; null = allow-list DISABLED (ALL models);
+            [] = ENABLED and empty (NONE); else the exact list.
+          oneOf:
+            - type: "null"
+            - type: array
+              items:
+                type: string
+        monthly_limit_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 0 = unlimited.
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Absent = unchanged; null = clear the expiry.
+    GatewayKey:
+      type: object
+      description: >
+        Redacted key view. The persisted SHA-256 hash and the plaintext
+        credential are structurally absent (no property exists for either).
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        prefix:
+          type: string
+          description: >
+            12-char display prefix of the minted credential; authenticates
+            nothing (the hash covers the FULL secret).
+        models:
+          description: >
+            null = allow-list disabled (every model allowed); [] = enabled
+            and empty (no model allowed); else the exact allow-list.
+          oneOf:
+            - type: "null"
+            - type: array
+              items:
+                type: string
+        monthly_limit_cents:
+          type: integer
+          format: int64
+          description: 0 = unlimited.
+        status:
+          type: string
+          enum: [active, revoked]
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    GatewayKeyCreatedResponse:
+      type: object
+      description: >
+        Mint response. `key` is metadata-only; `plaintext` is the vk_…
+        credential, returned exactly here and exactly once — the server
+        stores only the hash and can never return it again.
+      required: [id, plaintext, key]
+      properties:
+        id:
+          type: string
+        plaintext:
+          type: string
+          pattern: '^vk_'
+          description: The plaintext credential. Appears exactly here and exactly once.
+        key:
+          $ref: '#/components/schemas/GatewayKey'
+    GatewaySpendView:
+      type: object
+      required: [used_cents, limit_cents, remaining_cents, month]
+      properties:
+        used_cents:
+          type: number
+          format: double
+          description: Month-to-date recorded spend (USD cents, fractional).
+        limit_cents:
+          type: number
+          format: double
+          description: The key's monthly ceiling; 0 = unlimited.
+        remaining_cents:
+          type: number
+          format: double
+          nullable: true
+          description: limit - used; null for unlimited keys.
+        month:
+          type: string
+          pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+          description: The UTC calendar month bucket of this view.
+    GatewaySpendLimitErrorBody:
+      type: object
+      description: >
+        HTTP 402 body shape for guarded-completion overspend denials
+        (spend_limit_exceeded); rendered by the run-serving handlers via
+        the shared mapper.
+      properties:
+        error:
+          type: object
+          required: [code, message, key_id, limit_cents, used_cents, projected_cents]
+          properties:
+            code:
+              type: string
+              enum: [spend_limit_exceeded]
+            message:
+              type: string
+            key_id:
+              type: string
+            limit_cents:
+              type: number
+              format: double
+            used_cents:
+              type: number
+              format: double
+            projected_cents:
+              type: number
+              format: double
+    GatewayModelNotAllowedErrorBody:
+      type: object
+      description: >
+        HTTP 403 body shape for guarded-completion allow-list denials
+        (model_not_allowed); rendered by the run-serving handlers via the
+        shared mapper.
+      properties:
+        error:
+          type: object
+          required: [code, message, key_id, model]
+          properties:
+            code:
+              type: string
+              enum: [model_not_allowed]
+            message:
+              type: string
+            key_id:
+              type: string
+            model:
+              type: string
+
+      # ---- wave-9 fragment: residency.yaml (schemas) ----
+    ResidencyRegion:
+      type: string
+      enum: [eu-central, eu-west, us-east, us-west, ap-south, ap-northeast, custom, unknown]
+      description: >
+        Policy-valid values are the six operating regions plus "custom"
+        (BYOC). "unknown" is the classification sentinel and never a valid
+        policy value.
+    ResidencyMode:
+      type: string
+      enum: [pinned, unpinned]
+    ResidencyPolicyInput:
+      type: object
+      properties:
+        pinned_region:
+          type: string
+          description: One of the policy-valid regions, or "" for no pin.
+        allowed_regions:
+          type: array
+          items: { type: string }
+          description: Additional allowed regions (normalized + deduped).
+        strict_mode:
+          type: boolean
+          description: false = observe (flag only); true = enforce (deny out-of-region + unclassifiable). Requires a pin or allow list.
+    ResidencyPolicy:
+      type: object
+      properties:
+        org_id: { type: string }
+        pinned_region: { type: string }
+        allowed_regions:
+          type: array
+          items: { type: string }
+        strict_mode: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ResidencyVerdict:
+      type: object
+      properties:
+        allowed: { type: boolean }
+        region: { $ref: "#/components/schemas/ResidencyRegion" }
+        reason:
+          type: string
+          enum: [unpinned, in_region, out_of_region, out_of_region_flagged, unclassifiable_endpoint, unclassifiable_endpoint_flagged, policy_unavailable]
+        strict_mode: { type: boolean }
+        mode: { $ref: "#/components/schemas/ResidencyMode" }
+    ResidencyPosture:
+      type: object
+      properties:
+        pinned_region: { type: string }
+        allowed_regions:
+          type: array
+          items: { type: string }
+        strict_mode: { type: boolean }
+        mode: { $ref: "#/components/schemas/ResidencyMode" }
+        last_violation:
+          oneOf:
+            - { $ref: "#/components/schemas/ResidencyViolationEvidence" }
+            - { type: "null" }
+    ResidencyViolationEvidence:
+      type: object
+      properties:
+        at: { type: string, format: date-time }
+        url_host: { type: string, description: The bare host only — never the full URL or query string. }
+        region: { $ref: "#/components/schemas/ResidencyRegion" }
+        reason: { type: string }
+    ResidencyError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    ResidencyViolationError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, enum: [residency_violation] }
+            message: { type: string }
+            url_host: { type: string }
+            verdict: { type: string, enum: [denied] }
+            region: { $ref: "#/components/schemas/ResidencyRegion" }
+            reason: { type: string }
+            strict_mode: { type: boolean }
+            mode: { $ref: "#/components/schemas/ResidencyMode" }
 
   requestBodies: {}
   headers: {}
