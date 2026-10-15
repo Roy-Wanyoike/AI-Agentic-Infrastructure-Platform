@@ -53,6 +53,12 @@ type Document struct {
 // Chunk is one piece of a document: ~DefaultChunkSize runes of content with
 // its positional ordinal and (optionally) the embedding vector used by
 // retrieval scoring.
+//
+// Embedding (float64) is the legacy JSONB-mirror vector consumed by the
+// classic Search scoring path. Vector (float32) is the provider-space vector
+// (issue #113 seam) persisted into the knowledge_chunks.embedding_vec
+// pgvector column by the pgVectorStore when its dimension matches the
+// column (VectorColumnDim).
 type Chunk struct {
 	ID             string    `json:"id"`
 	OrganizationID string    `json:"organization_id,omitempty"`
@@ -60,6 +66,7 @@ type Chunk struct {
 	Ordinal        int       `json:"ordinal"`
 	Content        string    `json:"content"`
 	Embedding      []float64 `json:"-"`
+	Vector         []float32 `json:"-"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -139,6 +146,28 @@ func NewServiceWithStore(db *sql.DB) *Service {
 // (used by tests and by callers wiring a specific embeddings backend).
 func NewServiceWithEmbedder(embedder Embedder) *Service {
 	return newService(nil, embedder)
+}
+
+// NewServiceWithEmbeddingProvider returns an in-memory service whose
+// embeddings come from an EmbeddingProvider (issue #113 seam: the OpenAI
+// provider, the offline hash adapter, or any custom implementation). The
+// provider's float32 vectors are bridged onto the legacy float64 scoring
+// path. A nil provider falls back to NewService (environment selection).
+func NewServiceWithEmbeddingProvider(provider EmbeddingProvider) *Service {
+	if provider == nil {
+		return NewService()
+	}
+	return newService(nil, providerEmbedder{provider: provider})
+}
+
+// NewServiceWithStoreAndEmbeddingProvider returns a Postgres-backed service
+// (migration 014 store) using the provider-backed embedder. A nil provider
+// falls back to NewServiceWithStore (environment selection).
+func NewServiceWithStoreAndEmbeddingProvider(db *sql.DB, provider EmbeddingProvider) *Service {
+	if provider == nil {
+		return NewServiceWithStore(db)
+	}
+	return newService(NewPostgresStore(db), providerEmbedder{provider: provider})
 }
 
 func newService(store Store, embedder Embedder) *Service {
