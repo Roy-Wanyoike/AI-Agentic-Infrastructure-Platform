@@ -30,6 +30,7 @@ Current migration structure:
 - 024_notifications_subscriptions.sql (issue #83)
 - 025_mcp_registry.sql (issue #82)
 - 027_agent_api_keys.sql (wave-8: agent-scoped API keys with tool allow-lists)
+- 031_residency_policies.sql (issue #140: org data-residency policies + out-of-region evidence)
 
 Migration conventions:
 
