@@ -1,8 +1,76 @@
 # AgentOS Implementation Plan
 
+> **Status (updated at docs reconciliation #154):** the plan below was written
+> before the first commit; the repository has since delivered **phases 0–12 in
+> full** plus the wave-9/10 programs (issues #100–#156), including the
+> synthetic-assurance flagship (#118, closure evidence in
+> [synthetic-assurance.md](synthetic-assurance.md)). Verified reality at this
+> revision: **47 `internal/` packages, 50 Go test packages green, migrations
+> 001–037, OpenAPI 182 paths / 531 schemas (222 registered routes under dual
+> `/api/v1` + `/v1` mounts), deploy/ artifacts (k8s · helm · kustomize ·
+> terraform), six-scenario load suite**. Completed items have been moved out of
+> the roadmap into the **Delivered** summary; the remaining work is the
+> **Planned** list. Sections 2–14 are kept as the original strategy record.
+
 ## 1. Current repository status
 
-The workspace is currently empty. There is no existing Go service, frontend, database schema, or deployment configuration to preserve. That gives us a clean starting point for a disciplined implementation that follows the product architecture and avoids premature microservice sprawl.
+The workspace is a working platform, not a scaffold. Concretely:
+
+- Two long-running processes (`cmd/api` :8080, `cmd/worker` — no HTTP
+  listener) plus support binaries (`cmd/migrate`, `cmd/seed`,
+  `cmd/agentosctl`, `cmd/healthcheck`, `cmd/sandbox-exec`).
+- 47 domain packages under `internal/`; 50 Go test packages run green
+  (`go test ./...`, race job in CI) with zero external infrastructure.
+- Postgres migrations 001–037; every wired service runs dual-mode
+  (in-memory or Postgres) through the same interface.
+- HTTP contract: `api/openapi.yaml` (182 paths / 531 schemas),
+  regression-tested by `internal/apispec`; 66 staged fragments under
+  `api/fragments/`.
+- Production artifacts: `deploy/kubernetes` (23 manifests),
+  `deploy/helm/agentos` (chart + 18 templates), `deploy/kustomize` (base +
+  dev/staging/production overlays), `deploy/terraform` (modules × 3
+  environments), offline validators under `deploy/validation/`.
+- Load suite: `loadtest/` (six scenarios, baselines, CI regression gate).
+- Architecture walkthrough with per-claim pointers:
+  [architecture.md](architecture.md).
+
+## 1a. Delivered (phases 0–12 + wave programs)
+
+| Plan phase | Delivered as | Evidence / issues |
+|---|---|---|
+| 0 — Foundation | Go module, config/logging, docker-compose (Postgres/Redis/NATS), migration runner, Makefile, CI gates | `cmd/migrate`, `migrations/001-005`, `Makefile`, `.github/workflows` |
+| 1 — Auth & multi-tenancy | orgs/users/memberships, RBAC (OWNER/ADMIN/MEMBER/VIEWER), bcrypt + HMAC tokens, API keys, audit basics | `internal/auth`, `internal/organizations`, migrations 001/002; later: SSO/SCIM (#'s 019 migration), token revocation |
+| 2 — Agent CRUD & versioning | agent CRUD + immutable versions + publish/rollback + lifecycle state machine + export/import/clone | `internal/agents`, `versions.go`, `lifecycle.go`, `portability.go` (#122), migrations 003/007/032 |
+| 3 — Model abstraction | provider interface, OpenAI-compatible adapter, failover, router policies (#112), circuit breakers, response resilience (#128), pricing | `internal/models` (gateway.go, router_policies.go, circuitbreaker.go, resilience.go) |
+| 4 — Agent runtime | bounded loop, state machine, step recording, checkpoints (#115/#37 migration), recovery, graceful shutdown (#107) | `internal/runtime`, `internal/runs` |
+| 5 — Tooling & permissions | tool registry + schemas, permission tags, calculator/HTTP/database/search/code/webhook/JSON/file tools, sandbox | `internal/tools`, `internal/sandbox`, `cmd/sandbox-exec` |
+| 6 — Async worker | queue with retries/DLQ/ops API (#116 dispatch plane memory\|nats\|hybrid), Redis queue, pull model, queue introspection | `internal/queue` (backend.go, dispatch.go, jetstream*.go), `cmd/worker` |
+| 7 — Memory & run history | short/long memory, RAG + embeddings (#113, pgvector 033, hybrid RRF), run steps timeline, cost tracking (012) | `internal/memory`, `internal/knowledge` |
+| 8 — Streaming & dashboard | SSE run events, React 19 dashboard (overview/agents/runs/knowledge/analytics), trace viewer (#126) | `internal/streaming`, `web/` |
+| 9 — Workflows & approvals | DSL + validation (#109), control flow, parallel (#110), durable execution (013), approvals + enterprise oversight (#137) | `internal/workflows`, `internal/approvals` |
+| 10 — Scheduler & webhooks | cron scheduler with catch-up (011), webhook deliveries + subscriptions (024), notification pipeline | `internal/scheduler`, `internal/webhooks`, `internal/notifications` |
+| 11 — Production hardening | rate limits (#124), quotas/budgets/billing enforcement, CORS + JWT prod guard (#55), secrets (AES-GCM, 017), audit chain + compliance pack (#138), residency (#140) | `internal/limiter`, `internal/billing`, `cmd/api/cors.go`, `cmd/api/prodguard.go`, `internal/secrets`, `internal/audit`, `internal/compliance`, `internal/tenant` |
+| 12 — Load testing & scale | #80 baseline harness + #125 six-scenario suite, baselines + regression comparator | `scripts/loadtest`, `loadtest/`, `docs/load-testing.md` |
+| Beyond-plan programs | Marketplace + signing, connectors, MCP gateway/registry (#111/#82), A2A (#136), orchestration (#108), evaluations + adversarial suites (#153), canary + eval-gated promotion (#13/#51), gateway virtual keys (#139), agent keys + budgets, batch ops (#123), knowledge graph (#130-#132), simulation (#133), ReACT (#134), configgen (#129), deploy artifacts (#117), synthetic assurance (#118/#147-#156) | see [architecture.md](architecture.md) sections and [synthetic-assurance.md](synthetic-assurance.md) |
+
+## 1b. Planned — honest gaps (kept visible)
+
+1. Postgres stores for quality-gate policies/evidence and synth
+   journeys/runs/evidence (registry + findings stores exist and ship;
+   `PostgresFindingStore` is implemented but not yet wired into
+   `cmd/api/main.go`).
+2. Synth worker orchestration wiring (`BrowserWorker`/`APIWorker` into
+   `cmd/worker`) and HTTP surfaces for journeys/runs/findings/GitHub sync
+   (fragments are schema-only by design; route ownership is a recorded
+   orchestrator decision).
+3. NATS `nats|hybrid` dispatch as a documented production default — the
+   `nats.go` client is already a direct dependency and the JetStream
+   adapter is tested against an embedded broker; what remains is rollout
+   (deploy defaults + ops runbook), not code.
+4. MCP/A2A residency-guard wiring over the ready `tenant.Guard` seam
+   (`internal/tenant/residency.go:451`).
+5. CORS preset for the hosted portal playground (`AGENTOS_CORS_ORIGINS`
+   allowlist exists; `docs/portal/` needs a documented origin).
 
 ## 2. Product strategy
 
@@ -13,7 +81,7 @@ AgentOS will be built as a modular monolith with clear internal boundaries and a
 - PostgreSQL
 - Redis
 - NATS or queue broker
-- Next.js dashboard
+- Web dashboard (delivered as React 19 + Vite + TypeScript in `web/`)
 
 This delivers serious distributed-systems and backend engineering signal without prematurely creating a network of tiny services.
 
@@ -127,7 +195,7 @@ This product vision aligns with the backend and platform-first architecture alre
 
 ```text
                        ┌──────────────────────┐
-                       │   Next.js Dashboard  │
+                       │  Web Dashboard (web/) │
                        └───────────┬──────────┘
                                    │ REST / SSE / WebSocket
                                    ▼
@@ -468,180 +536,12 @@ Every request should trace through:
 
 ## 10. Phased implementation roadmap
 
-### Phase 0 — Foundation
-Goal: establish technical baseline and project conventions.
-
-Work:
-- Go module setup
-- environment configuration
-- logging and error utilities
-- Docker Compose local stack
-- PostgreSQL + Redis + NATS services
-- migration framework
-- CI skeleton
-- Makefile and developer scripts
-- .env.example and docs
-
-Deliverable: the repo is runnable locally.
-
-### Phase 1 — Auth and multi-tenancy
-Goal: secure platform foundation.
-
-Work:
-- organizations
-- users
-- memberships
-- roles
-- auth middleware
-- password hashing
-- JWT/refresh tokens
-- API keys
-- tenant filtering layer
-- audit logging basics
-
-Deliverable: a tenant-isolated auth system with RBAC skeleton.
-
-### Phase 2 — Agent CRUD and versioning
-Goal: create the core resource model.
-
-Work:
-- agent CRUD API
-- agent version records
-- versioned runtime config
-- agent metadata and configuration
-- API docs and validation
-
-Deliverable: agents can be created and versioned safely.
-
-### Phase 3 — Model provider abstraction
-Goal: separate provider logic from runtime internals.
-
-Work:
-- model interface
-- provider adapters
-- router abstraction
-- deterministic routing policy
-- token/cost metadata model
-- provider failover hooks
-
-Deliverable: runtime depends on internal domain model interface, not vendor-specific code.
-
-### Phase 4 — Agent runtime
-Goal: implement the execution engine.
-
-Work:
-- run creation and state machine
-- execution loop
-- tool invocation
-- context propagation
-- maximum step and timeout enforcement
-- cancellation support
-- step history persistence
-- structured result output
-
-Deliverable: one agent run can execute safely and reproducibly.
-
-### Phase 5 — Tooling and permissions
-Goal: turn runtime into a platform capability.
-
-Work:
-- tool registry
-- calculator, HTTP, DB tools
-- permission tags
-- tool schema validation
-- timeout and failure handling
-- tool result recording
-
-Deliverable: agents can execute safe, permissioned tools.
-
-### Phase 6 — Async worker system
-Goal: decouple API from long-running work.
-
-Work:
-- task queue with persistence
-- worker pool
-- retry/backoff
-- dead letter handling
-- heartbeats and recovery
-- idempotency keys
-- cancellation/timeout policy
-
-Deliverable: runs are queued and processed asynchronously.
-
-### Phase 7 — Memory and run history
-Goal: enable persistent agent memory and traceability.
-
-Work:
-- short-term memory
-- long-term memory
-- vector abstraction
-- run step timeline
-- model/tool cost tracking
-- usage records
-
-Deliverable: runs are auditable and memory-aware.
-
-### Phase 8 — Streaming and dashboard integration
-Goal: show real-time execution.
-
-Work:
-- SSE or WebSocket run stream
-- dashboard overview and run details pages
-- execution timeline UI
-- live status updates
-- filtering and pagination
-
-Deliverable: the frontend shows execution live and clearly.
-
-### Phase 9 — Workflow and human approval
-Goal: add enterprise-grade orchestration.
-
-Work:
-- workflow state machine
-- approval node
-- conditionals and delays
-- approvals with audit trail
-- resume logic after approval
-
-Deliverable: a basic workflow engine exists and is operational.
-
-### Phase 10 — Scheduler and webhooks
-Goal: support automation beyond API-triggered runs.
-
-Work:
-- schedule persistence
-- cron and interval triggers
-- webhook receivers
-- event handling and retries
-- callback/notification pipeline
-
-Deliverable: scheduled tasks and webhook-initiated flows are functional.
-
-### Phase 11 — Production hardening
-Goal: meet serious SaaS-quality expectations.
-
-Work:
-- rate limiting
-- quotas
-- observability dashboards
-- production config
-- security headers and CORS
-- secret management strategy
-- CI lint/test/race gate
-
-Deliverable: system is credible for real deployment.
-
-### Phase 12 — Load testing and scale validation
-Goal: validate throughput and failure behavior.
-
-Work:
-- concurrent run benchmarks
-- queue throughput tests
-- retry recovery tests
-- P50/P95/P99 measurement
-- worker scale testing
-
-Deliverable: real performance data and a benchmark methodology.
+**Status: phases 0-12 are DELIVERED.** The phase-by-phase plan that stood here
+has been folded into the **Delivered** summary (section 1a) with package,
+migration, and issue references; the residual work is the **Planned** list
+(section 1b). The phase texts are preserved in git history
+(`git log -- docs/agentos-implementation-plan.md`) for anyone who wants the
+original sequencing rationale.
 
 ## 11. Risk areas
 
@@ -733,8 +633,13 @@ This project should not begin by building dozens of microservices. It should beg
 
 The code should still be structured cleanly enough that the platform can later evolve into independent services when real scaling needs justify it.
 
-## 15. Recommended next step
+## 15. Next actions
 
-The next action is to begin Phase 0: project foundation. That means creating the initial repository, Go module, Docker Compose stack, foundation config, migration tooling, CI skeleton, and folder structure before adding authentication or agent logic.
-
-Once this plan is approved, I will start with Phase 0 implementation.
+The platform phase of this plan is complete. Current next actions are the
+**Planned** list in section 1b (Postgres stores for quality gates and synth
+journeys/runs/evidence, synth worker orchestration + HTTP surfaces, NATS
+production rollout defaults, MCP/A2A residency-guard wiring, portal CORS
+preset, budget consumption endpoint, depth-bounded downward workflow
+cascade). Architecture truth lives in
+[architecture.md](architecture.md); flagship closure evidence in
+[synthetic-assurance.md](synthetic-assurance.md).
