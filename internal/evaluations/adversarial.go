@@ -618,6 +618,11 @@ func (r *PackRegistry) Packs() []AdversarialPack {
 // AdversarialRunner executes scenarios and packs against a harness.
 type AdversarialRunner struct {
 	registry *PackRegistry
+
+	// mu guards the optional AdversarialStore attachment (SetStore) so
+	// RunSuite can be wired before or between executions safely.
+	mu    sync.Mutex
+	store AdversarialStore
 }
 
 // NewAdversarialRunner returns a runner over a registry seeded with the
