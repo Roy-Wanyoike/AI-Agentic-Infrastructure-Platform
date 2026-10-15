@@ -1,0 +1,490 @@
+# AgentOS API — OpenAPI 3.1 fragment for workflow control flow (issue #109).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (verbatim from api/fragments/apikeys.yaml),
+# so `python3 scripts/check_fragment_refs.py api/fragments/workflow-control-flow.yaml`
+# passes. Components carry the track-unique `Wf` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation.
+#     No new permission enum was introduced — the EXISTING grants are reused
+#     (cmd/api/workflows.go semantics):
+#       - POST /workflows/validate -> workflows.read (MEMBER+ incl. VIEWER;
+#         validation is stateless and mutates nothing)
+#   * structured error model {"error":{"code","message"}}
+#
+# DSL semantics covered by these schemas (issue #109):
+#   - condition (if/else): config.expression + config.branches {true, false};
+#     the untaken branch's nodes are recorded with status "skipped"
+#   - switch: config.expression + config.cases {value -> target} + config.default
+#   - loop: config.expression (must evaluate to an array) + config.body (node
+#     ids) + config.max_iterations (default 100, hard cap 10000)
+#   - retry: config.target + config.attempts + config.backoff (geometric)
+#   - wait_until: config.expression polled until truthy or timeout
+#   - expressions: the safe stdlib-only engine ($.nodes.<id>.output.<path>,
+#     $.input, $.item, $.loop.index, $.context.<key>; literals; == != < <= >
+#     >= and/or/not; + - * /; parens; no function calls, no unknown
+#     identifiers; 4KB / depth-64 caps)
+openapi: 3.1.0
+info:
+  title: AgentOS — workflow control flow (issue #109 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the workflow control-flow surface added by issue
+  #109: the POST /workflows/validate pre-save validation endpoint and the
+  DSL node schemas for conditional execution (condition/if-else, switch,
+  loop, retry, wait_until) built on the safe expression engine. Validation
+  is stateless — it runs the full ValidateDSL rule set (structural rules,
+  per-type config requirements, control-flow wiring rules such as dangling
+  branch targets, and expression syntax) without creating or modifying any
+  workflow, so authors get typed errors (code, message, node_id) before any
+  save or publish attempt.
+paths:
+  /workflows/validate:
+    post:
+      operationId: validateWorkflowDSL
+      summary: Validate an ad-hoc workflow DSL document (stateless, nothing persisted)
+      description: |
+        Pre-save validation (workflows.read, MEMBER+ incl. VIEWER — the
+        operation mutates nothing). The body carries a workflow DSL document,
+        either wrapped ({"dsl": {...}}) or bare ({"nodes": [...], "edges":
+        [...]}). The server runs the full validation rule set: structural
+        rules (non-empty graph, unique node ids, known node types, acyclic
+        graph with the documented loop-back-edge exemption), per-type config
+        requirements, issue #109 control-flow wiring rules (dangling
+        condition/switch branch targets, dangling loop bodies / retry
+        targets, duplicate ownership) and control-flow expression syntax
+        (typed expression errors carry the node id + reason). On success the
+        response is 200 {"valid": true}; otherwise 422 with the typed error
+        list, using the same shape as POST /workflows/create.
+      x-required-permission: workflows.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WfValidateRequest'
+      responses:
+        '200':
+          description: The DSL document passes every validation rule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfValidateSuccess'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '403':
+          $ref: '#/components/responses/WfForbidden'
+        '422':
+          description: |
+            Validation failed. The errors list carries one typed entry per
+            rule violation (structural, config, control-flow wiring or
+            expression syntax), each with code, message and — where
+            applicable — the offending node_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfValidateFailure'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  responses:
+    WfUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+    WfForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+  schemas:
+    WfValidateRequest:
+      type: object
+      description: |
+        Validation payload. Exactly one of `dsl` (canonical wrapped form) or
+        a bare DSL object (nodes/edges at the top level) must be present.
+      properties:
+        dsl:
+          $ref: '#/components/schemas/WfDSL'
+    WfDSL:
+      type: object
+      description: |
+        Workflow definition graph. Nodes carry the per-type config documents
+        (see WfConditionNode…WfWaitNode); edges are activation edges with
+        on_success | on_failure | always conditions. Edges into a loop node
+        are loop-back edges (the documented cycle exemption).
+      properties:
+        nodes:
+          type: array
+          minItems: 1
+          description: Graph nodes; at least one is required.
+          items:
+            $ref: '#/components/schemas/WfNode'
+        edges:
+          type: array
+          description: Activation edges between nodes.
+          items:
+            $ref: '#/components/schemas/WfEdge'
+      required:
+      - nodes
+    WfNode:
+      type: object
+      description: |
+        One DSL node. `type` selects the config document: agent/tool (work),
+        approval, condition (if/else), switch, loop, retry, wait_until,
+        delay, webhook, parallel, end. Control-flow types are described by
+        the dedicated schemas (WfConditionNode, WfSwitchNode, WfLoopNode,
+        WfRetryNode, WfWaitNode).
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: Unique node id (referenced by edges, branches, bodies, retry targets and expressions).
+        type:
+          type: string
+          enum:
+          - agent
+          - tool
+          - condition
+          - switch
+          - loop
+          - retry
+          - wait_until
+          - approval
+          - delay
+          - webhook
+          - parallel
+          - end
+          description: Node type; the loop/retry executor restricts which types may be owned (loop bodies / retry targets).
+        name:
+          type: string
+          description: Optional display name.
+        config:
+          type: object
+          description: |
+            Per-type configuration document. Required keys per type: agent ->
+            agent_id, tool -> tool_id, condition -> expression, switch ->
+            expression (+ cases/default), loop -> expression (+ body), retry
+            -> target, wait_until -> expression, delay -> seconds, webhook
+            -> url.
+      required:
+      - id
+      - type
+    WfEdge:
+      type: object
+      description: One activation edge. condition is on_success | on_failure | always; an edge INTO a loop node is a loop-back edge.
+      properties:
+        from:
+          type: string
+          description: Source node id.
+        to:
+          type: string
+          description: Target node id.
+        condition:
+          type: string
+          enum: [on_success, on_failure, always]
+          description: Activation condition (empty behaves as on_success).
+      required:
+      - from
+      - to
+    WfConditionNode:
+      type: object
+      description: |
+        If/else node (DSL type "condition"). The safe expression is evaluated
+        once when the node activates; the truthy result routes to
+        config.branches.true, the falsy result to config.branches.false.
+        Every node that becomes unreachable through the routing decision is
+        recorded with node-run status "skipped" (skip_reason in its
+        metadata), never executed. Without config.branches the node keeps
+        the legacy pass-through gate semantics.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: condition
+        config:
+          type: object
+          properties:
+            expression:
+              $ref: '#/components/schemas/WfExpression'
+            branches:
+              type: object
+              description: Routing targets. At least one side must be set; both targets must reference existing node ids.
+              properties:
+                'true':
+                  type: string
+                  description: Node id routed to when the expression evaluates truthy.
+                'false':
+                  type: string
+                  description: Node id routed to when the expression evaluates falsy.
+          required:
+          - expression
+      required:
+      - id
+      - type
+    WfSwitchNode:
+      type: object
+      description: |
+        Multi-way branch (DSL type "switch"). The expression result is
+        canonicalized (strings verbatim, numbers via their shortest float
+        representation, booleans true/false, null) and matched against
+        config.cases keys in sorted order; the first match routes, otherwise
+        config.default routes. Untaken cases are skipped dynamically.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: switch
+        config:
+          type: object
+          properties:
+            expression:
+              $ref: '#/components/schemas/WfExpression'
+            cases:
+              type: object
+              description: Match value -> target node id. Case values are canonicalized strings (e.g. "3" matches numeric 3).
+              additionalProperties:
+                type: string
+                description: Target node id (must reference an existing node).
+            default:
+              type: string
+              description: Target node id routed to when no case matches (must reference an existing node).
+          required:
+          - expression
+      required:
+      - id
+      - type
+    WfLoopNode:
+      type: object
+      description: |
+        Iteration node (DSL type "loop"). The expression must evaluate to an
+        array; the body subgraph executes once per item with $.item /
+        $.loop.index bound and {{item}} substituted into body node inputs.
+        Iteration is capped by config.max_iterations (default 100, hard cap
+        10000; excess items are truncated and reported as "truncated": true).
+        Per-iteration checkpoints (index, item, status, outputs) are kept in
+        the loop node-run metadata.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: loop
+        config:
+          type: object
+          properties:
+            expression:
+              $ref: '#/components/schemas/WfExpression'
+            max_iterations:
+              type: integer
+              minimum: 1
+              maximum: 10000
+              default: 100
+              description: Iteration cap (default 100; values above the 10000 hard cap clamp down).
+            body:
+              type: array
+              items:
+                type: string
+              description: Node ids executed per item (agent, tool, delay, webhook or end nodes only; each body node has exactly one owner).
+          required:
+          - expression
+          - body
+      required:
+      - id
+      - type
+    WfRetryNode:
+      type: object
+      description: |
+        Retry wrapper (DSL type "retry"). Re-executes config.target on
+        failure up to config.attempts total attempts (default 3, hard cap
+        100) with geometric backoff (base_delay_ms * multiplier, capped by
+        max_delay_ms). Failed attempts are checkpointed as failed node-run
+        rows carrying retry_attempt metadata; the final summary (attempts
+        used, per-attempt errors) lands in the target and retry node-run
+        metadata.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: retry
+        config:
+          type: object
+          properties:
+            target:
+              type: string
+              description: Node id retried by this node (agent/tool/delay/webhook/end only; exactly one owner).
+            attempts:
+              type: integer
+              minimum: 1
+              maximum: 100
+              default: 3
+              description: Total attempts (not retries).
+            backoff:
+              type: object
+              description: Geometric backoff policy.
+              properties:
+                base_delay_ms:
+                  type: number
+                  exclusiveMinimum: 0
+                  default: 100
+                multiplier:
+                  type: number
+                  minimum: 1
+                  default: 2
+                max_delay_ms:
+                  type: number
+                  exclusiveMinimum: 0
+                  default: 30000
+          required:
+          - target
+      required:
+      - id
+      - type
+    WfWaitNode:
+      type: object
+      description: |
+        Poll gate (DSL type "wait_until"). Polls the expression every
+        poll_interval_ms (default 1000ms, floor 10ms) until it evaluates
+        truthy or timeout_seconds (default 60) expires; on timeout the node
+        fails with error_code WAIT_UNTIL_TIMEOUT and the workflow run fails.
+        The poll counter is exposed to the expression as $.context.polls.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: wait_until
+        config:
+          type: object
+          properties:
+            expression:
+              $ref: '#/components/schemas/WfExpression'
+            timeout_seconds:
+              type: number
+              exclusiveMinimum: 0
+              default: 60
+            poll_interval_ms:
+              type: number
+              exclusiveMinimum: 0
+              default: 1000
+          required:
+          - expression
+      required:
+      - id
+      - type
+    WfExpression:
+      type: string
+      description: |
+        Safe workflow expression (stdlib-only engine, no function calls, no
+        reflection, no I/O). Roots: $.nodes.<id>.output.<path> (previous node
+        outputs; the literal "output" segment after the node id is the
+        canonical marker), $.input (workflow input string), $.item /
+        $.loop.index (loop frame), $.context.<key> (executor-provided
+        values). Operators: == != < <= > >= and/or/not (!), + - * /,
+        parentheses; numbers are float64, + concatenates strings when both
+        operands are strings, and/or short-circuit. Unknown identifiers,
+        unknown roots and function calls are rejected at save time with
+        invalid_expression errors; hard caps: 4096 bytes, parse depth 64.
+      maxLength: 4096
+      examples:
+      - '$.nodes.classify.output.category == ''urgent'' and $.nodes.classify.output.score > 0.8'
+    WfWorkflowValidationError:
+      type: object
+      description: One typed validation failure. node_id is present when the violation is attributable to a single node.
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine identifier. Known values include: empty_graph,
+            missing_node_id, duplicate_node_id, unknown_node_type,
+            missing_config, missing_node_ref, invalid_edge_condition,
+            cycle_detected, dangling_branch_target, dangling_loop_body,
+            dangling_retry_target, duplicate_loop_body, loop_body_invalid_node,
+            invalid_retry_target, invalid_expression.
+          examples:
+          - dangling_branch_target
+        message:
+          type: string
+          description: Human-readable reason (expression errors carry the node id + parser reason).
+        node_id:
+          type: string
+          description: Offending node id when attributable.
+      required:
+      - code
+      - message
+    WfValidateSuccess:
+      type: object
+      properties:
+        valid:
+          type: boolean
+          const: true
+      required:
+      - valid
+    WfValidateFailure:
+      type: object
+      description: 422 body; the same shape POST /workflows/create returns for invalid DSL.
+      properties:
+        errors:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WfWorkflowValidationError'
+      required:
+      - errors
+    WfErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - INVALID_REQUEST
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error

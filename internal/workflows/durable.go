@@ -81,6 +81,17 @@ func WithDefaultRunDeadline(d time.Duration) Option {
 	}
 }
 
+// WithClock injects the Clock used by the control-flow nodes' timing loops
+// (retry backoff, wait_until polling, issue #109). The default is the real
+// clock; tests substitute a manual clock so no test sleeps for real.
+func WithClock(c Clock) Option {
+	return func(s *Service) {
+		if c != nil {
+			s.clock = c
+		}
+	}
+}
+
 // StaleAfterFromEnv resolves the staleness threshold from
 // AGENTOS_WORKFLOW_STALE_AFTER (Go duration, e.g. "90s", "10m"); invalid or
 // missing values fall back to DefaultStaleAfter (5m). Wiring helper for
@@ -105,10 +116,12 @@ func isTerminalRunStatus(status string) bool {
 	return false
 }
 
-// isTerminalNodeStatus reports whether a node-run status is terminal.
+// isTerminalNodeStatus reports whether a node-run status is terminal. The
+// skipped state (issue #109) is terminal: a node whose branch was not taken
+// will never execute.
 func isTerminalNodeStatus(status string) bool {
 	switch status {
-	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled, RunStatusTimeout:
+	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled, RunStatusTimeout, RunStatusSkipped:
 		return true
 	}
 	return false
