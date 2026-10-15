@@ -1,0 +1,189 @@
+# AgentOS API — OpenAPI 3.1 fragment for the synthetic-assurance GitHub sync
+# surface (issue #151, wave-10 track 10-s).
+#
+# SCHEMA-ONLY fragment (orchestrator direction): it publishes the three
+# cross-track schemas — SynthGitHubRef, SynthSyncResult and
+# SynthVerificationResult — so the #151 Go contract
+# (internal/synth/github_sync.go / regression.go, types pinned in
+# internal/synth/types.go) has a stable wire shape for the future HTTP
+# surface, without minting any paths in this track. NO new endpoints, NO
+# routes: wiring a REST surface (e.g. POST /synth/findings/{id}/github-sync,
+# POST /synth/github/webhook) is a follow-up decision owned by the
+# orchestrator; when that happens these schemas are referenced as-is.
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Standalone-valid: every local $ref resolves inside this
+# fragment and the security scheme names used by `security:` are declared in
+# this fragment's own components.securitySchemes, so
+# `python3 scripts/check_fragment_refs.py api/fragments/synth-github.yaml`
+# passes. Components carry the track-unique `Synth` prefix to avoid
+# collisions.
+#
+# SECURITY (verbatim from api/fragments/apikeys.yaml — issue #48): the
+# securitySchemes block below is copied byte-for-byte from the apikeys
+# fragment; the #151 surface reuses the SAME bearerToken | apiKey schemes as
+# the rest of the spec (no new auth mechanism is introduced). Credential
+# handling on the Go side: the GitHub token is resolved by REFERENCE through
+# the platform secrets service per request, never stored, never logged, and
+# scrubbed from error snippets; webhook payloads are verified with
+# constant-time HMAC-SHA256 before any state is read.
+openapi: 3.1.0
+info:
+  title: AgentOS — synthetic assurance GitHub sync schemas (issue #151 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone schema-only fragment for issue #151 (GitHub findings
+  integration + verified regression-test loop). The finding syncer is
+  idempotent on the finding fingerprint: the first sync creates one issue in
+  an allow-listed repository, re-syncs update (or no-op on unchanged
+  content), and the issue body carries a machine-readable linkback marker so
+  webhook events (closed/reopened) can be wired back onto finding status by
+  the caller. Fix verification runs the generated regression candidate on an
+  isolated runner and returns pass/fail/inconclusive — a harness failure is
+  never reported as a product failure. Generated regression candidates stay
+  `draft` until explicitly approved; approval is a separate human step and
+  is not represented as an auto-grantable field on these schemas.
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    SynthGitHubRef:
+      type: object
+      description: |
+        Tracks the external GitHub issue created from a synthetic-assurance
+        finding (mirrors the pinned `synth.GitHubRef` type). The
+        (org_id, fingerprint) pair is the idempotency anchor: at most one
+        issue per finding fingerprint per organization. `repo` is always a
+        repository from the org's server-side allowlist — the syncer refuses
+        any repository outside it before issuing a network call.
+      properties:
+        id:
+          type: string
+          description: Link record id (deterministic function of finding id + fingerprint).
+        org_id:
+          type: string
+          description: Owning organization (tenant scope; cross-tenant reads are impossible).
+        finding_id:
+          type: string
+          description: The synthetic-assurance finding this issue was created from.
+        fingerprint:
+          type: string
+          description: Stable finding fingerprint (org+target+assertion+failure-class) — the idempotency key.
+        repo:
+          type: string
+          description: Allow-listed repository as "owner/name".
+          examples:
+          - octo/demo
+        issue_number:
+          type: integer
+          description: GitHub issue number.
+        issue_url:
+          type: string
+          description: Canonical issue URL (html_url).
+        idempotency_key:
+          type: string
+          description: Stable sync idempotency key ("synth-finding:" + fingerprint).
+          examples:
+          - synth-finding:fp-abc123
+        synced_at:
+          type: string
+          format: date-time
+          description: Last successful sync (creation, update, or verified no-op).
+      required:
+      - id
+      - org_id
+      - finding_id
+      - fingerprint
+      - repo
+      - issue_number
+      - issue_url
+      - idempotency_key
+      - synced_at
+    SynthSyncResult:
+      type: object
+      description: |
+        Outcome of one idempotent sync round-trip (the wire projection of
+        `synth.SyncResult`). Exactly one of created/updated/unchanged is
+        true. Redaction note: issue titles and bodies are scrubbed through
+        the denylist redaction engine (authorization/cookie/token/secret/
+        password/api[_-]?key) before any data leaves the platform; the
+        response therefore can never echo unredacted customer secrets.
+      properties:
+        github_ref:
+          $ref: '#/components/schemas/SynthGitHubRef'
+        created:
+          type: boolean
+          description: True when this call created the issue.
+        updated:
+          type: boolean
+          description: True when this call updated an already-linked issue.
+        unchanged:
+          type: boolean
+          description: True when content matched and no write was issued.
+      required:
+      - github_ref
+      - created
+      - updated
+      - unchanged
+    SynthVerificationResult:
+      type: object
+      description: |
+        Outcome of a fix verification: the confirmed finding's deterministic
+        regression candidate was executed on an isolated runner (never
+        production — the runner seam enforces the environment write policy).
+        `outcome` is pass|fail|inconclusive; runner/harness errors map to
+        inconclusive, never to fail (a broken harness is not product
+        evidence). finding_id + fingerprint + journey_id link the verdict
+        back to the original finding and its generated candidate.
+      properties:
+        finding_id:
+          type: string
+          description: The original finding the verification was run for.
+        fingerprint:
+          type: string
+          description: The original finding's fingerprint.
+        journey_id:
+          type: string
+          description: The generated regression candidate that was executed.
+        outcome:
+          type: string
+          enum:
+          - pass
+          - fail
+          - inconclusive
+          description: |
+            pass = defect no longer reproduces; fail = defect reproduced;
+            inconclusive = harness/runner failure or non-terminal run status.
+        run_id:
+          type: string
+          description: Runner-assigned run id (empty when the runner errored before starting).
+        evidence_refs:
+          type: array
+          description: Redacted evidence artifact references produced by the run.
+          items:
+            type: string
+        detail:
+          type: string
+          description: Short human-readable explanation of the verdict.
+        checked_at:
+          type: string
+          format: date-time
+          description: When the verification ran.
+      required:
+      - finding_id
+      - fingerprint
+      - journey_id
+      - outcome
+      - run_id
+      - evidence_refs
+      - detail
+      - checked_at
