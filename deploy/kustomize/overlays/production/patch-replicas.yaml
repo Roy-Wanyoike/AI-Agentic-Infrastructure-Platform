@@ -1,0 +1,21 @@
+# Production: 3 replicas per service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-api
+spec:
+  replicas: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-worker
+spec:
+  replicas: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-web
+spec:
+  replicas: 3

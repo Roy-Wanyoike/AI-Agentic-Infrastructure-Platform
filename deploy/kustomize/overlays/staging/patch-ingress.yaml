@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agentos
+spec:
+  tls:
+    - hosts:
+        - agentos-staging.example.com # CHANGE ME (cert-manager/ACM provisions agentos-tls)
+      secretName: agentos-tls
+  rules:
+    - host: agentos-staging.example.com # CHANGE ME
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: agentos-api
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agentos-web
+                port:
+                  number: 80

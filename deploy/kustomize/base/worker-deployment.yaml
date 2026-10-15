@@ -1,0 +1,99 @@
+# Worker Deployment (issue #117).
+#
+# Image: built by Dockerfile.worker -- distroless/static-debian12:nonroot,
+# runs cmd/worker (queue consumer + run execution).
+#
+# PROBES (honest note): the worker deliberately has NO liveness/readiness
+# probes. It runs no HTTP server (Dockerfile.worker: "There is deliberately NO
+# EXPOSE and no healthcheck: the worker runs no HTTP server"; WORKER_PORT is a
+# log label only, cmd/worker/main.go). Inventing an HTTP endpoint here would
+# break the contract -- do not add httpGet probes to this Deployment. Liveness
+# is observed via logs/events; the queue re-delivers work if a pod dies.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-worker
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-worker
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Workers are stateless queue consumers; replacing in place is fine and
+      # keeps throughput during rollouts.
+      maxSurge: 1
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentos-worker
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: agentos
+        app.kubernetes.io/name: agentos-worker
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: agentos-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/roy-wanyoike/agentos-worker:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: agentos-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentos-secrets
+                  key: DATABASE_URL
+            - name: AGENTOS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agentos-secrets
+                  key: AGENTOS_API_KEY
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agentos-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: AGENTOS_FALLBACK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agentos-secrets
+                  key: AGENTOS_FALLBACK_API_KEY
+                  optional: true
+          # No livenessProbe/readinessProbe -- see the honest note above.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      terminationGracePeriodSeconds: 60 # let in-flight runs finish a step

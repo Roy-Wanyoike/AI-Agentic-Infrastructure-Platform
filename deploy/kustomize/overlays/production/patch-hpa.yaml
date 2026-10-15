@@ -1,0 +1,16 @@
+# Production: HPA bounds sized for steady traffic.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentos-api
+spec:
+  minReplicas: 3
+  maxReplicas: 12
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentos-worker
+spec:
+  minReplicas: 3
+  maxReplicas: 30

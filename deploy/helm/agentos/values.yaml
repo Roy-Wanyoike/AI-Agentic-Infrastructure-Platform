@@ -1,0 +1,225 @@
+# Default values for the agentos chart (issue #117).
+# Environment examples: values-dev.yaml, values-prod.yaml (same keys).
+#
+# IMAGE PLACEHOLDERS: ghcr.io/roy-wanyoike/agentos-{api,worker,web} built by
+# Dockerfile.api / Dockerfile.worker / Dockerfile.web in the repo root.
+# Override global.imageRegistry / *.image.tag per environment or with --set.
+
+# -- Global ---------------------------------------------------------------
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  # Prefix for the three app images; empty = use each image.repository as-is.
+  imageRegistry: ""
+  imagePullSecrets: []
+  # - name: ghcr-pull-secret
+
+# -- Images & workloads ---------------------------------------------------
+api:
+  image:
+    repository: ghcr.io/roy-wanyoike/agentos-api
+    tag: "0.1.0" # appVersion-aligned placeholder; pin real digests in prod
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+worker:
+  image:
+    repository: ghcr.io/roy-wanyoike/agentos-worker
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 1Gi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+web:
+  image:
+    repository: ghcr.io/roy-wanyoike/agentos-web
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  port: 80
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -- Namespace / service accounts ------------------------------------------
+namespace:
+  # Render a Namespace object; the chart otherwise deploys into the release
+  # namespace (helm -n agentos create namespace).
+  create: false
+
+serviceAccount:
+  create: true
+  annotations: {} # e.g. eks.amazonaws.com/role-arn for IRSA (modules/aws/irsa)
+
+# -- Ingress ----------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  # PLACEHOLDER host: set to your dashboard hostname.
+  host: agentos.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+  tls:
+    # TLS placeholder: enable + point at a cert-manager/ACM provisioned secret.
+    enabled: false
+    secretName: agentos-tls
+
+# -- Migrations ---------------------------------------------------------------
+migrations:
+  # Helm pre-install/pre-upgrade hook Job running `/app/migrate --up`
+  # (migrations are baked into the API image, see Dockerfile.api).
+  enabled: true
+  backoffLimit: 2
+
+# -- Autoscaling --------------------------------------------------------------
+autoscaling:
+  api:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  worker:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 85
+
+# -- Disruption budgets -------------------------------------------------------
+podDisruptionBudget:
+  enabled: true
+  apiMinAvailable: 1
+  workerMinAvailable: 1
+
+# -- Network policy -------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  # Namespace that runs the ingress-nginx controller (allowed into the API).
+  ingressControllerNamespace: ingress-nginx
+  # Allow HTTPS egress to the public internet (model provider calls).
+  allowPublicEgress: true
+
+# -- Non-secret configuration (ConfigMap) ---------------------------------------
+config:
+  APP_ENV: production
+  AGENTOS_QUEUE: redis
+  REDIS_QUEUE_KEY: agentos:queue
+  AGENTOS_RATE_LIMIT_RPM: "120"
+  AGENTOS_WORKFLOW_STALE_AFTER: 5m
+  AGENTOS_TOOL_SANDBOX: "off"
+  AGENTOS_CORS_ORIGINS: ""
+  # Arbitrary extra non-secret env: key -> value
+  extraEnv: {}
+  #  AGENTOS_SCHEDULER_POLL_INTERVAL: 10s
+
+# -- Secrets (placeholders! never commit real values) ----------------------------
+secrets:
+  # Render a Secret from the values below. Set create=false and point
+  # existingSecret at a sealed-secrets/external-secrets managed Secret for real
+  # deployments (strongly recommended -- see deploy/README.md).
+  create: true
+  existingSecret: ""
+  # Postgres DSN consumed by api+worker (internal/database). PLACEHOLDER --
+  # replace CHANGEME and the host: with the in-cluster reference DB the host is
+  # the rendered StatefulSet service ("<release>-agentos-postgres"); with a
+  # managed DB (terraform modules) use its endpoint + sslmode=require.
+  databaseUrl: "postgres://agentos:CHANGEME@agentos-postgres:5432/agentos?sslmode=require"
+  jwtSecret: "CHANGEME" # openssl rand -base64 48 (REQUIRED in production, issue #55)
+  secretsMasterKey: "CHANGEME" # openssl rand -base64 32 (REQUIRED in Postgres mode, issue #25)
+  apiKey: "CHANGEME" # worker -> API callback key (X-API-Key)
+  openaiApiKey: "" # empty = offline deterministic mode
+  fallbackApiKey: ""
+  postgresPassword: "CHANGEME" # used by the reference postgres StatefulSet
+
+# -- BYO / reference stateful dependencies ---------------------------------------
+# deploy=true renders single-node reference StatefulSets (DEV/SMALL-STAGE ONLY,
+# clearly marked in the rendered output). For production set deploy=false and
+# supply managed endpoints via secrets.databaseUrl / redis.externalAddr /
+# nats.externalUrl. Provision the managed services with deploy/terraform.
+postgresql:
+  deploy: true
+  image: postgres:16-alpine
+  auth:
+    user: agentos
+    database: agentos
+  storage: 10Gi
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+redis:
+  deploy: true
+  image: redis:7-alpine
+  externalAddr: "" # e.g. mycache.abc001.ng.0001.use1.cache.amazonaws.com:6379
+  storage: 5Gi
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+nats:
+  deploy: true
+  image: nats:2.10-alpine
+  externalUrl: "" # e.g. nats://nats.my-platform.svc:4222
+  storage: 5Gi
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+# -- OpenTelemetry sidecar (optional) ---------------------------------------------
+# The app exports OTLP/HTTP to OTEL_EXPORTER_OTLP_ENDPOINT
+# (internal/observability/tracing.go). Enabling the sidecar injects a collector
+# on localhost:4318 into the api and worker pods, forwarding to otel.endpoint.
+otel:
+  sidecar:
+    enabled: false
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    # Where the collector forwards spans (your vendor's OTLP endpoint).
+    endpoint: "" # e.g. https://otlp.your-vendor.com:4318

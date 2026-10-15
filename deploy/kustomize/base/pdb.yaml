@@ -1,0 +1,28 @@
+# PDBs (issue #117): keep API + worker available during node drains/upgrades.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentos-api
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentos-api
+      app.kubernetes.io/component: api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentos-worker
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentos-worker
+      app.kubernetes.io/component: worker

@@ -1,0 +1,40 @@
+{{- if .Values.otel.sidecar.enabled }}
+{{- /* Minimal OTel collector config for the optional sidecar. The app exports
+     OTLP/HTTP to localhost:4318 (internal/observability/tracing.go reads
+     OTEL_EXPORTER_OTLP_ENDPOINT). Set otel.sidecar.endpoint to your vendor's
+     OTLP endpoint; empty falls back to a stdout debug exporter. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentos.otelConfigName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+          grpc:
+            endpoint: 0.0.0.0:4317
+    exporters:
+      {{- if .Values.otel.sidecar.endpoint }}
+      otlphttp:
+        endpoint: {{ .Values.otel.sidecar.endpoint | quote }}
+      {{- else }}
+      debug:
+        verbosity: basic
+      {{- end }}
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters:
+            {{- if .Values.otel.sidecar.endpoint }}
+            - otlphttp
+            {{- else }}
+            - debug
+            {{- end }}
+{{- end }}

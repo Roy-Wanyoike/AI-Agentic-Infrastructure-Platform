@@ -1,0 +1,113 @@
+# Redis 7 (reference stack -- see the banner in postgres-statefulset.yaml).
+# AOF persistence ON: with AGENTOS_QUEUE=redis the task queue lives in a Redis
+# list and must survive restarts (same rationale as docker-compose.prod.yml).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: agentos-redis
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-redis
+    app.kubernetes.io/component: queue
+spec:
+  serviceName: agentos-redis-hs
+  replicas: 1 # REFERENCE ONLY: single node, no HA -- use ElastiCache/Memorystore
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentos-redis
+      app.kubernetes.io/component: queue
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: agentos
+        app.kubernetes.io/name: agentos-redis
+        app.kubernetes.io/component: queue
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999 # redis user in the official image
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["redis-server", "--appendonly", "yes"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentos-redis-hs
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-redis
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: agentos-redis
+  ports:
+    - name: redis
+      port: 6379
+---
+# Stable ClusterIP consumed via REDIS_ADDR (agentos-config).
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentos-redis
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-redis
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: agentos-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis

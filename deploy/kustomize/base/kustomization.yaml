@@ -1,0 +1,40 @@
+# Kustomize BASE for AgentOS (issue #117).
+#
+# This base is a SYNCED COPY of the canonical raw manifests in
+# ../../kubernetes (deploy/kubernetes). Reason: `kustomize build` /
+# `kubectl apply -k` refuse relative paths that escape the kustomization root
+# by default (LoadRestrictionsRootOnly), so a self-contained copy keeps
+# overlays buildable out of the box. When you change deploy/kubernetes/*.yaml,
+# re-sync this directory:
+#   for f in api-deployment.yaml api-service.yaml ... ; do
+#     cp deploy/kubernetes/$f deploy/kustomize/base/$f; done
+# (A tiny CI check can diff the two dirs; see deploy/README.md.)
+#
+# Deliberately NOT included here:
+#   * namespace.yaml      -- each overlay declares its own namespace
+#   * secret.template.yaml -- template only; secrets must be injected via
+#     sealed-secrets / external-secrets, never applied from a kustomize base.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - api-serviceaccount.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - worker-serviceaccount.yaml
+  - worker-deployment.yaml
+  - web-serviceaccount.yaml
+  - web-deployment.yaml
+  - web-service.yaml
+  - configmap.yaml
+  - ingress.yaml
+  - migrate-job.yaml
+  - hpa-api.yaml
+  - hpa-worker.yaml
+  - pdb.yaml
+  - networkpolicy-api.yaml
+  - networkpolicy-data-allow.yaml
+  - networkpolicy-data-default-deny.yaml
+  - postgres-statefulset.yaml
+  - redis-statefulset.yaml
+  - nats-statefulset.yaml

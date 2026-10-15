@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentos-config
+data:
+  APP_ENV: "production"
+  AGENTOS_RATE_LIMIT_RPM: "240"

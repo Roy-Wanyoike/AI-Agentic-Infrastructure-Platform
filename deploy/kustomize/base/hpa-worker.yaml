@@ -1,0 +1,54 @@
+# HPA for the worker fleet (issue #117).
+#
+# CPU-based scaling works well here: run execution is CPU/network bound (model
+# provider calls). Scale UP aggressively and fast (queue depth grows in bursts,
+# CPU metric lags real backlog) -- see deploy/README.md for KEDA-based queue
+# depth scaling as a follow-up. Scale DOWN slowly so warm pods drain long runs.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentos-worker
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agentos-worker
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Memory target as a guardrail: model-streaming buffers can balloon; a
+    # runaway worker scales out instead of getting OOMKill-loops.
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 85
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: 100 # double capacity per 30s while queue pressure lasts
+          periodSeconds: 30
+        - type: Pods
+          value: 4
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 600 # 10min before shedding workers
+      selectPolicy: Max
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60

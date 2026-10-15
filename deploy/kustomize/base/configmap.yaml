@@ -1,0 +1,36 @@
+# Non-secret configuration for AgentOS (issue #117).
+# Mirrors the non-secret entries of docker-compose.prod.yml / .env.example.
+# Secrets (JWT_SECRET, AGENTOS_SECRETS_MASTER_KEY, DATABASE_URL, API keys)
+# live in secret.template.yaml -- never here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentos-config
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+data:
+  APP_ENV: "production"
+  API_PORT: "8080"
+  # Shared Redis task queue (docker-compose.prod.yml sets the same value).
+  AGENTOS_QUEUE: "redis"
+  REDIS_QUEUE_KEY: "agentos:queue"
+  # Backend addresses (in-cluster stateful reference deployments; point these
+  # at managed endpoints in production -- see deploy/README.md "BYO database").
+  REDIS_ADDR: "agentos-redis:6379"
+  AGENTOS_NATS_URL: "nats://agentos-nats:4222"
+  # Postgres coordinates used by the reference StatefulSet. The API itself
+  # reads DATABASE_URL from the Secret (connection string incl. credentials).
+  POSTGRES_USER: "agentos"
+  POSTGRES_DB: "agentos"
+  # Worker -> API status callbacks (POST /v1/runs/{id}/events), see
+  # cmd/worker/main.go (AGENTOS_API env).
+  AGENTOS_API: "http://agentos-api:8080"
+  # Global rate limiting (internal/httpx.RateLimitFromEnv).
+  AGENTOS_RATE_LIMIT_RPM: "120"
+  # Durable workflow recovery staleness threshold.
+  AGENTOS_WORKFLOW_STALE_AFTER: "5m"
+  # Sandboxed tool execution off: sandbox-exec child-process runner is not
+  # available inside the distroless image (same rationale as
+  # docker-compose.prod.yml).
+  AGENTOS_TOOL_SANDBOX: "off"

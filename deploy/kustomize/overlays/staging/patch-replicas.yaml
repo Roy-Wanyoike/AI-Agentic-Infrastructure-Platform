@@ -1,0 +1,21 @@
+# Staging: 2 replicas per service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-api
+spec:
+  replicas: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-worker
+spec:
+  replicas: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-web
+spec:
+  replicas: 2

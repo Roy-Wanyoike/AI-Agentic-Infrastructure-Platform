@@ -1,0 +1,123 @@
+# NATS 2.10 with JetStream (reference stack -- see the banner in
+# postgres-statefulset.yaml). Flags mirror docker-compose.yml:
+#   -js     JetStream (event publisher + webhook delivery need it)
+#   -m 8222 monitoring endpoint
+#   -sd /data JetStream store on the PVC
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: agentos-nats
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-nats
+    app.kubernetes.io/component: events
+spec:
+  serviceName: agentos-nats-hs
+  replicas: 1 # REFERENCE ONLY: single node -- for HA use a 3-node jetstream
+  #            cluster via the nats-server helm chart (see
+  #            deploy/terraform/modules/nats/README.md)
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentos-nats
+      app.kubernetes.io/component: events
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: agentos
+        app.kubernetes.io/name: agentos-nats
+        app.kubernetes.io/component: events
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000 # nats user in the official image
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nats
+          image: nats:2.10-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["nats-server", "-js", "-m", "8222", "-sd", "/data"]
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitor
+              containerPort: 8222
+          # NATS ships a real monitoring endpoint on :8222 (docker-compose.prod.yml
+          # healthchecks it) -- a REAL endpoint, not an invented one.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentos-nats-hs
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-nats
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: agentos-nats
+  ports:
+    - name: client
+      port: 4222
+---
+# Stable ClusterIP consumed via AGENTOS_NATS_URL (agentos-config).
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentos-nats
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-nats
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: agentos-nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client

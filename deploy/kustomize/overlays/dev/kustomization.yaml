@@ -1,0 +1,28 @@
+# Development overlay (issue #117): namespace agentos-dev, 1 replica each,
+# tiny resources, permissive-ish config, no TLS.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agentos-dev
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+# Image tags: pin what dev actually runs.
+images:
+  - name: ghcr.io/roy-wanyoike/agentos-api
+    newTag: 0.1.0
+  - name: ghcr.io/roy-wanyoike/agentos-worker
+    newTag: 0.1.0
+  - name: ghcr.io/roy-wanyoike/agentos-web
+    newTag: 0.1.0
+
+patches:
+  # Single replicas in dev; HPAs capped at 1-2.
+  - path: patch-replicas.yaml
+  - path: patch-hpa.yaml
+  # Dev config values (APP_ENV, CORS).
+  - path: patch-configmap.yaml
+  # Dev ingress host without TLS.
+  - path: patch-ingress.yaml

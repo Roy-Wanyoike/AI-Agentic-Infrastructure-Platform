@@ -1,0 +1,16 @@
+# Dev: HPAs effectively idle (1-2 replicas) instead of removed.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentos-api
+spec:
+  minReplicas: 1
+  maxReplicas: 2
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentos-worker
+spec:
+  minReplicas: 1
+  maxReplicas: 2

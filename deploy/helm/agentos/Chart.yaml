@@ -1,0 +1,15 @@
+apiVersion: v2
+name: agentos
+description: AgentOS -- agent runtime platform (API, worker, dashboard)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/Roy-Wanyoike/agentos
+keywords:
+  - agents
+  - ai
+  - workflows
+maintainers:
+  - name: AgentOS team
+    email: platform@agentos.dev
+dependencies: []

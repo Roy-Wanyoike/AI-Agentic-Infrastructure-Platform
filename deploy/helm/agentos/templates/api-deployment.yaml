@@ -1,0 +1,152 @@
+{{- /* API deployment (distroless nonroot; probes are the real /healthz + /readyz). */ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentos.componentName" (list . "api") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentos.componentSelectorLabels" (list . "api") | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.api.enabled }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "agentos.componentSelectorLabels" (list . "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentos.componentSelectorLabels" (list . "api") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.api.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "agentos.serviceAccountName" (list . "api") }}
+      {{ include "agentos.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: api
+          image: "{{ include "agentos.image" (list $ .Values.api.image.repository) }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentos.configName" . }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: databaseUrl
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: jwtSecret
+            - name: AGENTOS_SECRETS_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: secretsMasterKey
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: openaiApiKey
+                  optional: true
+            - name: AGENTOS_FALLBACK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentos.secretName" . }}
+                  key: fallbackApiKey
+                  optional: true
+            {{- if .Values.otel.sidecar.enabled }}
+            {{ include "agentos.otelEnv" (list . "agentos-api") | nindent 12 }}
+            {{- end }}
+          # REAL endpoints from cmd/api/main.go: /healthz + /readyz only.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 24
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          {{ include "agentos.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.otel.sidecar.enabled }}
+            - name: otel-config
+              mountPath: /etc/otel
+              readOnly: true
+            {{- end }}
+        {{- if .Values.otel.sidecar.enabled }}
+        - name: otel-collector
+          image: {{ .Values.otel.sidecar.image | quote }}
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - name: otlp-http
+              containerPort: 4318
+            - name: otlp-grpc
+              containerPort: 4317
+          resources:
+            {{- toYaml .Values.otel.sidecar.resources | nindent 12 }}
+          {{ include "agentos.containerSecurityContext" . | nindent 10 }}
+          volumeMounts:
+            - name: otel-config
+              mountPath: /etc/otel
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.otel.sidecar.enabled }}
+        - name: otel-config
+          configMap:
+            name: {{ include "agentos.otelConfigName" . }}
+        {{- end }}
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

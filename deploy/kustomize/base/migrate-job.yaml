@@ -1,0 +1,64 @@
+# One-shot migration Job (issue #117).
+#
+# Uses the API image: Dockerfile.api bakes cmd/migrate + migrations/ into
+# /app/migrate and /app/migrations (same trick as the "migrate" service in
+# docker-compose.prod.yml). /app/migrate --up is idempotent (schema_migrations
+# ledger, internal/database.ApplyMigrations) and exits 0 when schema is current.
+#
+# Run BEFORE the first API start and after every image upgrade:
+#   kubectl -n agentos delete job agentos-migrate --ignore-not-found
+#   kubectl -n agentos apply -f migrate-job.yaml
+#   kubectl -n agentos wait --for=condition=complete job/agentos-migrate
+# (The Helm chart runs the equivalent as a pre-install/pre-upgrade hook.)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentos-migrate
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    app.kubernetes.io/name: agentos-migrate
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: agentos
+        app.kubernetes.io/name: agentos-migrate
+        app.kubernetes.io/component: migrate
+    spec:
+      serviceAccountName: agentos-api
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/roy-wanyoike/agentos-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["/app/migrate", "--up"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentos-secrets
+                  key: DATABASE_URL
+            - name: MIGRATIONS_DIR
+              value: /app/migrations
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
