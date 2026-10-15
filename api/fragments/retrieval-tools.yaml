@@ -128,3 +128,30 @@ components:
             synthesis:
               type: string
               description: insight_forge only — the composed insight over the deduplicated, ranked findings.
+    LeaseState:
+      type: object
+      description: |
+        Point-in-time snapshot of one graph's lifecycle coordination state
+        (issue #135): read leases + exclusive write locks per org-scoped
+        graph key ("org/<org_id>/kb/<kb_id>"). Mirrors
+        knowledge.LeaseState; exposed for observability rendering and a
+        future admin status endpoint — the coordination itself is in-process
+        (mutex + broadcast channels, no goroutines, no network surface).
+      required: [graph_key, active_readers, write_locked, queue]
+      properties:
+        graph_key:
+          type: string
+          description: Org-scoped lifecycle key built by knowledge.GraphKey — "org/<org_id>/kb/<kb_id>". Tenant keys are disjoint by construction.
+          examples:
+          - org/9f1c…/kb/2b7e…
+        active_readers:
+          type: integer
+          minimum: 0
+          description: Read leases currently held (search/run duration).
+        write_locked:
+          type: boolean
+          description: True while the exclusive write lease (reset/re-ingest/schema change) is held; no reader can be admitted.
+        queue:
+          type: integer
+          minimum: 0
+          description: Writers waiting for active readers to release (writer-priority — new readers queue behind them).
