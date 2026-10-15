@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"agentos/internal/agents"
 	"agentos/internal/apikeys"
 	"agentos/internal/approvals"
 	"agentos/internal/audit"
@@ -36,6 +38,17 @@ var billingServiceVar *billing.Service
 // directly. When nil (or its enforcer disabled), run creation keeps the
 // legacy always-allow behavior — no policy evaluation, no policy steps.
 var policyEnforcementVar *runPolicyEnforcement
+
+// agentsServiceVar exposes the agents service to the create-run handler for
+// the lifecycle state guard (issue #106): runs may only be created for
+// agents in the ACTIVE state. It mirrors the runsServiceVar/billingServiceVar
+// wiring precedent: newApp assigns it after construction and tests wire it
+// directly. When nil, or when the agent is unknown to the caller's tenant,
+// the guard keeps the legacy behavior (unknown agents were never validated
+// at run creation) so partial rollouts and minimal test wirings are
+// unaffected; agents that ARE resolvable must be ACTIVE or the request is
+// refused 409 before any run row or queue task exists.
+var agentsServiceVar *agents.Service
 
 // Reason codes answered by the run-creation enforcement gate. They match the
 // step-error codes the runtime tool seam records so one vocabulary spans run
@@ -187,6 +200,54 @@ func recordPolicyEvaluationStep(ctx context.Context, orgID, runID string, verdic
 	}
 }
 
+// enforceAgentActiveForRun is the issue #106 lifecycle state gate for run
+// creation: only agents in the ACTIVE state accept runs (draft/building are
+// not wired yet, paused/disabled are suspended, archived is terminal).
+//
+// Decision matrix (documented, mirrors the quota-gate conventions):
+//   - agentsServiceVar nil            -> allow (minimal test wirings keep the
+//     legacy behavior; production wiring always assigns the var)
+//   - agent unknown in caller tenant  -> allow (unknown agents were never
+//     validated at run creation; introducing a 404 here would change the
+//     create-run contract beyond issue #106)
+//   - agent resolvable, state ACTIVE  -> allow
+//   - agent resolvable, other state   -> refuse 409 AGENT_NOT_ACTIVE before
+//     any run row or queue task exists, with a best-effort
+//     run.blocked_inactive_agent audit entry (same claims-scoped pattern as
+//     run.quota_denied)
+func enforceAgentActiveForRun(w http.ResponseWriter, r *http.Request, orgID, agentID string, auditSvc *audit.Service) bool {
+	if agentsServiceVar == nil {
+		return true
+	}
+	agent, err := agentsServiceVar.GetAgentCtx(r.Context(), orgID, agentID)
+	if err != nil {
+		// Unknown / cross-tenant: legacy behavior (never validated here).
+		return true
+	}
+	state, ok := agents.ParseAgentState(agent.Status)
+	if ok && state == agents.StateActive {
+		return true
+	}
+	// Unparseable legacy statuses are treated fail-closed: not ACTIVE, so
+	// no runs until the row is reconciled onto the state machine.
+	current := agent.Status
+	if ok {
+		current = string(state)
+	}
+	if auditSvc != nil {
+		if claims, claimsErr := auth.ExtractClaims(r.Context()); claimsErr == nil {
+			_, _ = auditSvc.LogCtx(r.Context(), claims.UserID, "run.blocked_inactive_agent", orgID, "runs/-", map[string]any{
+				"reason":   "AGENT_NOT_ACTIVE",
+				"agent_id": agentID,
+				"state":    current,
+			})
+		}
+	}
+	writeRunError(w, http.StatusConflict, "AGENT_NOT_ACTIVE",
+		fmt.Sprintf("agent is in state %q; runs can only be created for agents in the ACTIVE state (transition the agent first)", current))
+	return false
+}
+
 // writeRunError emits the structured {"error":{"code","message"}} envelope
 // used by the quota enforcement paths (issue #47). The legacy handlers below
 // keep their historical http.Error plain-text responses; only the new
@@ -288,6 +349,13 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.Hand
 		}
 		if strings.TrimSpace(req.AgentID) == "" {
 			http.Error(w, "agent id is required", http.StatusBadRequest)
+			return
+		}
+		// issue #106: lifecycle state guard BEFORE the policy/quota/budget
+		// gates and before any run row exists — an agent that is not ACTIVE
+		// (see internal/agents/lifecycle.go) must not accept runs, and the
+		// refusal must leave no run behind.
+		if !enforceAgentActiveForRun(w, r, req.OrganizationID, req.AgentID, auditSvc) {
 			return
 		}
 		// issue #75: governance gate BEFORE the quota gate and before

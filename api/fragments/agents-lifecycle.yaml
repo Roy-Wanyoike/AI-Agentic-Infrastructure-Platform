@@ -65,6 +65,101 @@ description: |
   unknown agents surface as 404 with no existence leak across tenants.
   RBAC is agents.write (exactly OWNER/ADMIN) on both operations.
 paths:
+  /agents/{id}/transition:
+    post:
+      operationId: transitionAgentState
+      tags:
+      - agents
+      summary: Move an agent along the lifecycle state machine (issue #106)
+      description: |
+        Write operation (agents.write, exactly OWNER/ADMIN). Moves one agent
+        of the caller's tenant along the enforced lifecycle state machine
+        (internal/agents/lifecycle.go):
+
+            draft -> building -> active -> paused/disabled -> archived
+
+        Legal moves: draft -> {building, archived}; building -> {active,
+        draft, disabled}; active -> {paused, disabled, archived}; paused ->
+        {active, disabled, archived}; disabled -> {building, draft,
+        archived}; archived is TERMINAL (no outgoing moves).
+
+        `target_state` is case-insensitive ("active" and "ACTIVE" are
+        equivalent). Illegal moves answer 409 INVALID_TRANSITION with a
+        message carrying both the current and the requested state; the agent
+        is left untouched. Unknown target states answer 422
+        VALIDATION_ERROR. Cross-organization and unknown agents answer 404
+        (no existence leak).
+
+        Concurrency: transitions are serialized by the agents service — a
+        racing transition loses with 409 instead of corrupting the status.
+        Success writes an `agent.state_changed` audit entry (metadata carries
+        from/to) through the service-level audit seam and returns the updated
+        agent in the same representation as GET /agents/{id}.
+
+        Run creation is gated on the ACTIVE state: POST /runs refuses agents
+        that are not ACTIVE with 409 AGENT_NOT_ACTIVE before any run row is
+        created.
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/AglAgentID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AglTransitionRequest'
+            example:
+              target_state: active
+      responses:
+        '200':
+          description: Agent transitioned; the response is the updated agent (same shape as GET /agents/{id}).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglAgent'
+        '400':
+          description: Malformed JSON body (INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/AglUnauthorized'
+        '403':
+          $ref: '#/components/responses/AglForbidden'
+        '404':
+          description: Unknown agent or agent of another organization (AGENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+        '409':
+          description: |
+            Illegal state move (INVALID_TRANSITION) — the message names the
+            current and requested states and lists the allowed targets. The
+            agent is unchanged. Also answered by POST /runs
+            (AGENT_NOT_ACTIVE) when creating runs for a non-ACTIVE agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+        '422':
+          description: |
+            Unknown target_state (VALIDATION_ERROR) — the message enumerates
+            the six valid states.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AglErrorEnvelope'
   /agents/{id}:
     put:
       operationId: updateAgent
@@ -250,6 +345,22 @@ components:
           schema:
             $ref: '#/components/schemas/AglErrorEnvelope'
   schemas:
+    AglTransitionRequest:
+      type: object
+      description: |
+        Request body for POST /agents/{id}/transition. Exactly one key:
+        target_state, matched case-insensitively against the six lifecycle
+        states (DRAFT, BUILDING, ACTIVE, PAUSED, DISABLED, ARCHIVED).
+      properties:
+        target_state:
+          type: string
+          minLength: 1
+          description: Requested lifecycle state (case-insensitive).
+          examples:
+          - active
+      required:
+      - target_state
+      additionalProperties: false
     AglUpdateAgentRequest:
       type: object
       description: |
@@ -304,7 +415,11 @@ components:
           type: string
         Status:
           type: string
-          description: Agent lifecycle status (DRAFT on creation; mutated by the version lifecycle, not by PUT).
+          description: |
+            Agent lifecycle state, enforced by the issue #106 state machine:
+            DRAFT, BUILDING, ACTIVE, PAUSED, DISABLED or ARCHIVED (DRAFT on
+            creation; mutated by POST /agents/{id}/transition, by archive
+            flows and by version restore — never by PUT).
           examples:
           - DRAFT
         CurrentVersionID:

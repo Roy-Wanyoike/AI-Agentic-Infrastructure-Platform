@@ -360,6 +360,9 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	a.complianceSvc = newComplianceService(a)
 	// expose to handlers for backwards-compatible wiring in tests
 	runsServiceVar = a.runsSvc
+	// issue #106: lifecycle state guard + audit seam for agent transitions
+	agentsServiceVar = a.agentsSvc
+	a.agentsSvc.SetAuditor(a.auditSvc)
 	// issue #47: expose billing to the create-run quota gate
 	billingServiceVar = a.billingSvc
 	// wave-9 issue #139: gateway virtual keys — dual-mode construction

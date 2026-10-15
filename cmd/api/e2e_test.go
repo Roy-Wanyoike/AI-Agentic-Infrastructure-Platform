@@ -152,6 +152,20 @@ func (e *e2eEnv) createAgent(t *testing.T, name string) string {
 	if agentID == "" {
 		t.Fatalf("create agent response missing ID: %s", rr.Body.String())
 	}
+	// issue #106: agents are created DRAFT and runs require ACTIVE — walk
+	// the enforced state machine (draft → building → active) through the
+	// real transition endpoint so every createRun caller operates on a
+	// runnable agent.
+	for _, target := range []string{"building", "active"} {
+		rr, resp := e.do(t, http.MethodPost, "/api/v1/agents/"+agentID+"/transition",
+			`{"target_state":"`+target+`"}`)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("activate agent %s = %d, want 200 — body=%s", target, rr.Code, rr.Body.String())
+		}
+		if got, _ := resp["Status"].(string); got != strings.ToUpper(target) {
+			t.Fatalf("transition response status = %q, want %q — body=%s", got, strings.ToUpper(target), rr.Body.String())
+		}
+	}
 	return agentID
 }
 
