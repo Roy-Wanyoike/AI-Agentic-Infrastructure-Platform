@@ -22,6 +22,15 @@ const (
 	sqlSelectRunsByOrg = `SELECT id, organization_id, agent_id, COALESCE(input, ''), COALESCE(output, ''), status, COALESCE(cost_cents, 0), created_at, updated_at FROM runs WHERE organization_id = $1 ORDER BY created_at DESC`
 	// Tenant guard: status transitions require a matching organization_id.
 	sqlUpdateRunStatus = `UPDATE runs SET status = $1, output = CASE WHEN $2 = '' THEN output ELSE $2 END, updated_at = $3 WHERE id = $4 AND organization_id = $5`
+	// Issue #115: optimistic transition guard — the same write as
+	// sqlUpdateRunStatus plus `AND status = $6`, re-checking the exact
+	// status the service validation read. A concurrent writer (another
+	// control op or a worker terminal write) moves the row first and the
+	// loser's update affects 0 rows, surfacing ErrStatusConflict instead
+	// of corrupting the status. This is the store-level half of the
+	// enforced transition machine (the service-level half is the
+	// runStateTransitions table check).
+	sqlUpdateRunStatusGuarded = `UPDATE runs SET status = $1, output = CASE WHEN $2 = '' THEN output ELSE $2 END, updated_at = $3 WHERE id = $4 AND organization_id = $5 AND status = $6`
 	// Tenant guard: the INSERT ... SELECT ... WHERE EXISTS clause only accepts
 	// rows when the run belongs to the caller's organization_id; step_index is
 	// derived from the existing steps of the same run. The single statement is
@@ -118,6 +127,36 @@ func (s *pgStore) UpdateRunStatus(ctx context.Context, orgID, id string, status 
 		return ErrRunNotFound
 	}
 	return nil
+}
+
+// StatusGuardStore is implemented by stores that enforce the optimistic
+// expected-status guard on status transitions (issue #115). The runs service
+// type-asserts it and loses racing transitions with ErrStatusConflict
+// instead of silently overwriting a status another writer just changed.
+type StatusGuardStore interface {
+	// UpdateRunStatusGuarded writes target only when the row's current
+	// status still equals expected (the raw STORED spelling — legacy
+	// uppercase or contract lowercase alike). updated is false when the
+	// guard (or the tenant guard) matched no row.
+	UpdateRunStatusGuarded(ctx context.Context, orgID, id string, expected, target RunStatus, output string) (updated bool, err error)
+}
+
+// UpdateRunStatusGuarded implements StatusGuardStore (issue #115): the
+// optimistic WHERE status = expected guard.
+func (s *pgStore) UpdateRunStatusGuarded(ctx context.Context, orgID, id string, expected, target RunStatus, output string) (bool, error) {
+	if err := s.guard(); err != nil {
+		return false, err
+	}
+	res, err := s.db.ExecContext(ctx, sqlUpdateRunStatusGuarded,
+		string(target), output, time.Now().UTC(), id, orgID, string(expected))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (s *pgStore) InsertStep(ctx context.Context, orgID string, step *Step) error {

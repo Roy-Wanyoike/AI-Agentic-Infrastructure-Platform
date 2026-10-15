@@ -43,6 +43,13 @@ const (
 	// published by the agent runtime when a run hard-stops on its
 	// configured per-run token budget (internal/runtime/budget.go).
 	EventRunTokenBudgetExceeded = "run.token_budget_exceeded"
+	// Issue #115 (complete run lifecycle) additive control-plane events.
+	// run.paused / run.resumed are emitted by the runs service when a
+	// pause/resume transition lands; run.recovered is emitted by the
+	// recovery sweeper for every stale running run it reconciles.
+	EventRunPaused    = "run.paused"
+	EventRunResumed   = "run.resumed"
+	EventRunRecovered = "run.recovered"
 )
 
 // AllEventTypes lists every valid event type (used for validation and by the
@@ -63,6 +70,9 @@ func AllEventTypes() []string {
 		EventDeploymentFailed,
 		EventWebhookReceived,
 		EventRunTokenBudgetExceeded,
+		EventRunPaused,
+		EventRunResumed,
+		EventRunRecovered,
 	}
 }
 

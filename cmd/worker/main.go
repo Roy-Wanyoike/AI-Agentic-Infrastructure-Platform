@@ -317,6 +317,30 @@ func main() {
 	// consumed).
 	orgRunners.setRuntimeConfig(runtimeCfg)
 	orgRunners.setEventPublisher(eventPub)
+
+	// issue #115: complete run lifecycle — durable checkpoints + recovery.
+	//   - runCheckpoints: the CheckpointStore (Postgres run_checkpoints table
+	//     in postgres mode, in-memory otherwise) shared by the per-org
+	//     runners' Checkpointer seam (end-of-step snapshots) and the
+	//     in-memory recovery sweep's paused-vs-failed decision.
+	//   - durableRunsSvc: the Postgres-backed runs handle for the ENFORCED
+	//     pre-flight (queued → running through the guarded state machine: a
+	//     run an operator paused or cancelled since enqueueing is refused
+	//     here) and the stale-run recovery sweeper. Nil in memory mode: the
+	//     worker holds no durable runs state to pre-flight or reconcile.
+	var runCheckpoints runs.CheckpointStore
+	var durableRunsSvc *runs.Service
+	if quotaDB != nil {
+		runCheckpoints = runs.NewPostgresCheckpointStore(quotaDB)
+		durableRunsSvc = runs.NewServiceWithStore(runs.NewPostgresStore(quotaDB))
+		durableRunsSvc.SetMetrics(metricsSvc)
+		durableRunsSvc.SetEventPublisher(eventPub)
+	} else {
+		runCheckpoints = runs.NewInMemoryCheckpointStore()
+	}
+	runsService.SetCheckpointStore(runCheckpoints)
+	runsService.SetEventPublisher(eventPub)
+	orgRunners.setCheckpoints(runCheckpoints)
 	recoveryCtx, recoveryStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer recoveryStop()
 	go func() {
@@ -324,6 +348,20 @@ func main() {
 			logr.Warn("workflow recovery loop stopped", "error", err)
 		}
 	}()
+	// issue #115: stale-run recovery sweeper (AGENTOS_RUN_RECOVERY, default
+	// ON; only constructed in postgres mode — the sweep reconciles the
+	// durable runs rows, stale = no checkpoint/heartbeat for
+	// AGENTOS_RUN_STALE_SECONDS, default 300s).
+	if durableRunsSvc != nil && runRecoveryFromEnv(os.Getenv) {
+		sweeper := newRunRecoverySweeper(durableRunsSvc, runStaleAfterFromEnv(os.Getenv), logr)
+		go func() {
+			if err := sweeper.Run(recoveryCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logr.Warn("run recovery sweeper stopped", "error", err)
+			}
+		}()
+		logr.Info("run recovery sweeper enabled",
+			"stale_after_seconds", int(runStaleAfterFromEnv(os.Getenv).Seconds()))
+	}
 
 	processTask := func(task *queue.Task) error {
 		ctx := context.Background()
@@ -415,8 +453,54 @@ func main() {
 		// the runtime tool seam; absent for every other caller type).
 		environment, _ := task.Payload["environment"].(string)
 		execCtx := agentKeyContext(runScopeContext(ctx, orgID, environment), task.Payload)
+		// issue #115: the in-flight executor registers its controller in
+		// the runs.RunControlRegistry so an API pause/cancel reaches THIS
+		// execution: the handle cancels the run context and the runtime
+		// unwinds gracefully at the current step boundary (partial
+		// results recorded; ErrRunCancelled). Unregistered on exit; a
+		// run not executing here is controlled through the durable
+		// status transitions alone (not-in-flight → status change only).
+		execCtx, cancelRun := context.WithCancel(execCtx)
+		defer cancelRun()
+		handle := newRunControlHandle(cancelRun)
+		unregister := runsService.Controls().Register(runID, handle)
+		defer unregister()
 		run, rerr := orgRunners.forOrg(ctx, orgID).RunWithID(execCtx, runID, agentID, input)
 		if rerr != nil {
+			// issue #115: a CONTROLLED stop is not a failure. A pause
+			// keeps the run paused (the API already wrote the durable
+			// status; only the halt is relayed) and a cancel confirms
+			// the two-phase unwind — cancelling → cancelled — through
+			// the same enforced transition machine (durable handle
+			// included: the run was in cancelling and the confirming
+			// worker is us).
+			if stop := controlledStopStatus(handle, rerr); stop != "" {
+				task.Payload["status"] = stop
+				if stop == string(runs.StateCancelled) {
+					var output string
+					if run != nil {
+						output = run.Output
+					}
+					_ = runsService.UpdateStatus(runID, runs.StatusCancelled, output)
+					if durableRunsSvc != nil {
+						if terr := durableRunsSvc.TransitionRunStatus(context.WithoutCancel(ctx), "", runID, runs.StateCancelled, ""); terr != nil {
+							logr.Warn("run cancel confirmation failed", "run_id", runID, "error", terr.Error())
+						}
+					}
+					go func() {
+						apiBase := os.Getenv("AGENTOS_API")
+						if apiBase == "" {
+							apiBase = "http://localhost:8080"
+						}
+						payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": stop, "ts": time.Now().UTC().Format(time.RFC3339)}}
+						_ = postEventWithRetries(apiBase, runID, payload)
+					}()
+				}
+				// Paused runs stay paused: no terminal write here —
+				// resume (paused → queued re-enqueue) is the only
+				// path back into execution.
+				return nil
+			}
 			_ = runsService.UpdateStatus(runID, runs.StatusFailed, "")
 			go func() {
 				apiBase := os.Getenv("AGENTOS_API")
