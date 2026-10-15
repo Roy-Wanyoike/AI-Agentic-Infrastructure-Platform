@@ -510,10 +510,11 @@ func (a *app) routes() http.Handler {
 	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #52: organizations & membership management (last-owner guarded)
 	registerOrganizationRoutes(apiMux, a.orgsSvc, a.identities, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc)          // issue #140: org region pinning + data-flow residency checks + posture
-	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)      // issue #122: agent export/import/clone
-	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)  // issue #108: agent-to-agent orchestration executor
-	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                      // issue #109: workflow DSL validation endpoint
+	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc)         // issue #140: org region pinning + data-flow residency checks + posture
+	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)     // issue #122: agent export/import/clone
+	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #108: agent-to-agent orchestration executor
+	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                     // issue #109: workflow DSL validation endpoint
+	registerRunTraceRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)                           // issue #114: run trace exposure
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks

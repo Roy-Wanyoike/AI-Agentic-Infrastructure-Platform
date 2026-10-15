@@ -118,6 +118,17 @@ func main() {
 	cfg := config.Load()
 	logr := logger.New(cfg.Env)
 
+	// Issue #114: OTel tracing (default OFF — AGENTOS_TRACING_ENABLED),
+	// mirroring the API wiring: when enabled the SDK tracer provider is
+	// installed before any task runs so worker spans (run.execute →
+	// agent → step → tool/model → provider HTTP) export over OTLP/HTTP.
+	traceShutdown, terr := observability.SetupTracing(context.Background(), observability.TracingConfigFromEnv())
+	if terr != nil {
+		logr.Warn("tracing disabled", "error", terr.Error())
+	} else {
+		defer func() { _ = traceShutdown(context.Background()) }()
+	}
+
 	agentsvc := agents.NewService()
 	_, err := agentSvcCreate(agentsvc)
 	if err != nil {
@@ -319,6 +330,11 @@ func main() {
 		if task == nil || task.Payload == nil {
 			return fmt.Errorf("task payload is required")
 		}
+		// Issue #114: join the producer's trace (the create-run handler
+		// injected traceparent into the task payload) and stamp the queue
+		// delivery attempt for the run span. Both are no-ops disabled.
+		ctx = observability.ExtractTraceFromPayload(ctx, task.Payload)
+		ctx = observability.ContextWithAttempt(ctx, task.Attempts)
 		runID, _ := task.Payload["run_id"].(string)
 		agentID, _ := task.Payload["agent_id"].(string)
 		input, _ := task.Payload["input"].(string)
@@ -329,6 +345,11 @@ func main() {
 		// wave-3 3-c: durable checkpointing of workflow node execution.
 		workflowRunID, _ := task.Payload["workflow_run_id"].(string)
 		nodeID, _ := task.Payload["node_id"].(string)
+		// Issue #114: workflow identity rides the execution context so the
+		// run span carries agentos.workflow.id / agentos.workflow.node.id.
+		if workflowRunID != "" {
+			ctx = observability.ContextWithWorkflow(ctx, workflowRunID, nodeID)
+		}
 		var checkpoint *workflows.NodeRun
 		if workflowRunID != "" && nodeID != "" {
 			nr, nerr := wfSvc.BeginNodeRun(ctx, orgID, workflowRunID, nodeID, runID)
