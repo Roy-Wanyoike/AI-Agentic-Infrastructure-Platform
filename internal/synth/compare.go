@@ -38,9 +38,9 @@ import (
 	"strings"
 )
 
-// VersionedRunInputs pins the exact versioned inputs a run executed with.
+// RunInputsKey pins the exact versioned inputs a run executed with.
 // Two runs are comparable ONLY when every field matches.
-type VersionedRunInputs struct {
+type RunInputsKey struct {
 	JourneyID      string
 	JourneyVersion int
 	PersonaID      string
@@ -51,17 +51,17 @@ type VersionedRunInputs struct {
 }
 
 // pinKey renders the canonical comparison key.
-func (v VersionedRunInputs) pinKey() string {
+func (v RunInputsKey) pinKey() string {
 	return fmt.Sprintf("%s@%d|%s@%d|%s|%s|%s",
 		v.JourneyID, v.JourneyVersion, v.PersonaID, v.PersonaVersion,
 		v.EnvironmentID, v.FixtureSet, v.AssertionSet)
 }
 
-// RunInputs extracts the VersionedRunInputs a run recorded. Fixture and
+// RunInputs extracts the RunInputsKey a run recorded. Fixture and
 // assertion set references are read from the first non-empty
 // RedactedMeta["fixture_set"] / ["assertion_set"] step-event stamp.
-func RunInputs(r Run) VersionedRunInputs {
-	in := VersionedRunInputs{
+func RunInputs(r Run) RunInputsKey {
+	in := RunInputsKey{
 		JourneyID:      r.JourneyID,
 		JourneyVersion: r.JourneyVer,
 		PersonaID:      r.PersonaID,
@@ -84,7 +84,7 @@ func RunInputs(r Run) VersionedRunInputs {
 
 // sideInputs pins one comparison side: the shared inputs plus per-run drift
 // entries for runs that do not match them.
-func sideInputs(runs []Run, side string, drift *[]string) VersionedRunInputs {
+func sideInputs(runs []Run, side string, drift *[]string) RunInputsKey {
 	base := RunInputs(runs[0])
 	baseKey := base.pinKey()
 	for _, r := range runs[1:] {

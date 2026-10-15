@@ -202,7 +202,7 @@ func (d *driverContractFake) callCount() int {
 // Fixtures.
 // ---------------------------------------------------------------------------
 
-func testEnv() *Environment {
+func browserTestEnv() *Environment {
 	return &Environment{
 		ID:             "env-1",
 		OrgID:          "org-1",
@@ -245,7 +245,7 @@ func browserJourney() *Journey {
 	}
 }
 
-func testPersona() *Persona {
+func browserTestPersona() *Persona {
 	return &Persona{ID: "pers-1", OrgID: "org-1", Name: "standard_customer", BuiltIn: "standard_customer", Version: 7}
 }
 
@@ -397,8 +397,8 @@ func TestBrowserWorkerHappyPathAllAssertions(t *testing.T) {
 	store := NewInMemoryEvidenceStore()
 	w := NewBrowserWorker(fake, store)
 	j := browserJourney()
-	env := testEnv()
-	p := testPersona()
+	env := browserTestEnv()
+	p := browserTestPersona()
 
 	run, err := w.Execute(context.Background(), j, env, p, RunOptions{AppVersion: "2025.1"})
 	if err != nil {
@@ -480,7 +480,7 @@ func TestBrowserWorkerInlineAssertSteps(t *testing.T) {
 			{Kind: AssertTextContains, Expected: "Welcome"},
 		},
 	}
-	run, err := w.Execute(context.Background(), j, testEnv(), nil, RunOptions{})
+	run, err := w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +538,7 @@ func TestBrowserWorkerAssertionFailureFailFast(t *testing.T) {
 	w := NewBrowserWorker(fake, NewInMemoryEvidenceStore())
 	j := browserJourney()
 
-	run, err := w.Execute(context.Background(), j, testEnv(), nil, RunOptions{})
+	run, err := w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestBrowserWorkerDriverFailureSkipsRest(t *testing.T) {
 	w := NewBrowserWorker(fake, nil)
 	j := browserJourney()
 
-	run, err := w.Execute(context.Background(), j, testEnv(), nil, RunOptions{})
+	run, err := w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,7 @@ func TestBrowserWorkerWriteBlockedInReadOnly(t *testing.T) {
 	w := NewBrowserWorker(fake, nil)
 	j := browserJourney()
 	j.Steps[1].WriteOp = true // fill #email is a state-changing op
-	env := testEnv()
+	env := browserTestEnv()
 	env.Mode = ModeProductionReadOnly
 
 	run, err := w.Execute(context.Background(), j, env, nil, RunOptions{})
@@ -626,7 +626,7 @@ func TestBrowserWorkerNavigateScopeViolation(t *testing.T) {
 	w := NewBrowserWorker(fake, nil)
 	j := browserJourney()
 	j.Steps = []JourneyStep{{Index: 0, Action: "navigate", Target: "https://evil.test/login"}}
-	env := testEnv() // allowlist: app.test only
+	env := browserTestEnv() // allowlist: app.test only
 
 	run, err := w.Execute(context.Background(), j, env, nil, RunOptions{})
 	if err != nil {
@@ -650,7 +650,7 @@ func TestBrowserWorkerBudgetExhausted(t *testing.T) {
 	w := NewBrowserWorker(fake, nil)
 	j := browserJourney()
 
-	run, err := w.Execute(context.Background(), j, testEnv(), nil, RunOptions{MaxSteps: 2})
+	run, err := w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{MaxSteps: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,7 +685,7 @@ func TestBrowserWorkerRateCap(t *testing.T) {
 	w.Clock = clock
 	j := browserJourney()
 	j.Steps = j.Steps[:3] // navigate, fill, click
-	env := testEnv()
+	env := browserTestEnv()
 	env.RateCapPerMin = 2
 
 	run, err := w.Execute(context.Background(), j, env, nil, RunOptions{})
@@ -707,7 +707,7 @@ func TestBrowserWorkerWallClockCap(t *testing.T) {
 	w.RunWallClock = time.Hour
 	j := browserJourney()
 
-	run, err := w.Execute(context.Background(), j, testEnv(), nil, RunOptions{})
+	run, err := w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,7 +729,7 @@ func TestBrowserWorkerStepTimeout(t *testing.T) {
 		{Index: 2, Action: "click", Target: "#after"},
 	}
 
-	run, err := w.Execute(context.Background(), j, testEnv(), nil, RunOptions{})
+	run, err := w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -753,7 +753,7 @@ func TestBrowserWorkerKillSwitchPreClosed(t *testing.T) {
 	kill := make(chan struct{})
 	close(kill)
 
-	run, err := w.Execute(context.Background(), j, testEnv(), nil, RunOptions{KillSwitch: kill})
+	run, err := w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{KillSwitch: kill})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +786,7 @@ func TestBrowserWorkerKillSwitchMidRun(t *testing.T) {
 	var execErr error
 	go func() {
 		defer close(done)
-		run, execErr = w.Execute(context.Background(), j, testEnv(), nil, RunOptions{KillSwitch: kill})
+		run, execErr = w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{KillSwitch: kill})
 	}()
 
 	select {
@@ -829,7 +829,7 @@ func TestBrowserWorkerParentCancelInconclusive(t *testing.T) {
 	var run *Run
 	go func() {
 		defer close(done)
-		run, _ = w.Execute(ctx, j, testEnv(), nil, RunOptions{})
+		run, _ = w.Execute(ctx, j, browserTestEnv(), nil, RunOptions{})
 	}()
 
 	select {
@@ -865,7 +865,7 @@ func TestBrowserWorkerConcurrencyCap(t *testing.T) {
 
 	done := make(chan *Run)
 	go func() {
-		run, _ := w.Execute(context.Background(), j, testEnv(), nil, RunOptions{})
+		run, _ := w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{})
 		done <- run
 	}()
 	select {
@@ -876,7 +876,7 @@ func TestBrowserWorkerConcurrencyCap(t *testing.T) {
 
 	kill := make(chan struct{})
 	close(kill) // deterministic: second Execute must not block on the slot
-	if _, err := w.Execute(context.Background(), j, testEnv(), nil, RunOptions{KillSwitch: kill}); !errors.Is(err, ErrWorkerBusy) {
+	if _, err := w.Execute(context.Background(), j, browserTestEnv(), nil, RunOptions{KillSwitch: kill}); !errors.Is(err, ErrWorkerBusy) {
 		t.Fatalf("expected ErrWorkerBusy, got %v", err)
 	}
 
@@ -919,7 +919,7 @@ func TestRedactHeaders(t *testing.T) {
 	}
 }
 
-func TestDomainAllowed(t *testing.T) {
+func TestHostInAllowlist(t *testing.T) {
 	allow := []string{"app.test", "*.staging.example.com"}
 	cases := []struct {
 		host string
@@ -933,14 +933,14 @@ func TestDomainAllowed(t *testing.T) {
 		{"evil.test", false},
 	}
 	for _, c := range cases {
-		if got := domainAllowed(c.host, allow); got != c.want {
-			t.Errorf("domainAllowed(%q) = %v, want %v", c.host, got, c.want)
+		if got := hostInAllowlist(c.host, allow); got != c.want {
+			t.Errorf("hostInAllowlist(%q) = %v, want %v", c.host, got, c.want)
 		}
 	}
-	if !domainAllowed("anything.test", nil) {
+	if !hostInAllowlist("anything.test", nil) {
 		t.Error("empty allowlist must disable the fence")
 	}
-	if !domainAllowed("app.test", []string{"*"}) {
+	if !hostInAllowlist("app.test", []string{"*"}) {
 		t.Error("* must allow any host")
 	}
 }

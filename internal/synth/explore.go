@@ -491,7 +491,7 @@ func (e *ScopeEnforcer) CheckScope(ctx context.Context, env Environment, rawURL 
 		return deny("invalid_url")
 	}
 	host := strings.ToLower(u.Host) // host[:port]
-	if !domainAllowed(env.AllowedDomains, host) {
+	if !exploreHostAllowed(env.AllowedDomains, host) {
 		return deny("allowlisted_domain")
 	}
 
@@ -519,7 +519,7 @@ func (e *ScopeEnforcer) CheckScope(ctx context.Context, env Environment, rawURL 
 
 // domainAllowed matches host[:port] against the allowlist (exact match,
 // case-insensitive). A port-qualified entry matches only the same port.
-func domainAllowed(allowed []string, host string) bool {
+func exploreHostAllowed(allowed []string, host string) bool {
 	for _, a := range allowed {
 		if strings.ToLower(strings.TrimSpace(a)) == host {
 			return true
@@ -1329,14 +1329,4 @@ func (p *ExplorePlanner) candidates(plan ExplorationPlan, res ExplorationResult)
 		out = append(out, CandidateJourney{Journey: j, GoalID: id, CoverageRef: plan.ID})
 	}
 	return out
-}
-
-// firstNonEmpty returns the first non-empty string.
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

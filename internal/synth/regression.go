@@ -107,10 +107,6 @@ func PromoteRegressionCandidate(gate ApprovalGate, j *Journey) error {
 	return nil
 }
 
-// sourceRegression pins the Journey.Source value for this loop (matches the
-// "regression" vocabulary in types.go).
-const SourceRegression = "regression"
-
 // tagNeedsAuthoring marks candidates whose repro notes did not fully
 // convert into deterministic steps.
 const tagNeedsAuthoring = "needs_authoring"
@@ -255,13 +251,6 @@ func riskForSeverity(s Severity) RiskClass {
 	default:
 		return RiskHigh
 	}
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
 }
 
 // ---------------------------------------------------------------------------

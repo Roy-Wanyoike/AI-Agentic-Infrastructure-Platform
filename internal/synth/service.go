@@ -57,10 +57,6 @@ var builtInPersonas = map[string]bool{
 	"slow_network_user":  true,
 }
 
-// DefaultBudgetPerRun is applied when an environment declares no explicit
-// budget (types.go: BudgetPerRun 0 = default 200). The worker consumes it.
-const DefaultBudgetPerRun = 200
-
 // Store is the durable persistence seam for the registry. Every method
 // takes the organization id so the source of truth stays tenant-guarded:
 // a lookup scoped to a foreign org returns synth.ErrNotFound exactly like

@@ -380,7 +380,7 @@ func truncate(s string, n int) string {
 //   - "*"              -> any host allowed;
 //   - "*.example.com"  -> any subdomain of example.com;
 //   - otherwise        -> exact match.
-func domainAllowed(host string, allowed []string) bool {
+func hostInAllowlist(host string, allowed []string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if i := strings.LastIndex(host, ":"); i >= 0 && !strings.Contains(host, "]") {
 		host = host[:i] // strip port
