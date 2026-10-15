@@ -1,0 +1,1080 @@
+# AgentOS API — OpenAPI 3.1 fragment for the synthetic assurance registry
+# (issue #147, flagship #118).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern, whose
+# securitySchemes block is copied verbatim), so
+# `python3 scripts/check_fragment_refs.py api/fragments/synth-registry.yaml`
+# passes. Components carry the track-unique `Synth` prefix to avoid
+# collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation.
+#     Grants registered in internal/auth/permissions_synth.go (init() append):
+#       - synth.read  -> OWNER, ADMIN, MEMBER, VIEWER (every role; the
+#         registry posture is dashboards' business)
+#       - synth.write -> OWNER, ADMIN, MEMBER (test-scope creation is
+#         everyday product work)
+#     ONE handler-level EXTRA gate is documented per operation (not a
+#     permission): production test enablement — creating/updating an
+#     environment with kind=production — requires the OWNER or ADMIN role
+#     even for synth.write holders, because it touches the
+#     production_read_only default.
+#   * structured error model {"error":{"code","message"}}
+#
+# SECURITY (credential handling): the target ownership challenge token is
+# returned in exactly one wire place — the 200 response of
+# POST /synth/targets/{id}/verify when it ISSUES a challenge
+# (SynthVerification.token). It is a one-time secret consumed by the
+# confirm call, never rendered again by any list/get/confirm/delete
+# operation (the SynthTarget schema has no verify_token field).
+openapi: 3.1.0
+info:
+  title: AgentOS — Synthetic assurance registry (issue #147 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the tenant-scoped synthetic assurance registry
+  (issue #147). Projects group synthetic testing; targets are applications
+  under test that execute ONLY after an ownership challenge/confirm
+  verification; environments pin the safety posture (kind + mode with the
+  types.go semantics: production defaults to production_read_only and can
+  never be pre_production, production requires a domain allowlist, rate
+  caps are honored only in pre_production); personas are synthetic identity
+  profiles that never impersonate real customer accounts. Every record is
+  org-scoped: the tenant comes from the auth claims and a foreign-org id is
+  indistinguishable from an unknown id (404). Execution-time enforcement is
+  the service-level ScopeGuard (AssertExecutionAllowed) consumed by the
+  worker tracks — unverified targets deny ALL actions, production_read_only
+  denies writes, requests outside the allowlisted domains are scope
+  violations.
+paths:
+  /synth/projects:
+    post:
+      operationId: createSynthProject
+      summary: Create a project container for synthetic testing
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthProjectCreateRequest'
+      responses:
+        '201':
+          description: Project created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthProjectResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          $ref: '#/components/responses/SynthForbidden'
+    get:
+      operationId: listSynthProjects
+      summary: List the organization's projects
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Projects ordered by creation time (empty list, never null).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthProjectListResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+  /synth/projects/{id}:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    get:
+      operationId: getSynthProject
+      summary: Get one project (foreign-org ids are 404)
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthProjectResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    put:
+      operationId: updateSynthProject
+      summary: Rename a project
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthProjectCreateRequest'
+      responses:
+        '200':
+          description: The renamed project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthProjectResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    delete:
+      operationId: deleteSynthProject
+      summary: Delete a project (cascades to its targets and environments)
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthDeletedResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/targets:
+    post:
+      operationId: createSynthTarget
+      summary: |
+        Register an application under test (starts UNVERIFIED with a
+        challenge token issued server-side; execute nothing against it
+        until the ownership challenge is confirmed).
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthTargetCreateRequest'
+      responses:
+        '201':
+          description: Target created (verified=false).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthTargetResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    get:
+      operationId: listSynthTargets
+      summary: List targets, optionally narrowed to one project
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: project_id
+        in: query
+        required: false
+        description: When present, only targets of this project are returned.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Targets ordered by creation time (empty list, never null).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthTargetListResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+  /synth/targets/{id}:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    get:
+      operationId: getSynthTarget
+      summary: Get one target (never carries challenge-token material)
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthTargetResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    put:
+      operationId: updateSynthTarget
+      summary: Rename a target (verification state is owned by the verify flow)
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthTargetUpdateRequest'
+      responses:
+        '200':
+          description: The renamed target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthTargetResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    delete:
+      operationId: deleteSynthTarget
+      summary: Delete a target (dependent environments are removed with it)
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthDeletedResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/targets/{id}/verify:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    post:
+      operationId: verifySynthTarget
+      summary: Issue the ownership challenge OR confirm it (verified=true)
+      description: |
+        Challenge/confirm flow proving control of the target's base_url.
+
+        * Empty body (or {"action":"issue"}) ISSUES the ownership challenge
+          and returns the one-time token exactly once
+          (status "challenge_issued"). Surface the token on the target
+          (e.g. /.well-known/agentos-synth-challenge) and confirm.
+        * {"token":"<challenge>"} CONFIRMS: on match the target flips to
+          verified=true and the one-time token is consumed. A mismatch is
+          403 VERIFICATION_FAILED. Confirming an already-verified target is
+          an idempotent 200; re-issuing on a verified target is a no-op
+          that never silently un-verifies.
+
+        Tests execute only against VERIFIED targets: the worker-plane
+        ScopeGuard denies every action (reads included) on unverified
+        targets.
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthVerifyRequest'
+      responses:
+        '200':
+          description: |
+            Either a challenge issue (status "challenge_issued"; the ONLY
+            response carrying the one-time token) or a confirmation /
+            idempotent no-op (status "verified").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthVerifyResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          description: Challenge token mismatch (VERIFICATION_FAILED).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthErrorEnvelope'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/targets/{id}/environments:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    post:
+      operationId: createSynthEnvironment
+      summary: Bind a runnable context with hard safety rails to a target
+      description: |
+        Mode semantics (types.go): production environments DEFAULT to
+        production_read_only; pre_production is never valid on production;
+        production requires a non-empty allowed_domains allowlist; rate
+        caps are honored only in pre_production (a cap on any other mode is
+        a validation error, never silently dropped).
+
+        EXTRA handler gate (not a permission): production test enablement
+        requires the OWNER or ADMIN role even for synth.write holders.
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthEnvironmentSpec'
+      responses:
+        '201':
+          description: Environment created (kind-derived default mode applied).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthEnvironmentResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          $ref: '#/components/responses/SynthForbidden'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    get:
+      operationId: listSynthTargetEnvironments
+      summary: List a target's environments
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Environments of the target (empty list, never null).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthEnvironmentListResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/environments/{id}:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    get:
+      operationId: getSynthEnvironment
+      summary: Get one environment
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthEnvironmentResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    put:
+      operationId: updateSynthEnvironment
+      summary: Replace the safety posture (re-validated; production cannot escalate)
+      description: |
+        The full spec is re-validated, so a production environment can never
+        escalate to pre_production and can never drop its allowlist. Identity
+        fields (org, target) are immutable. EXTRA handler gate: a
+        production-kind spec requires the OWNER or ADMIN role.
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthEnvironmentSpec'
+      responses:
+        '200':
+          description: The updated environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthEnvironmentResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          $ref: '#/components/responses/SynthForbidden'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    delete:
+      operationId: deleteSynthEnvironment
+      summary: Delete an environment
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthDeletedResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+  /synth/personas:
+    post:
+      operationId: createSynthPersona
+      summary: Register a synthetic identity profile
+      description: |
+        Personas NEVER impersonate real customer accounts — a persona is
+        either a documented built-in key (visitor, new_user, returning_user,
+        standard_customer, administrator, restricted_user, mobile_user,
+        accessibility_user, slow_network_user) or a custom one (built_in
+        omitted). Constraints are declarative traits only; synthetic
+        credentials map by reference and never live in this record.
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthPersonaSpec'
+      responses:
+        '201':
+          description: Persona created (version 1).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthPersonaResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '403':
+          $ref: '#/components/responses/SynthForbidden'
+    get:
+      operationId: listSynthPersonas
+      summary: List the organization's personas
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Personas ordered by creation time (empty list, never null).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthPersonaListResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+  /synth/personas/{id}:
+    parameters:
+    - $ref: '#/components/parameters/SynthID'
+    get:
+      operationId: getSynthPersona
+      summary: Get one persona
+      x-required-permission: synth.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The persona.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthPersonaResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    put:
+      operationId: updateSynthPersona
+      summary: Update a persona (bumps the version journeys pin against)
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthPersonaSpec'
+      responses:
+        '200':
+          description: The updated persona with an incremented version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthPersonaResponse'
+        '400':
+          $ref: '#/components/responses/SynthValidationError'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+    delete:
+      operationId: deleteSynthPersona
+      summary: Delete a persona
+      x-required-permission: synth.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SynthDeletedResponse'
+        '401':
+          $ref: '#/components/responses/SynthUnauthorized'
+        '404':
+          $ref: '#/components/responses/SynthNotFound'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    SynthID:
+      name: id
+      in: path
+      required: true
+      description: Resource id (UUID, as returned by the create operation).
+      schema:
+        type: string
+  responses:
+    SynthValidationError:
+      description: Invalid input (400 VALIDATION_ERROR).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SynthErrorEnvelope'
+    SynthUnauthorized:
+      description: Missing or invalid credentials (401 UNAUTHORIZED).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SynthErrorEnvelope'
+    SynthForbidden:
+      description: |
+        Insufficient role (403 FORBIDDEN — e.g. production test enablement
+        without OWNER/ADMIN).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SynthErrorEnvelope'
+    SynthNotFound:
+      description: |
+        Unknown OR foreign-org id (404 NOT_FOUND — the tenant guard makes
+        both indistinguishable; no existence leak across organizations).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SynthErrorEnvelope'
+  schemas:
+    SynthProject:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+          description: Always the caller's organization (from the auth claims).
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - name
+      - created_at
+      - updated_at
+    SynthProjectCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+      required:
+      - name
+    SynthProjectResponse:
+      type: object
+      properties:
+        project:
+          $ref: '#/components/schemas/SynthProject'
+      required:
+      - project
+    SynthProjectListResponse:
+      type: object
+      properties:
+        projects:
+          type: array
+          description: Ordered by creation time; empty when the org has none.
+          items:
+            $ref: '#/components/schemas/SynthProject'
+      required:
+      - projects
+    SynthTarget:
+      type: object
+      description: |
+        Never carries the ownership challenge token: the one-time secret is
+        rendered exactly once by POST /synth/targets/{id}/verify when it
+        issues a challenge.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        project_id:
+          type: string
+        name:
+          type: string
+        base_url:
+          type: string
+          description: Absolute http(s) URL of the application under test.
+        verified:
+          type: boolean
+          description: Tests execute only against verified targets.
+        verified_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - project_id
+      - name
+      - base_url
+      - verified
+      - verified_at
+      - created_at
+      - updated_at
+    SynthTargetCreateRequest:
+      type: object
+      properties:
+        project_id:
+          type: string
+        name:
+          type: string
+          minLength: 1
+        base_url:
+          type: string
+          description: Absolute http(s) URL (scheme + host required).
+      required:
+      - project_id
+      - name
+      - base_url
+    SynthTargetUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+      required:
+      - name
+    SynthTargetResponse:
+      type: object
+      properties:
+        target:
+          $ref: '#/components/schemas/SynthTarget'
+      required:
+      - target
+    SynthTargetListResponse:
+      type: object
+      properties:
+        targets:
+          type: array
+          description: Ordered by creation time; empty when none match.
+          items:
+            $ref: '#/components/schemas/SynthTarget'
+      required:
+      - targets
+    SynthVerifyRequest:
+      type: object
+      description: |
+        Empty (or action="issue") issues a challenge; a non-empty token
+        confirms ownership.
+      properties:
+        action:
+          type: string
+          enum:
+          - issue
+          description: Currently only "issue" is meaningful (the default).
+        token:
+          type: string
+          description: The one-time challenge token to confirm (empty = issue).
+    SynthVerification:
+      type: object
+      description: Present ONLY on a challenge issue; carries the one-time token.
+      properties:
+        token:
+          type: string
+          description: The one-time ownership challenge secret.
+        instructions:
+          type: string
+      required:
+      - token
+      - instructions
+    SynthVerifyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+          - challenge_issued
+          - verified
+        target:
+          $ref: '#/components/schemas/SynthTarget'
+        verification:
+          oneOf:
+          - $ref: '#/components/schemas/SynthVerification'
+          - type: 'null'
+          description: Present only when status is challenge_issued.
+      required:
+      - status
+      - target
+    SynthQuietWindow:
+      type: object
+      description: |
+        Timezone-aware interval policy on weekdays (0=Sunday .. 6=Saturday)
+        between start and end ("HH:MM", location = IANA name).
+      properties:
+        weekdays:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+        start:
+          type: string
+          description: 'HH:MM (24-hour clock).'
+          examples:
+          - '22:00'
+        end:
+          type: string
+          description: 'HH:MM (24-hour clock).'
+          examples:
+          - '04:00'
+        location:
+          type: string
+          description: Loadable IANA timezone name.
+          examples:
+          - Europe/Berlin
+        reason:
+          type: string
+      required:
+      - weekdays
+      - start
+      - end
+      - location
+    SynthEnvironment:
+      type: object
+      description: |
+        A runnable context with hard safety rails. The mode pins the
+        enforcement posture: pre_production allows full write journeys;
+        production_read_only denies every state-changing action
+        server-side; release_comparison allows writes only through
+        isolated synthetic accounts.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        target_id:
+          type: string
+        kind:
+          type: string
+          enum:
+          - local
+          - dev
+          - staging
+          - production
+        mode:
+          type: string
+          enum:
+          - pre_production
+          - production_read_only
+          - release_comparison
+        allowed_domains:
+          type: array
+          description: |
+            Network policy: requests outside these hosts are scope
+            violations. REQUIRED (non-empty) for production environments.
+          items:
+            type: string
+        rate_cap_per_min:
+          type: integer
+          description: 0 = unlimited; honored only in pre_production mode.
+        budget_per_run:
+          type: integer
+          description: Max steps per run (0 = default 200).
+        quiet_windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthQuietWindow'
+        test_windows:
+          type: array
+          description: When non-empty, runs are allowed ONLY inside these.
+          items:
+            $ref: '#/components/schemas/SynthQuietWindow'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - target_id
+      - kind
+      - mode
+      - allowed_domains
+      - rate_cap_per_min
+      - budget_per_run
+      - quiet_windows
+      - test_windows
+      - created_at
+      - updated_at
+    SynthEnvironmentSpec:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum:
+          - local
+          - dev
+          - staging
+          - production
+        mode:
+          type: string
+          enum:
+          - pre_production
+          - production_read_only
+          - release_comparison
+          description: |
+            Omitted = kind-derived default (production ->
+            production_read_only, everything else -> pre_production).
+        allowed_domains:
+          type: array
+          items:
+            type: string
+        rate_cap_per_min:
+          type: integer
+          minimum: 0
+          description: Pre-production mode only; a cap elsewhere is a 400.
+        budget_per_run:
+          type: integer
+          minimum: 0
+        quiet_windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthQuietWindow'
+        test_windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthQuietWindow'
+      required:
+      - kind
+    SynthEnvironmentResponse:
+      type: object
+      properties:
+        environment:
+          $ref: '#/components/schemas/SynthEnvironment'
+      required:
+      - environment
+    SynthEnvironmentListResponse:
+      type: object
+      properties:
+        environments:
+          type: array
+          description: Empty list, never null.
+          items:
+            $ref: '#/components/schemas/SynthEnvironment'
+      required:
+      - environments
+    SynthPersona:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        built_in:
+          type: string
+          description: '"" for custom; else a documented built-in key.'
+          enum:
+          - ''
+          - visitor
+          - new_user
+          - returning_user
+          - standard_customer
+          - administrator
+          - restricted_user
+          - mobile_user
+          - accessibility_user
+          - slow_network_user
+        role_hints:
+          type: array
+          description: Role/permission hints for journey planning.
+          items:
+            type: string
+        constraints:
+          type: object
+          description: Declarative traits (network=slow3g, viewport=mobile, ...).
+          additionalProperties:
+            type: string
+        version:
+          type: integer
+          description: Bumped on every update; journeys pin persona versions.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - name
+      - built_in
+      - role_hints
+      - constraints
+      - version
+      - created_at
+      - updated_at
+    SynthPersonaSpec:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        built_in:
+          type: string
+          description: One of the documented keys, or omitted/empty for custom.
+        role_hints:
+          type: array
+          items:
+            type: string
+        constraints:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+      - name
+    SynthPersonaResponse:
+      type: object
+      properties:
+        persona:
+          $ref: '#/components/schemas/SynthPersona'
+      required:
+      - persona
+    SynthPersonaListResponse:
+      type: object
+      properties:
+        personas:
+          type: array
+          description: Ordered by creation time; empty when the org has none.
+          items:
+            $ref: '#/components/schemas/SynthPersona'
+      required:
+      - personas
+    SynthDeletedResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          description: Always true on success.
+      required:
+      - deleted
+    SynthErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of NOT_FOUND, VALIDATION_ERROR, VERIFICATION_FAILED, FORBIDDEN, UNAUTHORIZED, INTERNAL_ERROR.
+              examples:
+              - NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
