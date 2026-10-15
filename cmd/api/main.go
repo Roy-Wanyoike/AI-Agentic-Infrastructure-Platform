@@ -15,12 +15,14 @@ import (
 	// tzdata ensures time.LoadLocation works in scratch/distroless containers.
 	_ "time/tzdata"
 
+	"agentos/internal/a2a"
 	"agentos/internal/agents"
 	"agentos/internal/apikeys"
 	"agentos/internal/approvals"
 	"agentos/internal/audit"
 	"agentos/internal/auth"
 	"agentos/internal/billing"
+	"agentos/internal/compliance"
 	"agentos/internal/config"
 	"agentos/internal/connectors"
 	"agentos/internal/database"
@@ -101,10 +103,18 @@ type app struct {
 	mktSvc         *marketplace.Service
 	connSvc        *connectors.Service
 	mcpRegSvc      *mcp.Registry
+	a2aSvc         *a2a.Service // issue #136: A2A Agent Card registry + delegation
 	whSvc          *webhooks.Service
 	notifSvc       *notifications.Service
 	publisher      events.Publisher
 	eventsLister   events.PagedStore
+	// wave-9 issue #139: gateway virtual keys (model allow-lists + enforced
+	// monthly spend caps at the provider seam).
+	gatewaySvc *models.GatewayService
+
+	// wave-9 issue #138: read-only compliance evidence pack (aggregates
+	// the services above into auditor-ready artifacts; never writes).
+	complianceSvc *compliance.Service
 
 	// issue #140: org data-residency (region pinning + data-flow checks +
 	// posture; the residency store is the source of truth — org schema
@@ -248,6 +258,16 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 			a.logr.Info("dev api key created", "api_key", key.Value)
 		}
 	}
+	// issue #136: A2A Agent Card registry — in-memory default; the Postgres
+	// store is adopted when the database is wired (mirrors the mcpRegSvc
+	// dual-mode construction). Governance seams: agent-link validation
+	// against the agents service + best-effort delegation auditing.
+	a.a2aSvc = a2a.NewService()
+	if a.db != nil {
+		a.a2aSvc.SetStore(a2a.NewPostgresStore(a.db))
+	}
+	a.a2aSvc.SetAgentChecker(a.agentsSvc)
+	a.a2aSvc.SetAuditor(a.auditSvc)
 	// wave-2: evaluation runner + service. Issue #15: the API process now
 	// shares the worker's env-driven provider construction — when
 	// OPENAI_API_KEY is set, eval cases execute against the configured
@@ -335,10 +355,23 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	// issue #51: eval-gated canary autopromotion (no-op unless
 	// AGENTOS_CANARY_AUTOPROMOTE is truthy)
 	WireCanaryAutoPromotion(a.evalSvc, a.deploymentsSvc, a.auditSvc, a.logr)
+	// wave-9 issue #138: compliance evidence pack — read-only aggregation
+	// over the existing services (no writes, no migration).
+	a.complianceSvc = newComplianceService(a)
 	// expose to handlers for backwards-compatible wiring in tests
 	runsServiceVar = a.runsSvc
 	// issue #47: expose billing to the create-run quota gate
 	billingServiceVar = a.billingSvc
+	// wave-9 issue #139: gateway virtual keys — dual-mode construction
+	// (Postgres-backed store when a DSN is configured, in-memory otherwise),
+	// mirroring the mcpRegSvc pattern; the audit seam records lifecycle +
+	// denial rows through the same Auditor convention as the MCP registry.
+	if a.db != nil {
+		a.gatewaySvc = models.NewGatewayServiceWithStore(models.NewGatewayPostgresStore(a.db))
+	} else {
+		a.gatewaySvc = models.NewGatewayService()
+	}
+	a.gatewaySvc.SetAuditor(a.auditSvc)
 	return a
 }
 
@@ -418,6 +451,7 @@ func (a *app) routes() http.Handler {
 	registerAuditEventsRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
 	// wave-8 issue A: tamper-evident chain verify + evidence export
 	registerAuditChainRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
+	registerComplianceRoutes(apiMux, a.complianceSvc, a.authSvc, a.apiKeysSvc) // wave-9 issue #138: compliance evidence pack (audit.read = OWNER/ADMIN)
 	// issue #56: events read API (keyset-paginated, org-scoped)
 	registerEventsRoutes(apiMux, a.eventsLister, a.authSvc, a.apiKeysSvc)
 	// issue #24: billing plans/subscriptions/invoices
@@ -427,8 +461,13 @@ func (a *app) routes() http.Handler {
 	// wave-8 issue C (6-6c): per-scope budget gates + dry-run evaluate; also
 	// assigns budgetServiceVar for the create-run budget gate (enforceBudget)
 	registerBudgetRoutes(apiMux, a.db, billing.NewRunsConsumptionSource(a.runsSvc), a.agentsSvc, a.authSvc, a.apiKeysSvc)
+	// wave-9 issue #139: gateway virtual keys — CRUD + month-to-date spend
+	// view (OWNER/ADMIN; denials map to 402/403 at the provider seam)
+	registerGatewayRoutes(apiMux, a.gatewaySvc, a.authSvc, a.apiKeysSvc)
 	// wave-8 issue C (6-6c): showback/chargeback reports over the runs ledger
 	registerShowbackRoutes(apiMux, billing.NewRunsShowbackSource(a.runsSvc), a.authSvc, a.apiKeysSvc)
+	// wave-9 issue #137: approvals enterprise oversight (delegation, escalation SLAs, dual control, evidence export)
+	registerApprovalEnterpriseRoutes(apiMux, a.apSvc, a.orgsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)
 	registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #29: OIDC SSO browser flow + SCIM 2.0 provisioning
@@ -453,6 +492,7 @@ func (a *app) routes() http.Handler {
 	registerAgentKeyRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #50: MCP server endpoint (JSON-RPC 2.0) — tenant tools over MCP
 	registerMcpRoutes(apiMux, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	registerA2ARoutes(apiMux, a.a2aSvc, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 
 	apiMux.HandleFunc("/", serviceInfoHandler)
 

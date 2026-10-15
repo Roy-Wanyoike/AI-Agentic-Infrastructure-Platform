@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -245,6 +246,41 @@ func main() {
 	var sbExec tools.SandboxExecutor
 	if sb, ok := sandbox.RunnerFromEnv(logr); ok {
 		sbExec = sb
+	}
+	// wave-9 issue #139: gateway virtual-key enforcement at the model
+	// provider seam (ONE additive block; the mechanism lives in
+	// internal/models/gateway.go). When AGENTOS_GATEWAY_KEY holds a vk_
+	// credential minted through the gateway API, the worker's provider is
+	// wrapped in a models.GuardedProvider bound to that key: every
+	// completion is authorized against the key's model allow-list and
+	// enforced monthly spend cap BEFORE the provider call (typed denials —
+	// spend_limit_exceeded 402 semantics / model_not_allowed 403 semantics —
+	// fail the run) and the actual token cost is recorded into the same
+	// ledger the API's GET /gateway/keys/{id}/spend endpoint reads. The
+	// store follows the existing db wiring pattern (quotaDB: Postgres-backed
+	// when a DSN is configured — durable state shared with the API process;
+	// in-memory otherwise) and audit rows flow through the Auditor seam
+	// (durable when workerAudit is wired). Unset key -> unchanged behavior;
+	// an unresolvable key is a startup warning and the provider stays
+	// unguarded (the API's create-run budget gate remains the enqueue-time
+	// control). The wrap lands before newOrgRunnerCache below, so the
+	// per-org runners — the path tasks actually execute on — see the
+	// guarded provider; the plain `runner` built above stays offline-mode
+	// compatible and is not a task-execution path.
+	if gwPlain := os.Getenv(models.GatewayKeyEnvVar); strings.TrimSpace(gwPlain) != "" {
+		var gwStore models.GatewayStore
+		if quotaDB != nil {
+			gwStore = models.NewGatewayPostgresStore(quotaDB)
+		}
+		gwSvc := models.NewGatewayServiceWithStore(gwStore)
+		gwSvc.SetAuditor(workerAudit)
+		if vk, rerr := gwSvc.ResolveByPlaintext(context.Background(), gwPlain); rerr != nil || vk == nil {
+			logr.Warn("gateway key unresolvable; model provider stays unguarded", "error", fmt.Sprint(rerr))
+		} else if provider != nil {
+			provider = models.NewGuardedProvider(provider, gwSvc, vk.OrganizationID, vk.ID)
+			logr.Info("gateway spend enforcement enabled",
+				"key_id", vk.ID, "organization_id", vk.OrganizationID)
+		}
 	}
 	orgRunners := newOrgRunnerCache(agentsvc, provider,
 		stepRecorderAdapter(runsService, agentsvc), metricsSvc,
