@@ -1,0 +1,24 @@
+# NetworkPolicy (issue #117): default-deny INGRESS for the reference
+# stateful backends (Postgres / Redis / NATS). Nothing can open connections to
+# the data tier except policies explicitly allowing api/worker/migrate pods
+# (networkpolicy-data-allow.yaml). Egress from the backends is left open on
+# purpose (they must answer already-established connections and reach DNS);
+# restrict further at the CNI/SecurityGroup layer if required.
+#
+# NOTE: NetworkPolicies require a CNI that enforces them (Calico, Cilium,
+# Weave, etc.); on a plain kubenet cluster they are no-ops.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentos-data-default-deny-ingress
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [agentos-postgres, agentos-redis, agentos-nats]
+  policyTypes: [Ingress]
+  ingress: [] # deny all ingress; explicit allows in data-allow policy

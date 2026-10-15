@@ -1,0 +1,14 @@
+# AgentOS namespace (issue #117).
+# The Pod Security labels put the namespace in "restricted" baseline mode:
+# every workload shipped in this directory runs non-root with a
+# read-only root filesystem and dropped capabilities, so "restricted" holds.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

@@ -1,0 +1,48 @@
+# Ingress (issue #117): nginx class, routes / -> dashboard, /api -> API.
+#
+# TLS placeholder: point spec.tls.secretName at a real cert (cert-manager
+# Issuer/Certificate, or your ingress controller's default wildcard). The
+# agentos-tls Secret is intentionally NOT created by these manifests.
+#
+# The web image already proxies /api/v1 and /v1 to the API (deploy/nginx.conf,
+# same-origin mode), so path (1) below is optional; it enables split-domain
+# setups where browsers hit https://api.<host> directly.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agentos
+  namespace: agentos
+  labels:
+    app.kubernetes.io/part-of: agentos
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    # Agent runs can post large artifacts via the API.
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - agentos.example.com # PLACEHOLDER: change to your dashboard host
+      secretName: agentos-tls # TLS placeholder -- provision externally
+  rules:
+    - host: agentos.example.com # PLACEHOLDER: change to your dashboard host
+      http:
+        paths:
+          # (1) Direct API route (optional, split-domain setups).
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: agentos-api
+                port:
+                  number: 8080
+          # (2) Dashboard SPA (default).
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agentos-web
+                port:
+                  number: 80
