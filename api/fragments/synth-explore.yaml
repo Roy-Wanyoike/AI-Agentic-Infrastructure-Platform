@@ -5,8 +5,9 @@
 # modify it). Schema-only fragment: #155 ships no HTTP surface of its own —
 # exploration plans, scope ledgers and candidate journeys are produced by the
 # internal/synth engine (explore.go) and surfaced through the owner track's
-# endpoints. The #156 follow-up (production schedules, release comparisons)
-# appends SynthProductionSchedule / SynthComparisonReport to this fragment.
+# endpoints. Issue #156 appended SynthProductionSchedule /
+# SynthComparisonReport (production journey scheduling + release-version
+# comparison, internal/synth schedule.go + compare.go).
 #
 # Standalone-valid: every local $ref resolves inside this fragment and the
 # security scheme names are declared in this fragment's own
@@ -309,3 +310,204 @@ components:
       - step_count
       - assertion_count
       - approved_by
+    SynthAfterDeployment:
+      type: object
+      description: |
+        Event trigger on a production schedule (issue #156): fire one extra
+        run after each deployment of app_version (empty = any version).
+      properties:
+        app_version:
+          type: string
+          description: Exact AppVersion to match; empty matches any deployment.
+    SynthRetryPolicy:
+      type: object
+      description: |
+        Retry policy for failed/inconclusive production runs (issue #156).
+        max_attempts counts the INITIAL attempt (1 = no retries); backoff is
+        capped exponential (base * 2^(n-1), clamped to max_backoff; defaults
+        30s base / 10m cap when unset).
+      properties:
+        max_attempts:
+          type: integer
+          minimum: 1
+        backoff_seconds:
+          type: number
+        max_backoff_seconds:
+          type: number
+    SynthProductionSchedule:
+      type: object
+      description: |
+        Recurring (or deployment-triggered) journey schedule against a
+        VERIFIED production target ONLY (issue #156; enforced server-side at
+        creation AND on every evaluation). The read-only default is enforced
+        server-side: write journeys run ONLY in the release_comparison
+        environment mode AND with an isolated synthetic account; every other
+        production run is pinned read-only. Timezone-aware quiet/test
+        windows, tenant run budgets + concurrency caps, global/per-project
+        kill switches and pause/cancel all gate each due run.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        project_id:
+          type: string
+        journey_id:
+          type: string
+        journey_version:
+          type: integer
+        environment_id:
+          type: string
+        persona_id:
+          type: string
+        persona_version:
+          type: integer
+        has_write_ops:
+          type: boolean
+          description: True for journeys with state-changing steps.
+        interval_seconds:
+          type: number
+          description: Recurrence period (> 0 for time-based schedules).
+        on_deployment:
+          nullable: true
+          $ref: '#/components/schemas/SynthAfterDeployment'
+        retry:
+          $ref: '#/components/schemas/SynthRetryPolicy'
+        paused:
+          type: boolean
+        synthetic_account:
+          type: string
+          description: |
+            Isolated synthetic account reference — REQUIRED when
+            has_write_ops (release_comparison mode only).
+        next_run_at:
+          type: string
+          format: date-time
+          nullable: true
+        attempts:
+          type: integer
+          description: Consecutive retry attempts consumed in the current run cycle.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - project_id
+      - journey_id
+      - journey_version
+      - environment_id
+      - persona_id
+      - has_write_ops
+      - paused
+      - created_at
+      - updated_at
+    SynthLatencyDelta:
+      type: object
+      description: |
+        Run-duration percentiles (ms) per side plus relative deltas
+        ((candidate − stable)/stable × 100). Relative deltas are 0 on a
+        zero baseline (documented inapplicability, not zero drift).
+      properties:
+        stable_p50_ms:
+          type: number
+        stable_p95_ms:
+          type: number
+        candidate_p50_ms:
+          type: number
+        candidate_p95_ms:
+          type: number
+        p50_delta_pct:
+          type: number
+        p95_delta_pct:
+          type: number
+    SynthComparisonThresholds:
+      type: object
+      description: |
+        Meaningful-difference thresholds. Defaults (issue #156): 5pp journey
+        completion, 20%/30% p50/p95 relative latency, 2pp assertion pass,
+        0.5 console errors per run.
+      properties:
+        completion_delta_pp:
+          type: number
+        latency_p50_rel_pct:
+          type: number
+        latency_p95_rel_pct:
+          type: number
+        assertion_pass_delta_pp:
+          type: number
+        console_error_per_run_abs:
+          type: number
+    SynthComparisonReport:
+      type: object
+      description: |
+        Stable-vs-candidate release comparison over the SAME versioned
+        inputs — journey, persona, environment, fixture set and assertion
+        set are pinned; any input/AppVersion drift is listed in
+        version_drift and forces meaningful=false, so a comparison across
+        different journeys/fixtures is never presented as evidence. Deltas
+        are candidate − stable. A report is meaningful only when at least
+        one documented threshold is breached AND there is no version drift;
+        reasons list breached thresholds in deterministic order with
+        direction (regression/improvement).
+      properties:
+        stable_version:
+          type: string
+        candidate_version:
+          type: string
+        stable_runs:
+          type: integer
+        candidate_runs:
+          type: integer
+        stable_completion_pct:
+          type: number
+        candidate_completion_pct:
+          type: number
+        journey_completion_delta_pp:
+          type: number
+          description: Percentage points (candidate − stable).
+        latency_delta:
+          $ref: '#/components/schemas/SynthLatencyDelta'
+        stable_assertion_pass_pct:
+          type: number
+        candidate_assertion_pass_pct:
+          type: number
+        assertion_pass_delta_pp:
+          type: number
+        stable_console_errors_per_run:
+          type: number
+        candidate_console_errors_per_run:
+          type: number
+        console_error_delta:
+          type: number
+        version_drift:
+          type: array
+          description: Every input/version mismatch (non-empty forces meaningful=false).
+          items:
+            type: string
+        meaningful:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+        thresholds:
+          $ref: '#/components/schemas/SynthComparisonThresholds'
+      required:
+      - stable_version
+      - candidate_version
+      - stable_runs
+      - candidate_runs
+      - stable_completion_pct
+      - candidate_completion_pct
+      - journey_completion_delta_pp
+      - latency_delta
+      - assertion_pass_delta_pp
+      - console_error_delta
+      - version_drift
+      - meaningful
+      - reasons
+      - thresholds
