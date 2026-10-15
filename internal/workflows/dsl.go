@@ -298,6 +298,29 @@ func validateControlFlow(d DSL, ids map[string]bool) []ValidationError {
 			if v, present := configNumber(n.Config, "poll_interval_ms"); present && v <= 0 {
 				errs = append(errs, ValidationError{Code: "missing_config", Message: "wait_until node config.poll_interval_ms must be > 0", NodeID: n.ID})
 			}
+		case NodeParallel:
+			// Issue #110: parallel nodes validate their aggregation strategy
+			// and concurrency override; the fan-out branch set is computed
+			// from the edges at run time (nothing to check statically beyond
+			// the numeric/enum ranges here).
+			if v, present := configNumber(n.Config, "max_concurrency"); present && v < 1 {
+				errs = append(errs, ValidationError{Code: "missing_config", Message: "parallel node config.max_concurrency must be >= 1", NodeID: n.ID})
+			}
+			if v, present := configNumber(n.Config, "branch_timeout_seconds"); present && v <= 0 {
+				errs = append(errs, ValidationError{Code: "missing_config", Message: "parallel node config.branch_timeout_seconds must be > 0", NodeID: n.ID})
+			}
+			if raw, present := n.Config["strategy"]; present {
+				s, ok := raw.(string)
+				if !ok {
+					errs = append(errs, ValidationError{Code: "invalid_strategy", Message: "parallel node config.strategy must be a string", NodeID: n.ID})
+				} else {
+					switch AggregationStrategy(strings.ToLower(strings.TrimSpace(s))) {
+					case ParallelAggAll, ParallelAggAny, ParallelAggRace, ParallelAggMajority:
+					default:
+						errs = append(errs, ValidationError{Code: "invalid_strategy", Message: fmt.Sprintf("parallel node config.strategy %q is not one of all, any, race, majority", s), NodeID: n.ID})
+					}
+				}
+			}
 		}
 	}
 	return errs
