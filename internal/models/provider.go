@@ -58,6 +58,12 @@ type CompletionRequest struct {
 	// #112); nil means the router's default policy and candidate set apply.
 	// Non-routers ignore it.
 	Routing *RoutingConfig
+	// WantJSON asks (advisory, issue #128) for a JSON response: the OpenAI
+	// provider negotiates response_format=json_object when the resolved wire
+	// capabilities say the model supports it, falls back to a prompt-only
+	// retry when the provider rejects the parameter, and repairs the returned
+	// payload. Other providers ignore it.
+	WantJSON bool
 }
 
 // CompletionResponse is the vendor-agnostic completion output.
@@ -65,9 +71,15 @@ type CompletionResponse struct {
 	Text  string
 	Model string
 	Usage Usage
+	// Reasoning carries model "thinking" content extracted by the resilience
+	// layer (issue #128) when the response wrapped it in reasoning tags
+	// (<reasoning>/<thinking>/<think>); empty otherwise. Providers that
+	// report reasoning natively may populate it directly.
+	Reasoning string
 	// Metadata carries optional observability notes (routing decision keys
-	// MetaRouting*, resilience fallbacks). Providers may leave it nil; it is
-	// never required to interpret a response.
+	// MetaRouting*, resilience fallbacks MetaJSONFallback/MetaJSONRepaired/
+	// MetaTruncationRetry/MetaReasoningStripped). Providers may leave it nil;
+	// it is never required to interpret a response.
 	Metadata map[string]string
 }
 
