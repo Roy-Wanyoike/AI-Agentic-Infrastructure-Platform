@@ -19,6 +19,7 @@ import (
 	"agentos/internal/billing"
 	"agentos/internal/config"
 	"agentos/internal/database"
+	"agentos/internal/events"
 	"agentos/internal/logger"
 	"agentos/internal/models"
 	"agentos/internal/observability"
@@ -167,10 +168,20 @@ func main() {
 	// process-local and is unit-tested, not exposed over HTTP today.
 	metricsSvc := observability.NewMetrics()
 	runsService.SetMetrics(metricsSvc)
+	// issue #107: runner-wide runtime configuration (conversation history +
+	// token budget) from the AGENTOS_RUNTIME_* environment variables — safe
+	// defaults when unset — and the best-effort run lifecycle event seam
+	// (run.cancelled, run.token_budget_exceeded; NoopPublisher when
+	// AGENTOS_NATS_URL is unset). Both ride on the per-org runners below
+	// too, the path tasks actually execute on.
+	runtimeCfg := runtime.RuntimeConfigFromEnv()
+	eventPub := events.NewFromEnv()
 	runner := runtime.NewRunnerWithOptions(agentsvc, registry,
 		runtime.WithProvider(provider),
 		runtime.WithStepRecorder(stepRecorderAdapter(runsService, agentsvc)),
 		runtime.WithMetrics(metricsSvc),
+		runtime.WithRuntimeConfig(runtimeCfg),
+		runtime.WithEventPublisher(eventPub),
 	)
 	// wave-3 3-c: durable workflow recovery. One startup pass, then a sweep
 	// every DefaultRecoveryInterval (1m). The pass times out runs past their
@@ -290,6 +301,11 @@ func main() {
 	// seam (durable when a DSN is configured; nil = disabled in-memory mode).
 	orgRunners.setAgentKeyAudit(workerAudit)
 	runner.SetAgentKeyAudit(workerAudit)
+	// issue #107: the per-org runners share the runtime configuration and
+	// the event seam with the base runner (call before any task is
+	// consumed).
+	orgRunners.setRuntimeConfig(runtimeCfg)
+	orgRunners.setEventPublisher(eventPub)
 	recoveryCtx, recoveryStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer recoveryStop()
 	go func() {
@@ -420,6 +436,17 @@ func main() {
 
 	logr.Info("agentos worker starting", "port", cfg.Worker.Port, "env", cfg.Env)
 
+	// issue #107: graceful shutdown. The first SIGTERM/SIGINT ends task
+	// consumption, refuses new runs (runtime.ErrShuttingDown) and drains
+	// the in-flight runs for up to AGENTOS_WORKER_GRACE_SECONDS (default
+	// 10s) before exiting. A draining run is never aborted mid-step: the
+	// runtime completes its current step and records the partial results;
+	// the drain wait simply bounds how long the process sticks around.
+	grace := runtime.ShutdownGraceFromEnv()
+	logr.Info("worker shutdown grace configured", "seconds", int(grace.Seconds()), "env", runtime.EnvShutdownGrace)
+	sigCtx, sigStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer sigStop()
+
 	// If AGENTOS_API_PULL=true, poll the API for tasks (development pull model)
 	if os.Getenv("AGENTOS_API_PULL") == "true" {
 		apiBase := os.Getenv("AGENTOS_API")
@@ -428,6 +455,12 @@ func main() {
 		}
 		apiKey := os.Getenv("AGENTOS_API_KEY")
 		for {
+			select {
+			case <-sigCtx.Done():
+				drainRunners(runner, orgRunners, grace, logr)
+				return
+			default:
+			}
 			// call pull endpoint
 			req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/queue/pull", apiBase), nil)
 			if apiKey != "" {
@@ -469,9 +502,20 @@ func main() {
 	}
 
 	for {
+		select {
+		case <-sigCtx.Done():
+			drainRunners(runner, orgRunners, grace, logr)
+			return
+		default:
+		}
 		if err := worker.ProcessNext(); err != nil {
 			logr.Warn("worker process failed", "error", err)
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-sigCtx.Done():
+			drainRunners(runner, orgRunners, grace, logr)
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 }

@@ -36,8 +36,8 @@ func TestEventTypeConstants(t *testing.T) {
 			t.Errorf("event constant mismatch: got %q want %q", constant, want)
 		}
 	}
-	if got := len(AllEventTypes()); got != 13 {
-		t.Errorf("expected 13 event types, got %d", got)
+	if got := len(AllEventTypes()); got != 14 { // 13 pinned + issue #107 run.token_budget_exceeded
+		t.Errorf("expected 14 event types, got %d", got)
 	}
 	if !IsValidEventType("run.failed") || IsValidEventType("execution.completed") {
 		t.Error("IsValidEventType should accept exactly the pinned contract types")

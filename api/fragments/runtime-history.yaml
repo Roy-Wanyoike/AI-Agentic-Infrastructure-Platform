@@ -1,0 +1,234 @@
+# AgentOS API — OpenAPI 3.1 fragment for the agent runtime configuration
+# document (issue #107: conversation history management, token budgets and
+# graceful shutdown).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). This is a SCHEMA fragment, not a path fragment: issue #107 adds
+# no HTTP endpoints. It documents the per-agent `runtime_config` document the
+# agent runtime resolves for every run (internal/runtime RuntimeConfig:
+# WithAgentConfigSource / ParseRuntimeConfig) and the run lifecycle events the
+# runtime emits through the platform event bus (run.cancelled,
+# run.token_budget_exceeded). No existing path or schema in the base spec
+# changes shape — run creation/execution contracts are untouched.
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/runtime-history.yaml`
+# passes. Components carry the track-unique `Runtime*` prefix to avoid
+# collisions.
+#
+# Semantics (mirrored in internal/runtime/history.go, budget.go, shutdown.go):
+#   * conversation_history truncates the prompt sent to the provider BEFORE
+#     each model call; the FULL conversation is always retained for the run
+#     record. Estimation is the documented ~4-chars-per-token heuristic
+#     (chars/4, rounded up) — budgeting only; billing always uses the
+#     provider-reported usage.
+#     - sliding_window (default): leading system messages are preserved
+#       verbatim, then the most recent turns that fit the remaining budget.
+#     - summarize_older: recent window kept, every dropped older turn is
+#       compressed into one synthetic summary message (mechanical digest by
+#       default; a model-backed summarizer may be injected and its failures
+#       degrade to the mechanical summary).
+#     - drop_oldest: pure newest-first fit with NO system-preservation nuance.
+#     - max_tokens 0 applies the default (8000); a negative value disables
+#       history management entirely.
+#     - invariants: the newest message is always kept (never an empty
+#       conversation); the stored history is never mutated; the view is a
+#       deterministic function of (messages, budget, strategy, summarizer).
+#   * token_budget enforces the CUMULATIVE provider-reported usage of ONE run
+#     across all its steps (post-response accounting: a single call can
+#     overshoot before the stop lands). All limits default to 0 = unlimited.
+#     Crossing alert_threshold (default 0.8) of any configured limit records
+#     a one-time "budget" warn annotation step on the run timeline; exceeding
+#     any limit hard-stops the run with the typed outcome
+#     `token_budget_exceeded: <dimension>_tokens used=N limit=M` on run.error,
+#     a failed "budget" annotation step carrying the snapshot, and a
+#     run.token_budget_exceeded event. The run status mapping is UNCHANGED
+#     (FAILED through the existing failure path — no new run status).
+#   * graceful shutdown: on caller cancellation the run lets its current step
+#     complete, records the partial results plus a "cancelled" marker step,
+#     emits run.cancelled (best-effort, tenant-scoped) and unwinds with the
+#     typed `runtime: run cancelled` outcome (errors.Is-classifiable; run
+#     status stays FAILED). The worker refuses new runs on SIGTERM and drains
+#     in-flight runs for AGENTOS_WORKER_GRACE_SECONDS (default 10) before
+#     exit. Runner-wide defaults come from the AGENTOS_RUNTIME_* environment
+#     variables (AGENTOS_RUNTIME_HISTORY_STRATEGY,
+#     AGENTOS_RUNTIME_HISTORY_MAX_TOKENS, AGENTOS_RUNTIME_BUDGET_MAX_TOTAL_TOKENS,
+#     AGENTOS_RUNTIME_BUDGET_MAX_PROMPT_TOKENS,
+#     AGENTOS_RUNTIME_BUDGET_MAX_COMPLETION_TOKENS,
+#     AGENTOS_RUNTIME_BUDGET_ALERT_THRESHOLD).
+#
+# SECURITY: this fragment introduces no credential surface — runtime_config
+# carries tuning knobs only (no secrets, no prompt content). The security
+# schemes block is reproduced verbatim from api/fragments/apikeys.yaml so the
+# fragment stays standalone-valid under the same conventions as every other
+# fragment; any future endpoint that surfaces this document MUST reuse these
+# schemes and the x-required-permission convention (no new permission enum).
+openapi: 3.1.0
+info:
+  title: 'AgentOS — runtime configuration: conversation history & token budgets (issue #107 fragment)'
+  version: 3.0.0-fragment
+description: |
+  Standalone schema fragment for the per-agent runtime configuration added by
+  issue #107. The document is resolved by the agent runtime for every run:
+  runner-wide defaults (AGENTOS_RUNTIME_* environment variables) overlaid with
+  the agent's own runtime_config (parsed by the runtime; an invalid document
+  falls back to the defaults — bad config never breaks a run). Conversation
+  history bounds the PROMPT built before each model call; the token budget
+  enforces the CUMULATIVE provider-reported usage AFTER each call; graceful
+  shutdown completes the current step, records partial results and emits
+  run.cancelled when a run is cancelled. No HTTP surface changes in this
+  issue: the schemas below are the contract for the runtime_config document
+  and for the budget snapshot carried on "budget" annotation steps of the run
+  timeline.
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    RuntimeConfigDocument:
+      type: object
+      description: |
+        Per-agent runtime configuration document (issue #107). Unknown fields
+        are rejected by the runtime's parser (strict validation of the two
+        sections below); unset fields keep the safe defaults. The document
+        contains no secrets and no prompt content — tuning knobs only.
+      properties:
+        conversation_history:
+          $ref: '#/components/schemas/RuntimeConversationHistoryConfig'
+        token_budget:
+          $ref: '#/components/schemas/RuntimeTokenBudgetConfig'
+    RuntimeConversationHistoryConfig:
+      type: object
+      description: |
+        Bounds the prompt built for each model call (the FULL conversation is
+        always retained on the run record). Estimation uses the documented
+        ~4-characters-per-token heuristic (chars/4, rounded up); it budgets
+        prompts only — billing and enforcement always use the
+        provider-reported usage.
+      properties:
+        strategy:
+          type: string
+          enum:
+          - sliding_window
+          - summarize_older
+          - drop_oldest
+          default: sliding_window
+          description: |
+            sliding_window (default): leading system messages are preserved
+            verbatim and the remaining budget is spent on the most recent
+            turns. summarize_older: the recent window is kept and every
+            dropped older turn is compressed into one synthetic summary
+            message placed after the system block (mechanical digest by
+            default; a model-backed summarizer may be injected and its
+            failures degrade to the mechanical summary). drop_oldest: pure
+            newest-first fit with NO system-preservation nuance — an inline
+            system message is dropped like any other turn (the runtime passes
+            its system prompt separately, so this only matters for histories
+            that carry system messages inline).
+        max_tokens:
+          type: integer
+          default: 8000
+          description: |
+            Prompt token budget. 0 applies the default (8000); a NEGATIVE
+            value disables history management entirely (the full history is
+            sent — for agents that manage context themselves). Guaranteed
+            invariants for every strategy: the newest message is always kept
+            even when it alone exceeds the whole budget (truncation never
+            makes a run contextless), the stored history is never mutated and
+            the resulting view is deterministic.
+      required:
+      - strategy
+      - max_tokens
+    RuntimeTokenBudgetConfig:
+      type: object
+      description: |
+        Per-run cumulative token enforcement across ALL steps of one run
+        (provider-reported usage, accounted post-response: a single call can
+        overshoot before the stop lands). All limits default to 0 = unlimited
+        (the safe default: no budget configured means no tracking and
+        byte-identical legacy behavior).
+      properties:
+        max_total_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Cumulative total-token cap for one run (0 = unlimited).
+        max_prompt_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Cumulative prompt-token cap for one run (0 = unlimited).
+        max_completion_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Cumulative completion-token cap for one run (0 = unlimited).
+        alert_threshold:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.8
+          description: |
+            Fractional crossing (of any configured limit) that records the
+            ONE-TIME warn annotation step on the run timeline. 0 applies the
+            default (0.8); values above 1 are rejected by the parser.
+      required:
+      - max_total_tokens
+      - max_prompt_tokens
+      - max_completion_tokens
+      - alert_threshold
+    RuntimeBudgetSnapshot:
+      type: object
+      description: |
+        Point-in-time budget state carried as JSON on the "budget" annotation
+        steps of the run timeline (phase warn = one-time threshold warning,
+        phase exceeded = the hard stop). Persisted with the run trace so
+        budget decisions are auditable.
+      properties:
+        phase:
+          type: string
+          enum:
+          - ok
+          - warn
+          - exceeded
+        prompt_tokens:
+          type: integer
+          description: Cumulative prompt tokens at the moment of the record.
+        completion_tokens:
+          type: integer
+          description: Cumulative completion tokens at the moment of the record.
+        total_tokens:
+          type: integer
+          description: Cumulative total tokens at the moment of the record.
+        max_total_tokens:
+          type: integer
+        max_prompt_tokens:
+          type: integer
+        max_completion_tokens:
+          type: integer
+        alert_threshold:
+          type: number
+          format: double
+        limit:
+          type: string
+          enum:
+          - total
+          - prompt
+          - completion
+          description: The dimension that tripped; empty on warn snapshots that crossed no threshold.
+      required:
+      - phase
+      - prompt_tokens
+      - completion_tokens
+      - total_tokens

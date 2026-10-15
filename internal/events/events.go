@@ -39,6 +39,10 @@ const (
 	EventDeploymentCompleted = "deployment.completed"
 	EventDeploymentFailed    = "deployment.failed"
 	EventWebhookReceived     = "webhook.received"
+	// EventRunTokenBudgetExceeded is the additive issue #107 event type:
+	// published by the agent runtime when a run hard-stops on its
+	// configured per-run token budget (internal/runtime/budget.go).
+	EventRunTokenBudgetExceeded = "run.token_budget_exceeded"
 )
 
 // AllEventTypes lists every valid event type (used for validation and by the
@@ -58,6 +62,7 @@ func AllEventTypes() []string {
 		EventDeploymentCompleted,
 		EventDeploymentFailed,
 		EventWebhookReceived,
+		EventRunTokenBudgetExceeded,
 	}
 }
 
