@@ -521,6 +521,7 @@ func (a *app) routes() http.Handler {
 	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #108: agent-to-agent orchestration executor
 	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                     // issue #109: workflow DSL validation endpoint
 	registerRunLifecycleRoutes(apiMux, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)           // issue #115: run pause/resume/cancel
+	registerRunTraceRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)                           // issue #114: run trace exposure
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks

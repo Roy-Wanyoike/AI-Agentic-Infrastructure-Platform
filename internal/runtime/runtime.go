@@ -510,6 +510,15 @@ func (r *Runner) RunWithID(ctx context.Context, runID, agentID, input string) (*
 		UpdatedAt: started,
 	}
 
+	// Issue #114: execution trace hierarchy root (run span + agent span).
+	// Disabled -> context unchanged and a nil trace, so the fast path
+	// stays byte-identical; enabled -> the loop runs under the run trace
+	// and the spans close with the terminal run status (deferred end runs
+	// after the run fields are final).
+	runCtx, tr := r.startRunTrace(ctx, run, agent)
+	ctx = runCtx
+	defer tr.end(run)
+
 	output, err := r.execute(ctx, run, agent, input)
 	run.UpdatedAt = time.Now().UTC()
 	if err != nil {
@@ -613,6 +622,9 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 	}
 	var last lastCall
 	var lastRepeat int
+	// Issue #114: the tenant id stamped on the execution context rides
+	// on every execution span (agentos.org.id); resolved once per run.
+	orgID := runScopeOrgID(ctx)
 
 	for stepIndex := resumeStart + 1; stepIndex <= r.maxSteps; stepIndex++ {
 		if err := ctx.Err(); err != nil {
@@ -625,13 +637,20 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 		}
 		run.Steps = stepIndex
 
+		// Issue #114: per-step span; the model/tool spans hang off it.
+		stepCtx, st := r.startStepTrace(ctx, orgID, agent.ID, run.ID, stepIndex)
+
 		promptView := history.Prompt(ctx)
 		callStart := time.Now()
-		resp, err := r.provider.Complete(ctx, models.CompletionRequest{
+		modelCtx, modelSpan := r.startModelTrace(stepCtx, orgID, agent.ID, run.ID, agent.Model)
+		resp, err := r.provider.Complete(modelCtx, models.CompletionRequest{
 			System:   systemPrompt,
 			Messages: promptView,
 			Model:    agent.Model,
 		})
+		// Issue #114: usage + cost land on the model span right after the
+		// call (mirrors the runs ledger pricing); nil-safe when disabled.
+		r.endModelTrace(modelSpan, agent.Model, resp, err)
 		modelStep := Step{
 			Index:      stepIndex,
 			Type:       StepTypeModel,
@@ -658,14 +677,17 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			// Never auto-retry here: transient handling belongs to the
 			// provider/router layer. Surface typed causes.
 			if errors.Is(err, context.DeadlineExceeded) {
+				st.end(err)
 				return "", fmt.Errorf("%w: %v", ErrMaxRuntimeExceeded, err)
 			}
 			// Issue #107: a caller cancellation fails the CURRENT step
 			// (recorded above) and then unwinds gracefully — partial
 			// results marker + run.cancelled event + typed outcome.
 			if isCancellation(err) {
+				st.end(err)
 				return "", r.unwindCancelled(ctx, run, err)
 			}
+			st.end(err)
 			return "", fmt.Errorf("runtime: model call failed: %w", err)
 		}
 
@@ -685,6 +707,7 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 		if bstate.Exceeded != nil {
 			r.record(ctx, run.ID, budgetAnnotationStep(stepIndex, bstate.Snapshot, StepFailed, bstate.Exceeded.Error()))
 			r.emitRunEvent(ctx, events.EventRunTokenBudgetExceeded, run.ID, budgetEventPayload(run, bstate.Exceeded))
+			st.end(bstate.Exceeded)
 			return "", bstate.Exceeded
 		}
 
@@ -701,6 +724,7 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 				Messages:  history.Messages,
 				Usage:     run.Tokens,
 			})
+			st.end(nil)      // final answer: close the step span
 			return text, nil // final answer
 		}
 
@@ -713,10 +737,16 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			last = lastCall{tool: toolName, args: argsKey}
 		}
 		if lastRepeat >= MaxLoopRepeats {
-			return "", fmt.Errorf("%w: tool %q called identically %d times", ErrLoopDetected, toolName, lastRepeat)
+			loopErr := fmt.Errorf("%w: tool %q called identically %d times", ErrLoopDetected, toolName, lastRepeat)
+			st.end(loopErr)
+			return "", loopErr
 		}
 
-		observation, toolErr := r.executeTool(ctx, toolName, toolArgs)
+		// Issue #114: the tool invocation is a child of the step span
+		// (governance checks included) and carries agentos.tool.name.
+		toolCtx, toolSpan := r.startToolTrace(stepCtx, orgID, agent.ID, run.ID, toolName)
+		observation, toolErr := r.executeTool(toolCtx, toolName, toolArgs)
+		r.endToolTrace(toolSpan, toolErr)
 		toolStep := Step{
 			Index:      stepIndex,
 			Type:       StepTypeTool,
@@ -756,6 +786,7 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 		// the current step completed above, so unwind gracefully now
 		// instead of feeding the observation back into a dead run.
 		if cerr := ctx.Err(); cerr != nil && isCancellation(cerr) {
+			st.end(cerr)
 			return "", r.unwindCancelled(ctx, run, cerr)
 		}
 
@@ -773,6 +804,7 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			Messages:  history.Messages,
 			Usage:     run.Tokens,
 		})
+		st.end(nil)
 	}
 	return "", fmt.Errorf("%w: budget was %d steps", ErrMaxStepsExceeded, r.maxSteps)
 }
