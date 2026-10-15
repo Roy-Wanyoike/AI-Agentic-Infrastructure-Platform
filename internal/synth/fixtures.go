@@ -20,8 +20,10 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -53,14 +55,7 @@ func ComposeTeardown(ts ...Teardown) Teardown {
 				errs = append(errs, fmt.Errorf("teardown[%d]: %w", i, err))
 			}
 		}
-		switch len(errs) {
-		case 0:
-			return nil
-		case 1:
-			return errs[0]
-		default:
-			return fmt.Errorf("%w: %d teardown failures", ErrInvalid, len(errs))
-		}
+		return errors.Join(errs...)
 	})
 }
 
@@ -196,6 +191,12 @@ func (g *SyntheticRecordGuards) Register(kind, name string, t Teardown) error {
 	if t == nil {
 		return fmt.Errorf("%w: teardown for %s must not be nil", ErrInvalid, name)
 	}
+	if tf, ok := t.(TeardownFunc); ok && tf == nil {
+		return fmt.Errorf("%w: teardown for %s must not be a nil function", ErrInvalid, name)
+	}
+	if !strings.HasPrefix(name, "synth-"+g.persona+"-") {
+		return fmt.Errorf("%w: record %s is not namespaced under persona %q", ErrInvalid, name, g.persona)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if _, pending := g.registry[name]; pending {
@@ -215,7 +216,20 @@ func (g *SyntheticRecordGuards) Register(kind, name string, t Teardown) error {
 
 // RegisterFunc is Register with a function teardown.
 func (g *SyntheticRecordGuards) RegisterFunc(kind, name string, fn func(ctx context.Context) error) error {
+	if fn == nil {
+		return fmt.Errorf("%w: teardown function for %s must not be nil", ErrInvalid, name)
+	}
 	return g.Register(kind, name, TeardownFunc(fn))
+}
+
+// TeardownAllFunc adapts the guards' explicit TeardownAll into the Teardown
+// interface so a FixtureSet can hand back "tear down everything registered in
+// this setup" as its returned Teardown.
+func (g *SyntheticRecordGuards) TeardownAllFunc() Teardown {
+	return TeardownFunc(func(ctx context.Context) error {
+		_, err := g.TeardownAll(ctx)
+		return err
+	})
 }
 
 // Pending returns the records still awaiting teardown, oldest registration
@@ -306,12 +320,5 @@ func (g *SyntheticRecordGuards) TeardownAll(ctx context.Context) ([]TeardownAudi
 	g.order = kept
 	g.mu.Unlock()
 
-	switch len(errs) {
-	case 0:
-		return audit, nil
-	case 1:
-		return audit, errs[0]
-	default:
-		return audit, fmt.Errorf("%w: %d/%d teardowns failed", ErrInvalid, len(errs), len(jobs))
-	}
+	return audit, errors.Join(errs...)
 }
