@@ -7986,8 +7986,1497 @@ paths:
         "403": { $ref: "#/components/responses/ResidencyViolation" }
         "500": { $ref: "#/components/responses/ResidencyInternal" }
 
+# ---- wave-10 fragment: agents-portability.yaml (paths) ----
+  /agents/{id}/export:
+    get:
+      operationId: exportAgent
+      tags:
+      - agents
+      summary: Export one agent as a portable configuration-only bundle (issue #122)
+      description: |
+        Read operation (agents.read — every role, exactly the GET /agents/{id}
+        grant). Returns the portable ExportBundle for one agent of the
+        caller's tenant: schema_version "1", the configuration (name,
+        description, instructions, model) and the tool-name list. Field order
+        is deterministic; the bundle structurally CANNOT carry the agent id,
+        organization id, lifecycle status, version ids, timestamps, API keys
+        or secret values — only configuration and tool registry NAMES.
+        Cross-organization and unknown agents answer 404 with no existence
+        leak. Success writes an `agent.exported` audit entry (ids only).
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/PortAgentID'
+      responses:
+        '200':
+          description: The portable bundle (configuration only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentExportBundle'
+        '401':
+          $ref: '#/components/responses/PortUnauthorized'
+        '403':
+          $ref: '#/components/responses/PortForbidden'
+        '404':
+          description: Unknown agent or agent of another organization (AGENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+  /agents/import:
+    post:
+      operationId: importAgent
+      tags:
+      - agents
+      summary: Import a bundle as a NEW agent with fresh identity (issue #122)
+      description: |
+        Write operation (agents.write, exactly OWNER/ADMIN). Validates the
+        bundle and creates a NEW agent in the CALLER's organization. The
+        client is NEVER trusted for identity: the typed decode drops unknown
+        payload keys (any id, organization_id, created_at or status smuggled
+        into the bundle is ignored) and the server assigns a fresh agent id,
+        the caller's organization, fresh created_at/updated_at, status DRAFT
+        and a fresh initial v1 version.
+
+        Validation (fail-closed, 422 VALIDATION_ERROR with the typed code in
+        the message): schema_version must be "1"; name/instructions/model are
+        required; instructions are capped at 65536 bytes (INSTRUCTIONS_TOO_LARGE);
+        the model must be a KNOWN model id (resolved case-insensitively from
+        the platform model catalog — vendor-prefixed ids match their bare
+        suffix, UNKNOWN_MODEL); every tool name must exist in the platform
+        tool catalog (UNKNOWN_TOOL). Rejected imports leave no agent behind
+        and audit nothing. Success writes an `agent.imported` audit entry and
+        returns the created agent in the same representation as
+        GET /agents/{id} (status DRAFT — walk the issue #106 lifecycle
+        documented in api/fragments/agents-lifecycle.yaml before it can
+        accept runs).
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentExportBundle'
+            example:
+              schema_version: '1'
+              exported_at: '2026-01-01T00:00:00Z'
+              agent:
+                name: Support Agent
+                description: front-line helper
+                instructions: be helpful
+                model: gpt-4o-mini
+                tools: []
+      responses:
+        '201':
+          description: Agent imported with fresh identity in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortAgent'
+        '400':
+          description: Malformed or missing JSON body (INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/PortUnauthorized'
+        '403':
+          $ref: '#/components/responses/PortForbidden'
+        '422':
+          description: |
+            Validation error (VALIDATION_ERROR): unsupported schema_version,
+            missing name/instructions/model, oversized instructions, unknown
+            model or unknown tool. The message embeds the typed code
+            (BUNDLE_SCHEMA_VERSION, NAME_REQUIRED, INSTRUCTIONS_REQUIRED,
+            INSTRUCTIONS_TOO_LARGE, MODEL_REQUIRED, UNKNOWN_MODEL,
+            UNKNOWN_TOOL). No agent is created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+  /agents/{id}/clone:
+    post:
+      operationId: cloneAgent
+      tags:
+      - agents
+      summary: Deep-copy one agent within the SAME organization (issue #122)
+      description: |
+        Write operation (agents.write, exactly OWNER/ADMIN). Deep-copies one
+        agent of the caller's tenant: a new agent with a fresh id, the name
+        suffixed "-copy", the copied description/instructions/model, fresh
+        timestamps, status reset to DRAFT and a fresh initial v1 version. The
+        request body is optional and ignored — there is deliberately no
+        client-controlled target tenant or name. The source agent is never
+        mutated (an ACTIVE source stays ACTIVE). Cross-organization clone
+        attempts answer 404 with no existence leak (the source is resolved
+        through the org-scoped lookup). Success writes an `agent.cloned`
+        audit entry carrying the clone id and the source id.
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/PortAgentID'
+      responses:
+        '201':
+          description: Clone created (DRAFT, "-copy" name suffix) in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortAgent'
+        '401':
+          $ref: '#/components/responses/PortUnauthorized'
+        '403':
+          $ref: '#/components/responses/PortForbidden'
+        '404':
+          description: Unknown source agent or agent of another organization (AGENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+
+# ---- wave-10 fragment: orchestration-exec.yaml (paths) ----
+  /orchestration/delegate:
+    post:
+      operationId: delegateOrchestrationTask
+      summary: Delegate a subtask from one agent to another (async)
+      description: >
+        Creates the delegation ledger record, files the approval when
+        require_approval is set, creates the child run and returns the run ids
+        immediately (202 pending). Without require_approval the child run
+        executes in the background and the outcome is delivered to the
+        delegator's inbox as a response message. Failures that occur before
+        any child run exists are 422/409/500 with the failed delegation_id
+        kept traceable in the ledger.
+      x-required-permission: orchestration.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DelegateRequest" }
+      responses:
+        "202":
+          description: >
+            Accepted. status is "pending" (execution queued) or
+            "awaiting_approval" (parked at the approval gate; approval_id set,
+            never executed until approved).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DelegateAccepted" }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+        "409":
+          description: >
+            APPROVAL_UNAVAILABLE — require_approval was set but the approval
+            service is unwired (fail-closed; no child run created).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DelegationFailedError" }
+        "422": { $ref: "#/components/responses/OrchestrationValidation" }
+        "500":
+          description: >
+            DELEGATION_FAILED — a downstream seam (child run creation, inbox
+            registration) failed; the failed record stays in the ledger and
+            its id is returned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DelegationFailedError" }
+  /orchestration/messages:
+    post:
+      operationId: sendOrchestrationMessage
+      summary: Send one point-to-point agent-to-agent message
+      description: >
+        Delivers the message to the target agent's inbox in the caller's
+        organization. Synchronous and non-blocking: an unknown target inbox is
+        404, a saturated inbox is 409 INBOX_FULL (the caller may retry),
+        success is 202 with the delivery confirmation.
+      x-required-permission: orchestration.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MessageSendRequest" }
+      responses:
+        "202":
+          description: Delivered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivered: { type: boolean, enum: [true] }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+        "404": { $ref: "#/components/responses/OrchestrationNotFound" }
+        "409":
+          description: INBOX_FULL — the target inbox is saturated; nothing was delivered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrchestrationError" }
+        "422": { $ref: "#/components/responses/OrchestrationValidation" }
+  /orchestration/agents/{id}/messages:
+    get:
+      operationId: listOrchestrationAgentMessages
+      summary: Read an agent's retained inbox (newest first)
+      description: >
+        Returns the agent's retained inbox for the caller's organization
+        (newest first, optionally limited). The same agent id in another
+        organization resolves to a different (possibly absent) inbox.
+      x-required-permission: orchestration.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: The agent id (org-scoped by the caller's claims).
+      - name: limit
+        in: query
+        required: false
+        schema: { type: integer, minimum: 0 }
+        description: Maximum number of retained messages to return (0 / omitted = all).
+      responses:
+        "200":
+          description: The retained inbox (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id: { type: string }
+                  count: { type: integer }
+                  messages:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentMessage" }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+        "404": { $ref: "#/components/responses/OrchestrationNotFound" }
+        "422": { $ref: "#/components/responses/OrchestrationValidation" }
+  /orchestration/supervisor/run:
+    post:
+      operationId: runOrchestrationSupervisorTask
+      summary: Route one task through the supervisor to a worker agent
+      description: >
+        Selects a worker (capability_match strategy: a task without
+        required_capability routes in configuration order; with one, only
+        capable workers are candidates) and delegates through the delegation
+        protocol. Completed results are 200; approval-parked results are 202;
+        routing exhaustion surfaces the typed supervisor errors. On
+        ALL_WORKERS_FAILED the response carries the per-attempt trace
+        (worker_agent_id, delegation_id, error) — every attempt stays in the
+        delegation ledger.
+      x-required-permission: orchestration.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SupervisorRunRequest" }
+      responses:
+        "200":
+          description: The delegated task completed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupervisorRunResult" }
+        "202":
+          description: The supervised delegation was parked at the approval gate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupervisorRunResult" }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+        "409":
+          description: >
+            NO_WORKERS (no worker routing table is configured for this
+            process) or NO_CAPABLE_WORKER (no worker declares the task's
+            required_capability).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrchestrationError" }
+        "422": { $ref: "#/components/responses/OrchestrationValidation" }
+        "502":
+          description: ALL_WORKERS_FAILED — every candidate attempt failed; attempts carries the trace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupervisorFailedError" }
+  /orchestration/delegations:
+    get:
+      operationId: listOrchestrationDelegations
+      summary: Read the organization's delegation ledger (chain trace)
+      description: >
+        Chronological delegation records for the caller's organization.
+        Optional run_id filter matches records whose parent OR child run
+        equals the id (the delegation chain visible from one run).
+        Cross-tenant records never appear: the ledger is org-scoped.
+      x-required-permission: orchestration.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: run_id
+        in: query
+        required: false
+        schema: { type: string }
+        description: Filter to delegations whose parent or child run is this run id.
+      responses:
+        "200":
+          description: The delegation ledger (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delegations:
+                    type: array
+                    items: { $ref: "#/components/schemas/DelegationRecord" }
+                  count: { type: integer }
+        "401": { $ref: "#/components/responses/OrchestrationUnauthorized" }
+        "403": { $ref: "#/components/responses/OrchestrationForbidden" }
+
+# ---- wave-10 fragment: workflow-control-flow.yaml (paths) ----
+  /workflows/validate:
+    post:
+      operationId: validateWorkflowDSL
+      summary: Validate an ad-hoc workflow DSL document (stateless, nothing persisted)
+      description: |
+        Pre-save validation (workflows.read, MEMBER+ incl. VIEWER — the
+        operation mutates nothing). The body carries a workflow DSL document,
+        either wrapped ({"dsl": {...}}) or bare ({"nodes": [...], "edges":
+        [...]}). The server runs the full validation rule set: structural
+        rules (non-empty graph, unique node ids, known node types, acyclic
+        graph with the documented loop-back-edge exemption), per-type config
+        requirements, issue #109 control-flow wiring rules (dangling
+        condition/switch branch targets, dangling loop bodies / retry
+        targets, duplicate ownership) and control-flow expression syntax
+        (typed expression errors carry the node id + reason). On success the
+        response is 200 {"valid": true}; otherwise 422 with the typed error
+        list, using the same shape as POST /workflows/create.
+      x-required-permission: workflows.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WfValidateRequest'
+      responses:
+        '200':
+          description: The DSL document passes every validation rule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfValidateSuccess'
+        '400':
+          description: Malformed JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/WfUnauthorized'
+        '403':
+          $ref: '#/components/responses/WfForbidden'
+        '422':
+          description: |
+            Validation failed. The errors list carries one typed entry per
+            rule violation (structural, config, control-flow wiring or
+            expression syntax), each with code, message and — where
+            applicable — the offending node_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfValidateFailure'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WfErrorEnvelope'
+
+# ---- wave-10 fragment: tools-catalog.yaml (paths) ----
+  /tools:
+    get:
+      operationId: listRegisteredTools
+      summary: List the runtime's registered tools (name, description, input schema)
+      description: |
+        Read-only catalog of the agent tool registry. The built-in set is
+        calculator + http_request (issue #18) plus the six issue #111 tools
+        (database_query, search, code_execute, webhook, json_transform,
+        file_storage); anything else registered by the serving process is
+        listed too. Tools without wired operator seams remain listed but
+        fail closed at execution time (e.g. database_query without a
+        connection provider returns an error; webhook with an empty
+        allow-list denies every target). Tool registrations are runtime
+        surface (not tenant data), so the response carries no organization
+        fields; access is still authenticated and RBAC-gated.
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      tags: [Tools]
+      responses:
+        '200':
+          description: The registered tools, sorted by name; each entry carries the tool's input schema when it publishes one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolListResponse'
+        '401': { description: Missing or invalid credentials (see main spec auth responses). }
+        '403': { description: Authenticated but not permitted (agents.read). }
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolCatalogErrorEnvelope'
+
+# ---- wave-10 fragment: embeddings.yaml (paths) ----
+  /knowledge/search:
+    post:
+      operationId: searchKnowledge
+      tags: [Knowledge]
+      summary: Top-k chunk retrieval (keyword | semantic | hybrid)
+      description: |
+        Scores the caller's org-scoped knowledge chunks against the query and
+        returns at most `k` hits (default 5, capped at 50) with citations.
+        The retrieval strategy is selected by `mode`:
+          * keyword — lexical token-overlap leg only (raw lexical scores).
+          * semantic — pgvector cosine leg only over the HNSW-indexed
+            embedding_vec column (raw cosine similarities); requires an
+            embeddings provider, otherwise degrades to keyword.
+          * hybrid (default) — both legs fused with the configured fusion
+            algorithm and weights; chunks hit by both legs rank highest.
+        When the vector leg is unavailable (pgvector not installed, provider
+        offline, embedding/search failure, zero vector matches) semantic and
+        hybrid degrade gracefully to the keyword leg — the response shape is
+        identical either way. Results are deduplicated by chunk id and
+        ordered deterministically (score desc, then chunk id, then ordinal).
+      x-required-permission: agents.read
+      x-contract-permission: knowledge:read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbSearchRequest'
+            example:
+              query: How do budgets roll over at period end?
+              k: 5
+              mode: hybrid
+              weights:
+                keyword_weight: 0.5
+                vector_weight: 0.5
+                fusion: weights
+      responses:
+        '200':
+          description: Top-k chunk hits; empty `results` when nothing matches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbSearchResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/EmbUnauthorized'
+        '403':
+          $ref: '#/components/responses/EmbForbidden'
+        '422':
+          description: Validation failed (query required, unknown mode).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbErrorEnvelope'
+        '500':
+          description: Unexpected server failure (e.g. store unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbErrorEnvelope'
+
+# ---- wave-10 fragment: tracing.yaml (paths) ----
+  /runs/{id}/trace:
+    get:
+      operationId: getRunTrace
+      summary: Get the W3C trace id of a run's distributed execution trace
+      description: |
+        Returns the trace id of the distributed trace that carries the run's
+        execution spans, for lookup in the tracing backend. Requires the
+        runs.read permission (any base role). Answers 404
+        trace_not_available when the run is unknown, foreign-org, or no
+        trace was recorded for it in this process (tracing disabled,
+        registry eviction, cross-process start).
+      x-required-permission: runs.read
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Run id (as returned by POST /runs).
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: The run's trace id (the run exists in the caller's org and a trace was recorded for it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrRunTraceResponse'
+              examples:
+                happy:
+                  summary: A run with a recorded execution trace
+                  value:
+                    run_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                    trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+        '401':
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrErrorEnvelope'
+        '403':
+          description: Authenticated but lacking the runs.read permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrErrorEnvelope'
+        '404':
+          description: Unknown run, foreign-org run, or no trace recorded for it in this process (error.code trace_not_available — identical shape for all three, no existence leak).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrErrorEnvelope'
+
+# ---- wave-10 fragment: run-lifecycle.yaml (paths) ----
+  /runs/{id}/pause:
+    post:
+      operationId: pauseRun
+      tags: [run-control]
+      summary: Pause a run (idempotent)
+      description: |
+        Transitions a pending/queued/running/waiting_approval run to
+        `paused` (RUNNING first parks the in-flight executor at its current
+        step boundary; partial results and checkpoints are preserved).
+        Pausing an already-paused run is an idempotent no-op success;
+        pausing a completed/failed/cancelled/timed-out run is a 409
+        TransitionError. A resumed run continues from the latest durable
+        checkpoint (issue #115 checkpointing).
+      x-required-permission: runs.control
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/RunLifecycleRunID'
+      responses:
+        '200':
+          description: The updated run (status `paused`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunLifecycleRunResponse'
+        '401': { $ref: '#/components/responses/RunLifecycleUnauthorized' }
+        '403': { $ref: '#/components/responses/RunLifecycleForbidden' }
+        '404': { $ref: '#/components/responses/RunLifecycleNotFound' }
+        '409':
+          description: Illegal transition (terminal or cancelling run) or a lost optimistic race.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+                  - $ref: '#/components/schemas/RunLifecycleTransitionError'
+        '500': { $ref: '#/components/responses/RunLifecycleServerError' }
+  /runs/{id}/resume:
+    post:
+      operationId: resumeRun
+      tags: [run-control]
+      summary: Resume a paused run (idempotent)
+      description: |
+        Transitions a paused run back to `queued` and re-enqueues the
+        agent.run task — the queue is the only execution trigger — so the
+        run continues from its latest checkpoint. Only `paused` runs can be
+        resumed: resuming an already-queued/running run is an idempotent
+        no-op success, while runs in any other state (including
+        waiting_approval — the approval decision is the only gate out) are
+        a 409 TransitionError.
+      x-required-permission: runs.control
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/RunLifecycleRunID'
+      responses:
+        '200':
+          description: The updated run (status `queued`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunLifecycleRunResponse'
+        '401': { $ref: '#/components/responses/RunLifecycleUnauthorized' }
+        '403': { $ref: '#/components/responses/RunLifecycleForbidden' }
+        '404': { $ref: '#/components/responses/RunLifecycleNotFound' }
+        '409':
+          description: Illegal transition (not resumable) or a lost optimistic race.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+                  - $ref: '#/components/schemas/RunLifecycleTransitionError'
+        '500': { $ref: '#/components/responses/RunLifecycleServerError' }
+  /runs/{id}/cancel:
+    post:
+      operationId: cancelRun
+      tags: [run-control]
+      summary: Cancel a run (idempotent, two-phase for in-flight runs)
+      description: |
+        Cancels a run. A run that is currently RUNNING first moves to
+        `cancelling` — the graceful-unwind phase: the executor finishes the
+        current step and records the partial results, then confirms
+        `cancelled` — so the 200 response for an in-flight run reports
+        status `cancelling`. Queued/pending runs cancel directly;
+        re-cancelling a cancelled (or already-cancelling) run is an
+        idempotent no-op success; cancelling a completed/failed/timed-out
+        run is a 409 TransitionError.
+      x-required-permission: runs.control
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/RunLifecycleRunID'
+      responses:
+        '200':
+          description: The updated run (status `cancelled`, or `cancelling` for an in-flight run awaiting its graceful unwind).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunLifecycleRunResponse'
+        '401': { $ref: '#/components/responses/RunLifecycleUnauthorized' }
+        '403': { $ref: '#/components/responses/RunLifecycleForbidden' }
+        '404': { $ref: '#/components/responses/RunLifecycleNotFound' }
+        '409':
+          description: Illegal transition (terminal run) or a lost optimistic race.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+                  - $ref: '#/components/schemas/RunLifecycleTransitionError'
+        '500': { $ref: '#/components/responses/RunLifecycleServerError' }
+
+# ---- wave-10 fragment: nats-core.yaml (paths) ----
+  /messaging/dlq:
+    get:
+      operationId: listMessagingDeadLetters
+      summary: List retained dead letters from agentos.dlq (OWNER/ADMIN/MEMBER/VIEWER)
+      description: |
+        Inspects the messaging plane's dead-letter subject (agentos.dlq),
+        oldest-first, bounded by `limit` (clamped server-side; limit<=0 lists
+        every retained entry). Each entry carries the original subject, the
+        best-effort run/task identity extracted from run-dispatch payloads,
+        the last handler error, the delivery count at dead-letter time and
+        the original payload base64-encoded. Memory-effective mode
+        (AGENTOS_MESSAGING unset or =memory) has no retained log: 409.
+      x-required-permission: runs.read (OWNER/ADMIN/MEMBER/VIEWER)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum entries returned (<=0 or absent = unbounded).
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+          example: 50
+      responses:
+        '200':
+          description: The retained dead letters (oldest-first; empty array when the DLQ is drained).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NcDLQEntry'
+              example:
+                - sequence: 1
+                  subject: agentos.runs.create
+                  task_id: agent.run-2026-09-10T12-00-00-000000000Z
+                  run_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                  organization_id: 6f1c9e52-1c76-4a2f-9a86-9f6d4d3e8a01
+                  error: handler boom
+                  attempts: 4
+                  dead_lettered_at: '2026-09-10T12:04:00Z'
+                  payload_base64: eyJ0YXNrX3R5cGUiOiJhZ2VudC5ydW4iLCJydW5faWQiOiI4YjBlNmY5YSJ9
+        '409':
+          description: Memory-effective messaging mode (no retained log; the messaging DLQ does not exist).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/NcUnauthorized'
+        '403':
+          $ref: '#/components/responses/NcForbidden'
+  /messaging/dlq/{seq}/requeue:
+    post:
+      operationId: requeueMessagingDeadLetter
+      summary: Requeue one dead letter back onto its original subject (OWNER/ADMIN)
+      description: |
+        Republishes the dead letter's original payload (base64-decoded,
+        verbatim) onto its original subject and consumes the DLQ entry
+        (JetStream message delete). The republished message is a fresh
+        delivery: consumers treat it like any new message, so the underlying
+        fault must be fixed first. Unknown or already-requeued sequences
+        answer 404 (an already-requeued entry no longer exists); requeue
+        republishes before deleting, so a delete failure leaves the entry in
+        place and a retry re-publishes (idempotence note: a duplicate
+        republish is preferred over losing the dead letter). Memory-effective
+        mode: 409. The operation writes a queue.task_requeued audit row on
+        the queue-ops seam when the requeued subject is a run dispatch.
+      x-required-permission: queue.manage (OWNER/ADMIN; MEMBER/VIEWER denied 403)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/NcSeq'
+      responses:
+        '200':
+          description: The consumed dead-letter entry (it is no longer retained).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcDLQEntry'
+        '404':
+          description: Unknown sequence (or already requeued — the entry no longer exists).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '409':
+          description: Memory-effective messaging mode (no retained log).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/NcUnauthorized'
+        '403':
+          $ref: '#/components/responses/NcForbidden'
+  /messaging/replay:
+    post:
+      operationId: replayMessagingSubject
+      summary: Replay a retained dispatch/coordination subject from a timestamp (OWNER/ADMIN)
+      description: |
+        Re-publishes every retained message of `subject` published at or
+        after `from` (INCLUSIVE, oldest-first) back onto that same subject —
+        for redriving a dispatch window after fixing a consumer fault or
+        recovering from a lost consumer cursor. Only the messaging-plane
+        subjects agentos.runs.create and agentos.workflow.node.completed are
+        replayable: the DLQ itself is refused (400 — replaying it would loop
+        dead letters back into the DLQ) and arbitrary subjects are refused so
+        the admin surface can never inject traffic outside the plane. The
+        response reports how many retained entries matched and were
+        re-published. Memory-effective mode: 409.
+      x-required-permission: queue.manage (OWNER/ADMIN; MEMBER/VIEWER denied 403)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NcReplayRequest'
+            example:
+              subject: agentos.runs.create
+              from: '2026-09-10T12:00:00Z'
+      responses:
+        '200':
+          description: The replay report (replayed counts every re-published entry).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcReplayResult'
+              example:
+                subject: agentos.runs.create
+                from: '2026-09-10T12:00:00Z'
+                replayed: 2
+        '400':
+          description: The subject is not replayable (DLQ or outside the messaging plane).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '409':
+          description: Memory-effective messaging mode (no retained log).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/NcUnauthorized'
+        '403':
+          $ref: '#/components/responses/NcForbidden'
+
+# ---- wave-10 fragment: rate-limits.yaml (paths) ----
+  /rate-limits:
+    get:
+      operationId: listRateLimits
+      summary: List the caller's organization's stored rate-limit rows (org defaults + subject rows)
+      description: |
+        Read operation (limiter.read — every role; limits are configuration,
+        not credentials). Returns every stored row of the caller's org
+        ordered deterministically, each carrying an `org_default` flag so
+        callers can tell the two resolution tiers apart without re-deriving
+        them. A scope absent from the list is unlimited by omission.
+      x-required-permission: limiter.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The org's rows (possibly empty — every scope unlimited).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitListResponse'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+  /rate-limits/{scope}:
+    put:
+      operationId: upsertRateLimitOrgDefault
+      summary: Upsert the scope's ORG DEFAULT limit row (subject_id null)
+      description: |
+        Write operation (limiter.write, OWNER/ADMIN). Body carries the
+        dimension values; omitted dimensions default to 0 (unlimited). The
+        org scope rejects any subject id (422). An enabled row must set at
+        least one positive dimension (422). Upsert is idempotent on
+        (org, scope, subject) and takes effect on the NEXT check (the
+        resolver cache is invalidated on write).
+      x-required-permission: limiter.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/RateLimitsScope'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RateLimitUpsertRequest'
+      responses:
+        '200':
+          description: Row stored (read-back of the normalized, timestamped row).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitUpsertResponse'
+        '400':
+          description: Malformed JSON body (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '422':
+          description: |
+            Validation error: unknown scope, a subject id on the org scope,
+            a negative dimension, or an all-zero enabled row (error.code
+            VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+    delete:
+      operationId: deleteRateLimitOrgDefault
+      summary: Delete the scope's ORG DEFAULT limit row
+      description: |
+        Write operation (limiter.write, OWNER/ADMIN). Removes the org
+        default so the scope resolves to unlimited (or to the surviving
+        subject rows). Deleting an absent row answers 404 NOT_FOUND.
+      x-required-permission: limiter.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/RateLimitsScope'
+      responses:
+        '200':
+          description: Row deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitDeleteResponse'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '404':
+          description: No row for (org, scope, subject) (error.code NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '422':
+          description: Unknown scope (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+  /rate-limits/{scope}/{subject_id}:
+    put:
+      operationId: upsertRateLimitSubject
+      summary: Upsert a subject-specific limit row (per agent / tool / model)
+      description: |
+        Write operation (limiter.write, OWNER/ADMIN). Overrides the scope's
+        org default for one subject (agent id, tool id or model name). An
+        enabled=false row is the documented per-subject OPT-OUT: it
+        suppresses the org default for that subject instead of re-throttling
+        it. The org scope rejects subject rows (422).
+      x-required-permission: limiter.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/RateLimitsScope'
+      - $ref: '#/components/parameters/RateLimitsSubjectID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RateLimitUpsertRequest'
+      responses:
+        '200':
+          description: Row stored (read-back of the normalized, timestamped row).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitUpsertResponse'
+        '400':
+          description: Malformed JSON body (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '422':
+          $ref: '#/components/responses/RateLimitsValidation'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+    delete:
+      operationId: deleteRateLimitSubject
+      summary: Delete a subject-specific limit row
+      description: |
+        Write operation (limiter.write, OWNER/ADMIN). The subject falls back
+        to the scope's org default (or unlimited when absent). Deleting an
+        absent row answers 404 NOT_FOUND.
+      x-required-permission: limiter.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/RateLimitsScope'
+      - $ref: '#/components/parameters/RateLimitsSubjectID'
+      responses:
+        '200':
+          description: Row deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitDeleteResponse'
+        '401':
+          $ref: '#/components/responses/RateLimitsUnauthorized'
+        '403':
+          $ref: '#/components/responses/RateLimitsForbidden'
+        '404':
+          description: No row for (org, scope, subject) (error.code NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '422':
+          description: Unknown scope (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorEnvelope'
+
+# ---- wave-10 fragment: batch.yaml (paths) ----
+  /batch/runs:
+    post:
+      operationId: createBatchRuns
+      summary: Run one agent over N inputs or N agents over one input (batch)
+      description: >
+        Body is either {agent_id, inputs[]} (one agent, one item per input;
+        item ref is the input index) or {agent_ids[], input} (one item per
+        agent, shared input). Every item creates a REAL run
+        (CreateRunCtx) and enqueues the same "agent.run" task the single-run
+        path uses, then blocks until the batch settles.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchRunsRequest" }
+      responses:
+        "200":
+          description: Every item succeeded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRunsResponse" }
+        "207":
+          description: >
+            Multi-Status. Partial failure: at least one item failed or was
+            cancelled; the body carries the same batch record plus the
+            per-item error strings. run_ids contains ONLY the succeeded
+            items' run ids, in submission order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRunsResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+        "408":
+          description: >
+            BATCH_WAIT_INTERRUPTED — the wait was interrupted (client
+            disconnect/timeout); the batch keeps running and the client can
+            re-attach via GET /batch/{id} or GET /batch/{id}/events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+
+  /batch/workflows/{id}/trigger:
+    post:
+      operationId: triggerBatchWorkflow
+      summary: Trigger one workflow execution per input (batch)
+      description: >
+        The workflow target is resolved ONCE before any item runs (unknown
+        workflow -> 404); empty inputs -> 422. Each item expands the
+        workflow DAG for one input and reports its workflow_run_id.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: "#/components/parameters/BatchWorkflowID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchWorkflowTriggerRequest" }
+      responses:
+        "200":
+          description: Every item succeeded (workflow_run_ids in submission order).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchWorkflowTriggerResponse" }
+        "207":
+          description: Partial failure — items carry per-item errors; workflow_run_ids lists succeeded executions only.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchWorkflowTriggerResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "404":
+          description: >
+            NOT_FOUND — the workflow does not exist in the caller's
+            organization (atomic pre-flight; nothing ran).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/agents/update:
+    post:
+      operationId: updateBatchAgents
+      summary: Apply one validated patch to N agents (batch)
+      description: >
+        The patch is validated ONCE for the whole request (422 before any
+        item) and applied per agent with per-item results. Unknown agents
+        are failed items, never a batch abort.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchAgentUpdateRequest" }
+      responses:
+        "200":
+          description: Every agent patched (updated_agent_ids in submission order).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchAgentUpdateResponse" }
+        "207":
+          description: Partial failure — unknown agents surface as failed items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchAgentUpdateResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/agents/deploy:
+    post:
+      operationId: deployBatchAgents
+      summary: Create one deployment per agent (batch)
+      description: >
+        Uses the exact single-deploy call (CreateDeploymentCtx) per item. An
+        explicit version deploys every agent at that version; when omitted,
+        each item resolves the agent's latest published version (an agent
+        without one is a failed item). environment defaults to production.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchAgentDeployRequest" }
+      responses:
+        "200":
+          description: Every deployment created (deployment_ids in submission order).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchAgentDeployResponse" }
+        "207":
+          description: Partial failure — agents without a published version surface as failed items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchAgentDeployResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/runs/cancel:
+    post:
+      operationId: cancelBatchRuns
+      summary: Cancel N runs (batch)
+      description: >
+        The single-run cancel semantics (idempotent for already-cancelled
+        runs, invalid-transition for terminal ones) applied per item.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchRunCancelRequest" }
+      responses:
+        "200":
+          description: Every run cancelled (cancelled_run_ids in submission order).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRunCancelResponse" }
+        "207":
+          description: Partial failure — terminal runs surface as failed items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRunCancelResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/secrets:
+    post:
+      operationId: createBatchSecrets
+      summary: Create N encrypted secrets (batch)
+      description: >
+        One encrypted secret per item through the secrets service. Values
+        exist ONLY in the request body — responses carry the name and the
+        envelope key version, never the value.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchSecretsRequest" }
+      responses:
+        "200":
+          description: Every secret created (`created` lists the secret names).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchSecretsResponse" }
+        "207":
+          description: Partial failure — duplicate/invalid names surface as failed items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchSecretsResponse" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "422": { $ref: "#/components/responses/BatchValidation" }
+
+  /batch/{id}:
+    get:
+      operationId: getBatch
+      summary: Poll one batch record (per-item states, summary, timestamps)
+      description: >
+        The polling surface for a submitted batch. A batch from another
+        organization reads as not-found (404), never 403.
+      x-required-permission: batch.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: "#/components/parameters/BatchID"
+      responses:
+        "200":
+          description: The batch record (any status).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRecord" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "404":
+          description: NOT_FOUND — unknown id or a batch owned by another organization.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+
+  /batch/{id}/events:
+    get:
+      operationId: streamBatchEvents
+      summary: SSE progress stream for one batch
+      description: >
+        Additive "batch.updated" progress events on the existing stream seam
+        (text/event-stream), keyed by the batch id: {batch_id, completed,
+        total, item_states}. The org-scope check runs before the stream is
+        opened.
+      x-required-permission: batch.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: "#/components/parameters/BatchID"
+      responses:
+        "200":
+          description: text/event-stream of batch.updated progress events.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "404":
+          description: NOT_FOUND — unknown id or a batch owned by another organization.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+        "503":
+          description: STREAMING_UNAVAILABLE — the event stream service is not wired.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+
+  /batch/{id}/cancel:
+    post:
+      operationId: cancelBatch
+      summary: Cancel a running batch (idempotent on terminal batches)
+      description: >
+        Cancels the batch: in-flight items' contexts fire and pending items
+        never run. Idempotent on terminal batches. Audit-logged
+        (batch.cancelled) best-effort.
+      x-required-permission: batch.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: "#/components/parameters/BatchID"
+      responses:
+        "200":
+          description: The (cancelled) batch record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRecord" }
+        "401": { $ref: "#/components/responses/BatchUnauthorized" }
+        "403": { $ref: "#/components/responses/BatchForbidden" }
+        "404":
+          description: NOT_FOUND — unknown id or a batch owned by another organization.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchErrorEnvelope" }
+
 components:
   parameters:
+    # ---- wave-10 fragment: agents-portability.yaml (parameters) ----
+    PortAgentID:
+      name: id
+      in: path
+      required: true
+      description: Agent id (UUID, as returned by create/import/clone/list).
+      schema:
+        type: string
+        minLength: 1
+      example: 3f6c1a5e-8e2b-4c1d-9a7b-2f0d5e6a1b2c
+
+    # ---- wave-10 fragment: run-lifecycle.yaml (parameters) ----
+    RunLifecycleRunID:
+      name: id
+      in: path
+      required: true
+      description: Run id (UUID, as returned by the run-creation operation).
+      schema:
+        type: string
+        minLength: 1
+      example: 7e2b8e1a-4c1d-9a7b-2f0d-5e6a1b2c3f6c
+
+    # ---- wave-10 fragment: nats-core.yaml (parameters) ----
+    NcSeq:
+      name: seq
+      in: path
+      required: true
+      description: The dead letter's 1-based sequence within the agentos.dlq retained log (stable across redeliveries; the requeue key).
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 1
+
+    # ---- wave-10 fragment: rate-limits.yaml (parameters) ----
+    RateLimitsScope:
+      name: scope
+      in: path
+      required: true
+      description: One of org | agent | tool | model. The org scope has no subject.
+      schema:
+        type: string
+        enum:
+        - org
+        - agent
+        - tool
+        - model
+    RateLimitsSubjectID:
+      name: subject_id
+      in: path
+      required: true
+      description: Subject id — the agent id, tool id or model name the row applies to.
+      schema:
+        type: string
+        minLength: 1
+      examples:
+      - agent-support
+
+    # ---- wave-10 fragment: batch.yaml (parameters) ----
+    BatchID:
+      name: id
+      in: path
+      required: true
+      description: Batch id (UUID, as returned by the submission response).
+      schema:
+        type: string
+        minLength: 1
+    BatchWorkflowID:
+      name: id
+      in: path
+      required: true
+      description: Workflow id (UUID) to trigger once per input.
+      schema:
+        type: string
+        minLength: 1
+
     # ---- wave-9 fragment: a2a.yaml (parameters) ----
     A2ACardID:
       name: id
@@ -8252,6 +9741,150 @@ components:
         type: string
 
   securitySchemes:
+    # ---- wave-10 fragment: agents-portability.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: runtime-history.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: orchestration-exec.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: workflow-control-flow.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: tools-catalog.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: model-router.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: embeddings.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: tracing.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: run-lifecycle.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: nats-core.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: rate-limits.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 fragment: batch.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
     # ---- wave-9 fragment: a2a.yaml (securitySchemes) ----
     bearerToken:
       type: http
@@ -8349,6 +9982,165 @@ components:
 
         '
   responses:
+    # ---- wave-10 fragment: agents-portability.yaml (responses) ----
+    PortUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PortErrorEnvelope'
+    PortForbidden:
+      description: Authenticated but lacking the required permission (agents.write is OWNER/ADMIN only; agents.read is granted to every role).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PortErrorEnvelope'
+
+    # ---- wave-10 fragment: orchestration-exec.yaml (responses) ----
+    OrchestrationValidation:
+      description: Validation error (missing/blank required fields, malformed JSON or limit, unknown message type, depth limit exceeded).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/OrchestrationError" }
+    OrchestrationUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/OrchestrationError" }
+    OrchestrationForbidden:
+      description: >
+        Not permitted for this role (reads orchestration.read = all roles;
+        writes orchestration.write = OWNER/ADMIN only).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/OrchestrationError" }
+    OrchestrationNotFound:
+      description: >
+        Unknown target in the caller's organization (unregistered inbox) —
+        never a cross-tenant leak.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/OrchestrationError" }
+
+    # ---- wave-10 fragment: workflow-control-flow.yaml (responses) ----
+    WfUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+    WfForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WfErrorEnvelope'
+
+    # ---- wave-10 fragment: embeddings.yaml (responses) ----
+    EmbUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmbErrorEnvelope'
+    EmbForbidden:
+      description: |
+        Authenticated but not allowed to act for the requested organization
+        (cross-tenant access is rejected; agents.read required).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmbErrorEnvelope'
+
+    # ---- wave-10 fragment: run-lifecycle.yaml (responses) ----
+    RunLifecycleUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+    RunLifecycleForbidden:
+      description: |
+        Authenticated but the role lacks runs.control (VIEWER).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+    RunLifecycleNotFound:
+      description: Unknown or foreign run (no existence leak across tenants).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+    RunLifecycleServerError:
+      description: Internal error (or the runs service is unwired → 503 RUNS_SERVICE_UNAVAILABLE).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+
+    # ---- wave-10 fragment: nats-core.yaml (responses) ----
+    NcUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NcErrorEnvelope'
+    NcForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NcErrorEnvelope'
+
+    # ---- wave-10 fragment: rate-limits.yaml (responses) ----
+    RateLimitsUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitErrorEnvelope'
+    RateLimitsForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitErrorEnvelope'
+    RateLimitsValidation:
+      description: |
+        Validation error: unknown scope, a subject id on the org scope, a
+        negative dimension, or an all-zero enabled row (error.code
+        VALIDATION_ERROR).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitErrorEnvelope'
+
+    # ---- wave-10 fragment: batch.yaml (responses) ----
+    BatchUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BatchErrorEnvelope'
+    BatchForbidden:
+      description: >
+        Authenticated but lacking the required batch permission
+        (batch.write excludes VIEWER on every submission surface).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BatchErrorEnvelope'
+    BatchValidation:
+      description: >
+        VALIDATION_ERROR — atomic whole-request validation failed (no items,
+        ambiguous selectors, empty patch, invalid environment, oversized
+        batch over AGENTOS_BATCH_MAX_ITEMS). Nothing ran.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BatchErrorEnvelope'
+
     # ---- wave-9 fragment: a2a.yaml (responses) ----
     A2AUnauthorized:
       description: Missing or invalid credentials
@@ -15616,6 +17408,2237 @@ components:
             reason: { type: string }
             strict_mode: { type: boolean }
             mode: { $ref: "#/components/schemas/ResidencyMode" }
+
+      # ---- wave-10 fragment: agents-portability.yaml (schemas) ----
+    AgentExportAgent:
+      type: object
+      description: |
+        The portable agent projection: configuration only. There is
+        deliberately NO property for the agent id, organization, status,
+        version ids, timestamps or any credential — export can never leak
+        them and import always reassigns them server-side. The tools list
+        carries tool registry NAMES (catalog references), never tool
+        credentials or connection material.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Agent display name (non-blank).
+          examples:
+          - Support Agent
+        description:
+          type: string
+          description: Human-readable description.
+        instructions:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: The agent's system prompt (non-blank, capped at 65536 bytes).
+        model:
+          type: string
+          minLength: 1
+          description: Model identifier; must be a known platform model id on import (resolved case-insensitively, vendor-prefixed ids match their bare suffix).
+          examples:
+          - gpt-4o-mini
+        tools:
+          type: array
+          description: Tool registry NAMES only (catalog references). Every name must exist in the platform tool catalog on import.
+          items:
+            type: string
+          examples:
+          - - calculator
+            - http_request
+      required:
+      - name
+      - description
+      - instructions
+      - model
+      - tools
+    AgentExportBundle:
+      type: object
+      description: |
+        The versioned export/import envelope (schema_version "1"). Field
+        order is deterministic. Identity, lifecycle state and credentials are
+        structurally absent — import reassigns ids/organization/created_at
+        and resets status to DRAFT regardless of anything the payload claims.
+      properties:
+        schema_version:
+          type: string
+          const: '1'
+          description: Bundle schema version; only "1" is written and accepted.
+          examples:
+          - '1'
+        exported_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC export timestamp, informational; import ignores it.
+        agent:
+          $ref: '#/components/schemas/AgentExportAgent'
+      required:
+      - schema_version
+      - agent
+    PortAgent:
+      type: object
+      description: |
+        The created/imported/cloned agent representation — identical to the
+        base spec's Agent schema and the GET /agents/{id} response (legacy
+        PascalCase encoding of the internal agents.Agent struct). Status is
+        always DRAFT for import/clone results.
+      properties:
+        ID:
+          type: string
+          description: Fresh server-assigned agent id (client ids are never trusted).
+        OrganizationID:
+          type: string
+          description: The CALLER's organization (client organization claims are never trusted).
+        Name:
+          type: string
+        Description:
+          type: string
+        Instructions:
+          type: string
+        Model:
+          type: string
+        Status:
+          type: string
+          description: Lifecycle state (issue #106 state machine); always DRAFT for import/clone results.
+          examples:
+          - DRAFT
+        CurrentVersionID:
+          type: string
+          description: Fresh initial v1 version id.
+        CreatedAt:
+          type: string
+          format: date-time
+        UpdatedAt:
+          type: string
+          format: date-time
+      required:
+      - ID
+      - OrganizationID
+      - Name
+      - Model
+      - Status
+      - CreatedAt
+      - UpdatedAt
+    PortErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of AGENT_NOT_FOUND, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - AGENT_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+
+      # ---- wave-10 fragment: runtime-history.yaml (schemas) ----
+    RuntimeConfigDocument:
+      type: object
+      description: |
+        Per-agent runtime configuration document (issue #107). Unknown fields
+        are rejected by the runtime's parser (strict validation of the two
+        sections below); unset fields keep the safe defaults. The document
+        contains no secrets and no prompt content — tuning knobs only.
+      properties:
+        conversation_history:
+          $ref: '#/components/schemas/RuntimeConversationHistoryConfig'
+        token_budget:
+          $ref: '#/components/schemas/RuntimeTokenBudgetConfig'
+    RuntimeConversationHistoryConfig:
+      type: object
+      description: |
+        Bounds the prompt built for each model call (the FULL conversation is
+        always retained on the run record). Estimation uses the documented
+        ~4-characters-per-token heuristic (chars/4, rounded up); it budgets
+        prompts only — billing and enforcement always use the
+        provider-reported usage.
+      properties:
+        strategy:
+          type: string
+          enum:
+          - sliding_window
+          - summarize_older
+          - drop_oldest
+          default: sliding_window
+          description: |
+            sliding_window (default): leading system messages are preserved
+            verbatim and the remaining budget is spent on the most recent
+            turns. summarize_older: the recent window is kept and every
+            dropped older turn is compressed into one synthetic summary
+            message placed after the system block (mechanical digest by
+            default; a model-backed summarizer may be injected and its
+            failures degrade to the mechanical summary). drop_oldest: pure
+            newest-first fit with NO system-preservation nuance — an inline
+            system message is dropped like any other turn (the runtime passes
+            its system prompt separately, so this only matters for histories
+            that carry system messages inline).
+        max_tokens:
+          type: integer
+          default: 8000
+          description: |
+            Prompt token budget. 0 applies the default (8000); a NEGATIVE
+            value disables history management entirely (the full history is
+            sent — for agents that manage context themselves). Guaranteed
+            invariants for every strategy: the newest message is always kept
+            even when it alone exceeds the whole budget (truncation never
+            makes a run contextless), the stored history is never mutated and
+            the resulting view is deterministic.
+      required:
+      - strategy
+      - max_tokens
+    RuntimeTokenBudgetConfig:
+      type: object
+      description: |
+        Per-run cumulative token enforcement across ALL steps of one run
+        (provider-reported usage, accounted post-response: a single call can
+        overshoot before the stop lands). All limits default to 0 = unlimited
+        (the safe default: no budget configured means no tracking and
+        byte-identical legacy behavior).
+      properties:
+        max_total_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Cumulative total-token cap for one run (0 = unlimited).
+        max_prompt_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Cumulative prompt-token cap for one run (0 = unlimited).
+        max_completion_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Cumulative completion-token cap for one run (0 = unlimited).
+        alert_threshold:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.8
+          description: |
+            Fractional crossing (of any configured limit) that records the
+            ONE-TIME warn annotation step on the run timeline. 0 applies the
+            default (0.8); values above 1 are rejected by the parser.
+      required:
+      - max_total_tokens
+      - max_prompt_tokens
+      - max_completion_tokens
+      - alert_threshold
+    RuntimeBudgetSnapshot:
+      type: object
+      description: |
+        Point-in-time budget state carried as JSON on the "budget" annotation
+        steps of the run timeline (phase warn = one-time threshold warning,
+        phase exceeded = the hard stop). Persisted with the run trace so
+        budget decisions are auditable.
+      properties:
+        phase:
+          type: string
+          enum:
+          - ok
+          - warn
+          - exceeded
+        prompt_tokens:
+          type: integer
+          description: Cumulative prompt tokens at the moment of the record.
+        completion_tokens:
+          type: integer
+          description: Cumulative completion tokens at the moment of the record.
+        total_tokens:
+          type: integer
+          description: Cumulative total tokens at the moment of the record.
+        max_total_tokens:
+          type: integer
+        max_prompt_tokens:
+          type: integer
+        max_completion_tokens:
+          type: integer
+        alert_threshold:
+          type: number
+          format: double
+        limit:
+          type: string
+          enum:
+          - total
+          - prompt
+          - completion
+          description: The dimension that tripped; empty on warn snapshots that crossed no threshold.
+      required:
+      - phase
+      - prompt_tokens
+      - completion_tokens
+      - total_tokens
+
+      # ---- wave-10 fragment: orchestration-exec.yaml (schemas) ----
+    OrchestrationError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    DelegationFailedError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [VALIDATION_ERROR, APPROVAL_UNAVAILABLE, DELEGATION_FAILED]
+            message: { type: string }
+        delegation_id:
+          type: string
+          description: The failed record's id (it stays in the ledger for traceability).
+    DelegateRequest:
+      type: object
+      required: [from_agent_id, to_agent_id, task]
+      properties:
+        from_agent_id:
+          type: string
+          description: The delegator agent (its inbox receives the response message).
+        to_agent_id:
+          type: string
+          description: The delegated-to agent (executes the subtask).
+        task:
+          type: string
+          description: The subtask text (becomes the child run input).
+        parent_run_id:
+          type: string
+          description: The delegating run ("" at the top of a chain).
+        require_approval:
+          type: boolean
+          description: Park the delegation at the approval gate instead of executing.
+        depth:
+          type: integer
+          description: Delegation depth of the CALLING chain (0 for top-level; the server enforces the configured limit).
+    DelegateAccepted:
+      type: object
+      required: [delegation_id, child_run_id, status, depth]
+      properties:
+        delegation_id: { type: string }
+        child_run_id: { type: string }
+        status:
+          type: string
+          enum: [pending, awaiting_approval]
+        depth: { type: integer }
+        approval_id:
+          type: string
+          description: Present only when the delegation was parked at the approval gate.
+    MessageSendRequest:
+      type: object
+      required: [from_agent_id, to_agent_id]
+      properties:
+        from_agent_id: { type: string }
+        to_agent_id: { type: string }
+        message_type:
+          type: string
+          enum: [request, response, delegate, broadcast]
+          description: Defaults to the bus's validation rules; an unknown type is 422.
+        run_id:
+          type: string
+          description: Optional run linkage carried on the message.
+        payload:
+          description: Arbitrary JSON delivered verbatim to the target inbox.
+    AgentMessage:
+      type: object
+      properties:
+        org_id: { type: string }
+        from_agent_id: { type: string }
+        to_agent_id:
+          type: string
+          description: The target agent ("*" for broadcast deliveries).
+        run_id: { type: string }
+        message_type:
+          type: string
+          enum: [request, response, delegate, broadcast]
+        payload: {}
+        timestamp: { type: string, format: date-time }
+        message_id: { type: string }
+    SupervisorRunRequest:
+      type: object
+      required: [task]
+      properties:
+        task:
+          type: string
+          description: The task text (becomes the delegated input).
+        task_ref:
+          type: string
+          description: Caller-side task reference (echoed in the result and traces).
+        from_agent_id:
+          type: string
+          description: Response routing target ("" = supervisor-initiated, no comm routing).
+        parent_run_id: { type: string }
+        required_capability:
+          type: string
+          description: Restrict candidates to workers declaring this capability (typed 409 NO_CAPABLE_WORKER when none does).
+    SupervisorRunResult:
+      type: object
+      required: [task, status, worker_agent_id, delegation_id, child_run_id, tokens, attempts]
+      properties:
+        task_ref: { type: string }
+        task: { type: string }
+        status:
+          type: string
+          enum: [completed, awaiting_approval, failed]
+        worker_agent_id: { type: string }
+        delegation_id: { type: string }
+        child_run_id: { type: string }
+        output: { type: string }
+        tokens: { $ref: "#/components/schemas/OrchestrationUsage" }
+        attempts:
+          type: array
+          description: The FAILED attempts that preceded the successful one (empty on first-try success).
+          items: { $ref: "#/components/schemas/WorkerAttempt" }
+    WorkerAttempt:
+      type: object
+      properties:
+        worker_agent_id: { type: string }
+        delegation_id: { type: string }
+        error: { type: string }
+    SupervisorFailedError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [ALL_WORKERS_FAILED]
+            message: { type: string }
+        task_ref: { type: string }
+        attempts:
+          type: array
+          items: { $ref: "#/components/schemas/WorkerAttempt" }
+    OrchestrationUsage:
+      type: object
+      properties:
+        prompt_tokens: { type: integer }
+        completion_tokens: { type: integer }
+        total_tokens: { type: integer }
+    DelegationRecord:
+      type: object
+      properties:
+        id: { type: string }
+        org_id: { type: string }
+        from_agent_id:
+          type: string
+          description: The delegator ("" = supervisor-initiated; no response routing).
+        to_agent_id: { type: string }
+        task: { type: string }
+        parent_run_id: { type: string }
+        child_run_id: { type: string }
+        depth: { type: integer }
+        status:
+          type: string
+          enum: [pending, awaiting_approval, completed, failed]
+        approval_id: { type: string }
+        result: { type: string }
+        error: { type: string }
+        tokens: { $ref: "#/components/schemas/OrchestrationUsage" }
+        response_delivered: { type: boolean }
+        created_at: { type: string, format: date-time }
+        completed_at:
+          oneOf:
+            - { type: string, format: date-time }
+            - { type: "null" }
+    SupervisorConfig:
+      type: object
+      description: >
+        Supervisor routing configuration for THIS process (deployment
+        configuration, not an HTTP-managed resource this round): the worker
+        routing table and caps the executor was constructed with. Exposed
+        here so the ALL_WORKERS_FAILED / NO_WORKERS semantics are readable.
+      properties:
+        workers:
+          type: array
+          items:
+            type: object
+            properties:
+              agent_id: { type: string }
+              capabilities:
+                type: array
+                items: { type: string }
+        strategy:
+          type: string
+          enum: [round_robin, least_loaded, capability_match]
+          description: The executor runs capability_match (configuration order when no required_capability is sent).
+        max_concurrent: { type: integer }
+        max_retries: { type: integer }
+
+      # ---- wave-10 fragment: workflow-control-flow.yaml (schemas) ----
+    WfValidateRequest:
+      type: object
+      description: |
+        Validation payload. Exactly one of `dsl` (canonical wrapped form) or
+        a bare DSL object (nodes/edges at the top level) must be present.
+      properties:
+        dsl:
+          $ref: '#/components/schemas/WfDSL'
+    WfDSL:
+      type: object
+      description: |
+        Workflow definition graph. Nodes carry the per-type config documents
+        (see WfConditionNode…WfWaitNode); edges are activation edges with
+        on_success | on_failure | always conditions. Edges into a loop node
+        are loop-back edges (the documented cycle exemption).
+      properties:
+        nodes:
+          type: array
+          minItems: 1
+          description: Graph nodes; at least one is required.
+          items:
+            $ref: '#/components/schemas/WfNode'
+        edges:
+          type: array
+          description: Activation edges between nodes.
+          items:
+            $ref: '#/components/schemas/WfEdge'
+      required:
+      - nodes
+    WfNode:
+      type: object
+      description: |
+        One DSL node. `type` selects the config document: agent/tool (work),
+        approval, condition (if/else), switch, loop, retry, wait_until,
+        delay, webhook, parallel, end. Control-flow types are described by
+        the dedicated schemas (WfConditionNode, WfSwitchNode, WfLoopNode,
+        WfRetryNode, WfWaitNode, WfParallelNode).
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: Unique node id (referenced by edges, branches, bodies, retry targets and expressions).
+        type:
+          type: string
+          enum:
+          - agent
+          - tool
+          - condition
+          - switch
+          - loop
+          - retry
+          - wait_until
+          - approval
+          - delay
+          - webhook
+          - parallel
+          - end
+          description: Node type; the loop/retry executor restricts which types may be owned (loop bodies / retry targets).
+        name:
+          type: string
+          description: Optional display name.
+        config:
+          type: object
+          description: |
+            Per-type configuration document. Required keys per type: agent ->
+            agent_id, tool -> tool_id, condition -> expression, switch ->
+            expression (+ cases/default), loop -> expression (+ body), retry
+            -> target, wait_until -> expression, delay -> seconds, webhook
+            -> url.
+      required:
+      - id
+      - type
+    WfEdge:
+      type: object
+      description: One activation edge. condition is on_success | on_failure | always; an edge INTO a loop node is a loop-back edge.
+      properties:
+        from:
+          type: string
+          description: Source node id.
+        to:
+          type: string
+          description: Target node id.
+        condition:
+          type: string
+          enum: [on_success, on_failure, always]
+          description: Activation condition (empty behaves as on_success).
+      required:
+      - from
+      - to
+    WfConditionNode:
+      type: object
+      description: |
+        If/else node (DSL type "condition"). The safe expression is evaluated
+        once when the node activates; the truthy result routes to
+        config.branches.true, the falsy result to config.branches.false.
+        Every node that becomes unreachable through the routing decision is
+        recorded with node-run status "skipped" (skip_reason in its
+        metadata), never executed. Without config.branches the node keeps
+        the legacy pass-through gate semantics.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: condition
+        config:
+          type: object
+          properties:
+            expression:
+              $ref: '#/components/schemas/WfExpression'
+            branches:
+              type: object
+              description: Routing targets. At least one side must be set; both targets must reference existing node ids.
+              properties:
+                'true':
+                  type: string
+                  description: Node id routed to when the expression evaluates truthy.
+                'false':
+                  type: string
+                  description: Node id routed to when the expression evaluates falsy.
+          required:
+          - expression
+      required:
+      - id
+      - type
+    WfSwitchNode:
+      type: object
+      description: |
+        Multi-way branch (DSL type "switch"). The expression result is
+        canonicalized (strings verbatim, numbers via their shortest float
+        representation, booleans true/false, null) and matched against
+        config.cases keys in sorted order; the first match routes, otherwise
+        config.default routes. Untaken cases are skipped dynamically.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: switch
+        config:
+          type: object
+          properties:
+            expression:
+              $ref: '#/components/schemas/WfExpression'
+            cases:
+              type: object
+              description: Match value -> target node id. Case values are canonicalized strings (e.g. "3" matches numeric 3).
+              additionalProperties:
+                type: string
+                description: Target node id (must reference an existing node).
+            default:
+              type: string
+              description: Target node id routed to when no case matches (must reference an existing node).
+          required:
+          - expression
+      required:
+      - id
+      - type
+    WfLoopNode:
+      type: object
+      description: |
+        Iteration node (DSL type "loop"). The expression must evaluate to an
+        array; the body subgraph executes once per item with $.item /
+        $.loop.index bound and {{item}} substituted into body node inputs.
+        Iteration is capped by config.max_iterations (default 100, hard cap
+        10000; excess items are truncated and reported as "truncated": true).
+        Per-iteration checkpoints (index, item, status, outputs) are kept in
+        the loop node-run metadata.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: loop
+        config:
+          type: object
+          properties:
+            expression:
+              $ref: '#/components/schemas/WfExpression'
+            max_iterations:
+              type: integer
+              minimum: 1
+              maximum: 10000
+              default: 100
+              description: Iteration cap (default 100; values above the 10000 hard cap clamp down).
+            body:
+              type: array
+              items:
+                type: string
+              description: Node ids executed per item (agent, tool, delay, webhook or end nodes only; each body node has exactly one owner).
+          required:
+          - expression
+          - body
+      required:
+      - id
+      - type
+    WfRetryNode:
+      type: object
+      description: |
+        Retry wrapper (DSL type "retry"). Re-executes config.target on
+        failure up to config.attempts total attempts (default 3, hard cap
+        100) with geometric backoff (base_delay_ms * multiplier, capped by
+        max_delay_ms). Failed attempts are checkpointed as failed node-run
+        rows carrying retry_attempt metadata; the final summary (attempts
+        used, per-attempt errors) lands in the target and retry node-run
+        metadata.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: retry
+        config:
+          type: object
+          properties:
+            target:
+              type: string
+              description: Node id retried by this node (agent/tool/delay/webhook/end only; exactly one owner).
+            attempts:
+              type: integer
+              minimum: 1
+              maximum: 100
+              default: 3
+              description: Total attempts (not retries).
+            backoff:
+              type: object
+              description: Geometric backoff policy.
+              properties:
+                base_delay_ms:
+                  type: number
+                  exclusiveMinimum: 0
+                  default: 100
+                multiplier:
+                  type: number
+                  minimum: 1
+                  default: 2
+                max_delay_ms:
+                  type: number
+                  exclusiveMinimum: 0
+                  default: 30000
+          required:
+          - target
+      required:
+      - id
+      - type
+    WfWaitNode:
+      type: object
+      description: |
+        Poll gate (DSL type "wait_until"). Polls the expression every
+        poll_interval_ms (default 1000ms, floor 10ms) until it evaluates
+        truthy or timeout_seconds (default 60) expires; on timeout the node
+        fails with error_code WAIT_UNTIL_TIMEOUT and the workflow run fails.
+        The poll counter is exposed to the expression as $.context.polls.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: wait_until
+        config:
+          type: object
+          properties:
+            expression:
+              $ref: '#/components/schemas/WfExpression'
+            timeout_seconds:
+              type: number
+              exclusiveMinimum: 0
+              default: 60
+            poll_interval_ms:
+              type: number
+              exclusiveMinimum: 0
+              default: 1000
+          required:
+          - expression
+      required:
+      - id
+      - type
+    WfParallelNode:
+      type: object
+      description: |
+        True concurrent fan-out (DSL type "parallel"). The direct edge
+        successors of the node that are executable work nodes (agent/tool/
+        delay/webhook/end), have no other active predecessors and no
+        interdependencies form the branch wave; every branch runs in its own
+        goroutine under the composed concurrency limits (see
+        WfParallelLimits) and results combine per config.strategy (see
+        WfAggregationStrategy). config.fail_fast selects the failure mode:
+        fail_fast (default) cancels the remaining branches on the decision
+        event; collect_all lets every branch run to completion before
+        aggregating. Aggregate failure fails the workflow run. Per-branch
+        duration/wait/utilization, the completion order, the in-flight
+        high-water mark and the resolved limits are recorded in the node-run
+        metadata ("parallel" key) and in each branch node-run's metadata.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: parallel
+        config:
+          type: object
+          properties:
+            strategy:
+              $ref: '#/components/schemas/WfAggregationStrategy'
+            max_concurrency:
+              type: integer
+              minimum: 1
+              description: Per-workflow concurrency override; the effective cap is the minimum of this, the AGENTOS_MAX_WORKFLOW_PARALLELISM global (default 8) and the org quota (default unlimited).
+            fail_fast:
+              type: boolean
+              default: true
+              description: 'false selects the collect_all failure mode (every branch runs to completion before aggregation).'
+            branch_timeout_seconds:
+              type: number
+              exclusiveMinimum: 0
+              description: Per-branch wall-time cap; the timed-out branch is cancelled (status timeout) without affecting the other branches' clocks. Unset means unbounded.
+      required:
+      - id
+      - type
+    WfAggregationStrategy:
+      type: string
+      enum:
+      - all
+      - any
+      - race
+      - majority
+      description: |
+        How parallel branch results combine (issue #110).
+
+        all — every branch must succeed; any failure (fail_fast) or any
+        terminal failure (collect_all) fails the aggregate. Output: object
+        mapping branch id -> successful output.
+
+        any — first successful completion wins and the remaining branches
+        are cancelled; fails only when every branch fails.
+
+        race — first completion wins regardless of status and the remaining
+        branches are cancelled; a failing first completion fails the
+        aggregate.
+
+        majority — plurality vote over the successful outputs: the most
+        frequently occurring serialized output wins; equal counts are broken
+        by the lexicographically smallest serialized output (documented tie
+        rule). Failures do not vote; the aggregate fails only when no branch
+        succeeded.
+      default: all
+    WfParallelLimits:
+      type: object
+      description: |
+        Composed parallelism caps for one parallel wave (issue #110). The
+        effective cap is the minimum of the components that are set; at
+        least the global ceiling is always set, so the effective value is
+        >= 1. In-flight branches never exceed the effective cap (enforced by
+        a counting semaphore; the high-water mark is reported as
+        max_in_flight).
+      properties:
+        global:
+          type: integer
+          minimum: 1
+          default: 8
+          description: Deployment-wide ceiling from AGENTOS_MAX_WORKFLOW_PARALLELISM (default 8; unset/invalid/non-positive values fall back to the default).
+        per_workflow:
+          type: integer
+          minimum: 0
+          default: 0
+          description: The parallel node's config.max_concurrency override; 0 means unset.
+        org_quota:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Per-organization quota resolved through the OrgParallelQuota hook; 0 means unlimited (the default hook).
+        effective:
+          type: integer
+          minimum: 1
+          description: Resolved cap actually enforced for the wave (min of the set components).
+    WfExpression:
+      type: string
+      description: |
+        Safe workflow expression (stdlib-only engine, no function calls, no
+        reflection, no I/O). Roots: $.nodes.<id>.output.<path> (previous node
+        outputs; the literal "output" segment after the node id is the
+        canonical marker), $.input (workflow input string), $.item /
+        $.loop.index (loop frame), $.context.<key> (executor-provided
+        values). Operators: == != < <= > >= and/or/not (!), + - * /,
+        parentheses; numbers are float64, + concatenates strings when both
+        operands are strings, and/or short-circuit. Unknown identifiers,
+        unknown roots and function calls are rejected at save time with
+        invalid_expression errors; hard caps: 4096 bytes, parse depth 64.
+      maxLength: 4096
+      examples:
+      - '$.nodes.classify.output.category == ''urgent'' and $.nodes.classify.output.score > 0.8'
+    WfWorkflowValidationError:
+      type: object
+      description: One typed validation failure. node_id is present when the violation is attributable to a single node.
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine identifier. Known values include: empty_graph,
+            missing_node_id, duplicate_node_id, unknown_node_type,
+            missing_config, missing_node_ref, invalid_edge_condition,
+            cycle_detected, dangling_branch_target, dangling_loop_body,
+            dangling_retry_target, duplicate_loop_body, loop_body_invalid_node,
+            invalid_retry_target, invalid_expression.
+          examples:
+          - dangling_branch_target
+        message:
+          type: string
+          description: Human-readable reason (expression errors carry the node id + parser reason).
+        node_id:
+          type: string
+          description: Offending node id when attributable.
+      required:
+      - code
+      - message
+    WfValidateSuccess:
+      type: object
+      properties:
+        valid:
+          type: boolean
+          const: true
+      required:
+      - valid
+    WfValidateFailure:
+      type: object
+      description: 422 body; the same shape POST /workflows/create returns for invalid DSL.
+      properties:
+        errors:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WfWorkflowValidationError'
+      required:
+      - errors
+    WfErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - INVALID_REQUEST
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+
+      # ---- wave-10 fragment: tools-catalog.yaml (schemas) ----
+    ToolInfo:
+      type: object
+      description: |
+        One read-only registry entry. description/input_schema are omitted
+        for tools that publish no catalog metadata (they still execute).
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Registry key the model uses in tool calls (e.g. "database_query").
+        description:
+          type: string
+          description: Human-readable summary of what the tool does and its security posture.
+        input_schema:
+          type: object
+          description: JSON-Schema-style contract the tool arguments must satisfy (see the per-tool schemas below).
+          additionalProperties: true
+    ToolListResponse:
+      type: object
+      required: [tools]
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolInfo'
+    ToolCatalogErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of INTERNAL_ERROR (500); 401/403 use the shared auth responses.
+              examples:
+              - INTERNAL_ERROR
+            message: { type: string }
+    ToolCommonArgs:
+      type: object
+      description: Arguments every expanded-catalog tool accepts in addition to its own.
+      properties:
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine (max_cost_cents condition, internal/policies).
+        timeout_ms:
+          type: integer
+          description: Optional per-call deadline in milliseconds; each tool clamps it to its own hard ceiling.
+    DatabaseQueryInput:
+      type: object
+      description: database_query — ONE parameterized statement per call against an org-scoped connector database. Read-only by default (SELECT/WITH/EXPLAIN/SHOW); values travel exclusively through prepared-statement binding (never interpolated); multi-statement text is rejected.
+      required: [connection, sql]
+      properties:
+        connection:
+          type: string
+          description: Org-scoped connector name holding the database DSN (resolved server-side through the connectors service + secret_ref; never a raw DSN).
+        sql:
+          type: string
+          description: Exactly one statement with $1-style placeholders (max 64 KiB). Read-only mode allows SELECT/WITH/EXPLAIN/SHOW as the first keyword.
+        params:
+          type: object
+          additionalProperties: true
+          description: Bound arguments — an array binds positionally ($1..$n); an object binds in sorted key order. Values never touch the SQL text.
+        row_limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
+          description: Maximum returned rows; extra rows set truncated=true.
+        readonly:
+          type: boolean
+          default: true
+          description: Defaults to true; false unlocks single DML statements only on connections provisioned for writes.
+        timeout_ms:
+          type: integer
+          default: 10000
+          description: Query deadline in milliseconds (capped at 60000).
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    DatabaseQueryOutput:
+      type: object
+      required: [columns, rows, row_count, truncated]
+      properties:
+        columns:
+          type: array
+          items: { type: string }
+          description: Result column names (duplicates are suffixed _2, _3, ... deterministically).
+        rows:
+          type: array
+          description: Row objects keyed by column name; driver values are JSON-normalized (NULL -> null, timestamps -> RFC3339Nano strings).
+          items:
+            type: object
+            additionalProperties: true
+        row_count:
+          type: integer
+          description: Number of returned rows (<= row_limit).
+        truncated:
+          type: boolean
+          description: true when more rows existed than row_limit allowed.
+    SearchInput:
+      type: object
+      description: search — three modes. web queries the operator-configured endpoint (AGENTOS_SEARCH_API_URL/AGENTOS_SEARCH_API_KEY); knowledge queries the organization's knowledge base; hybrid runs both, merges, de-duplicates (URL, falling back to the knowledge chunk id) and re-ranks by score deterministically.
+      required: [query]
+      properties:
+        query:
+          type: string
+          maxLength: 1024
+          description: Search query.
+        mode:
+          type: string
+          enum: [web, knowledge, hybrid]
+          description: Backend selection; defaults to web when an endpoint is configured, else knowledge. A failing hybrid side degrades with a warning; both failing is an error.
+        k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+          description: Maximum results.
+        timeout_ms:
+          type: integer
+          default: 10000
+          description: Web-mode deadline in milliseconds (capped at 60000).
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    SearchResult:
+      type: object
+      description: Normalized result shape every mode returns.
+      required: [title, snippet, score, source]
+      properties:
+        title: { type: string }
+        url: { type: string, description: Present for web results. }
+        snippet: { type: string }
+        score: { type: number }
+        source:
+          type: string
+          enum: [web, knowledge]
+        id:
+          type: string
+          description: Knowledge chunk id (knowledge results only).
+        document_id:
+          type: string
+          description: Knowledge document id (knowledge results only).
+        chunk_ordinal:
+          type: integer
+          description: Knowledge chunk ordinal (knowledge results only).
+        citation:
+          type: string
+          description: Knowledge citation string (knowledge results only).
+    SearchOutput:
+      type: object
+      required: [mode, query, results, count, warnings]
+      properties:
+        mode: { type: string, enum: [web, knowledge, hybrid] }
+        query: { type: string }
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+        count: { type: integer }
+        warnings:
+          type: array
+          items: { type: string }
+          description: Hybrid-mode degradation notices (e.g. one backend failing).
+    CodeExecInput:
+      type: object
+      description: code_execute — runs a snippet in a FRESH child process of its own process group. Network is disabled BEST-EFFORT via a scrubbed environment (no portable user-space socket block; AGENTOS_TOOL_SANDBOX=exec or a network namespace is required for a hard kill switch). Output capped, deadline-driven process-group kill, snippet temp files removed on every path.
+      required: [language, code]
+      properties:
+        language:
+          type: string
+          enum: [python, javascript, go]
+        code:
+          type: string
+          maxLength: 131072
+          description: Snippet source (max 128 KiB). For go, a complete package main file.
+        timeout_ms:
+          type: integer
+          default: 15000
+          description: Execution deadline in milliseconds (capped at 60000).
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    CodeExecOutput:
+      type: object
+      required: [language, stdout, stderr, exit_code, truncated, duration_ms]
+      properties:
+        language: { type: string }
+        stdout: { type: string }
+        stderr: { type: string }
+        exit_code: { type: integer }
+        truncated:
+          type: boolean
+          description: true when stdout/stderr were cut at the output cap.
+        duration_ms: { type: integer }
+    WebhookInput:
+      type: object
+      description: |
+        webhook — delivers to an OPERATOR-ALLOW-LISTED URL (default deny;
+        scheme/host/port must match and the path must be the entry path or a
+        descendant). Signed with HMAC-SHA256 over "{timestamp}.{body}" via the
+        secrets seam — headers "X-AgentOS-Signature" carries "sha256=<hex>"
+        and "X-AgentOS-Timestamp" the unix seconds; receivers must enforce a
+        5-minute replay window before verifying. SSRF protection resolves the
+        host and refuses loopback/private/link-local (169.254.169.254
+        included), CGNAT and multicast destinations, re-checked at dial level.
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: Absolute http(s) URL on the configured allow-list.
+        method:
+          type: string
+          enum: [GET, POST]
+          default: POST
+        body:
+          type: string
+          description: POST body (signed together with the timestamp).
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: Optional extra request headers.
+        fire_and_forget:
+          type: boolean
+          description: true returns {delivered,status,signed} without the receiver's body.
+        timeout_ms:
+          type: integer
+          default: 10000
+          description: Delivery deadline in milliseconds (capped at 60000).
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    WebhookOutput:
+      type: object
+      required: [delivered, status, signed]
+      properties:
+        delivered:
+          type: boolean
+          description: true when the receiver answered 2xx (request-response mode).
+        status:
+          type: integer
+          description: Receiver HTTP status code.
+        body:
+          type: string
+          description: Receiver response body, truncated at 32 KiB (absent in fire-and-forget mode).
+        signed:
+          type: boolean
+          description: true when the delivery carried an HMAC signature.
+    JSONTransformInput:
+      type: object
+      description: json_transform — minimal jq-like reshaping; pure and deterministic (identical input always yields byte-identical output; no I/O). Ops apply in order, each replacing the current document with its result.
+      required: [data, ops]
+      properties:
+        data:
+          description: Input JSON value (max 1 MiB encoded).
+        ops:
+          type: array
+          maxItems: 16
+          description: |
+            pick{path} — select the value at a dot/bracket path ("a.b[0]", 'items["weird.key"]'; a leading "$" is optional).
+            filter{path?,field?,cmp,value?} — keep array elements matching a field-op-value predicate (cmp in ==,!=,<,<=,>,>=,contains,exists; ordering comparisons on mismatched/non-comparable types exclude the element, jq-like).
+            map{path?,template} — map array elements through an object template whose string values starting with "$" are path sub-expressions into the element ("$" = the element; missing sub-paths resolve to null).
+            template{body} — build objects from "{{path}}" placeholders (a string that is exactly one placeholder splices the typed value; missing paths are an error).
+          items:
+            type: object
+            additionalProperties: true
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    JSONTransformOutput:
+      type: object
+      required: [result, ops_applied]
+      properties:
+        result:
+          description: The transformed JSON value (max 1 MiB encoded; larger results are refused, never truncated).
+        ops_applied:
+          type: integer
+    FileStorageInput:
+      type: object
+      description: file_storage — org-scoped upload/download/list/delete over the StorageBackend seam (built-in InMemoryStorageBackend is per-process and non-durable; a connector-backed HTTP impl and S3 support are documented follow-up work, NOT provided). Paths are sanitized by REJECTION (no absolute paths, no ".."/"." segments, no backslashes or control characters, max 512 bytes); objects are capped at 10 MiB; the organization comes from the run scope, never from tool input.
+      required: [operation]
+      properties:
+        operation:
+          type: string
+          enum: [upload, download, list, delete]
+        path:
+          type: string
+          maxLength: 512
+          description: Relative object path (upload/download/delete; no leading '/', no '..' segments).
+        content:
+          type: string
+          description: upload only — object content (max 10 MiB).
+        content_type:
+          type: string
+          default: application/octet-stream
+          description: upload only — MIME type.
+        prefix:
+          type: string
+          description: list only — optional path prefix filter.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
+          description: list only — maximum entries.
+        estimated_cost_cents:
+          type: integer
+          description: Optional estimated cost surfaced to the policy engine.
+    FileStorageObject:
+      type: object
+      description: One metadata listing entry (content is never returned by list).
+      required: [path, size, content_type]
+      properties:
+        path: { type: string }
+        size: { type: integer }
+        content_type: { type: string }
+    FileStorageOutput:
+      type: object
+      description: Shape depends on the operation — upload returns {operation,path,size,content_type}; download adds {content}; list returns {operation,prefix,objects,count}; delete returns {operation,path,deleted}.
+      required: [operation]
+      properties:
+        operation: { type: string, enum: [upload, download, list, delete] }
+        path: { type: string }
+        size: { type: integer }
+        content_type: { type: string }
+        content:
+          type: string
+          description: download only — the object's bytes as a string (text-oriented; keep uploads UTF-8 for faithful round-trips).
+        prefix: { type: string }
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileStorageObject'
+        count: { type: integer }
+        deleted: { type: boolean }
+
+      # ---- wave-10 fragment: model-router.yaml (schemas) ----
+    RoutingPolicy:
+      type: string
+      description: |
+        How the router orders its candidates for each request. All orderings
+        are deterministic functions of the request and candidate set:
+        cost_optimize ranks by estimated per-request cost (registry input/output
+        prices over estimated prompt tokens and the requested output budget);
+        latency_optimize by the registry latency estimate; task_complexity
+        classifies the request (prompt size, reasoning indicators, attached
+        tools, output budget) into Simple/Standard/Complex/Expert and prefers
+        the closest capability tier; round_robin rotates across the candidates;
+        weighted uses a seeded hash of the request content with the configured
+        candidate weights (weighted-random-key scheme — same request, same
+        model).
+      enum:
+      - cost_optimize
+      - latency_optimize
+      - task_complexity
+      - round_robin
+      - weighted
+    ModelCapabilities:
+      type: object
+      description: |
+        One model's routing capabilities as resolved from the capability
+        registry (built-in table + tenant overrides via AGENTOS_MODELS_JSON
+        or the registry API). Figures are approximations for routing and
+        ranking, not billing data.
+      properties:
+        model:
+          type: string
+          description: Canonical model id (matched case-insensitively; a "vendor/model" id also matches by bare suffix).
+        context_tokens:
+          type: integer
+          format: int64
+          description: Model context window in tokens (input+output); 0 means unknown (no context-fit filtering).
+        tool_support:
+          type: boolean
+          description: Whether the model can execute tool/function calls.
+        vision_support:
+          type: boolean
+          description: Whether the model accepts image input.
+        quality_tier:
+          type: string
+          description: Coarse capability band matched against the classified request complexity.
+          enum:
+          - basic
+          - standard
+          - premium
+          - frontier
+        latency_estimate_ms:
+          type: integer
+          format: int64
+          description: Rough median end-to-end latency for a typical ~1k-token completion (routing heuristic, not an SLA).
+        input_cost_per_1k:
+          type: number
+          format: double
+          description: List price in USD per 1k input tokens.
+        output_cost_per_1k:
+          type: number
+          format: double
+          description: List price in USD per 1k output tokens.
+      required:
+      - model
+    RouterDecision:
+      type: object
+      description: |
+        Observability projection of one routing choice. Surfaced on run/step
+        metadata (routing_policy / routing_model / routing_provider /
+        routing_complexity / routing_fallback) and available for diagnostics;
+        decisions are computed without calling providers.
+      properties:
+        policy:
+          $ref: '#/components/schemas/RoutingPolicy'
+        complexity:
+          type: string
+          description: Deterministic classification of the request (task_complexity policy input).
+          enum:
+          - simple
+          - standard
+          - complex
+          - expert
+        selected_model:
+          type: string
+          description: Model id chosen to serve the request (empty when no candidate qualified).
+        provider_name:
+          type: string
+          description: Name of the provider instance serving the request.
+        reason:
+          type: string
+          description: Human-readable explanation of why the first candidate was picked.
+        candidate_order:
+          type: array
+          description: Model ids in attempt order (after policy ordering and capability filtering).
+          items:
+            type: string
+        skipped:
+          type: array
+          description: Candidates excluded from (or jumped over during) routing, with reasons (capability_mismatch, vision_unsupported, tools_unsupported, context_overflow, not_configured, circuit_open).
+          items:
+            type: object
+            properties:
+              model:
+                type: string
+              provider:
+                type: string
+              reason:
+                type: string
+            required:
+            - model
+            - reason
+      required:
+      - policy
+      - complexity
+
+      # ---- wave-10 fragment: embeddings.yaml (schemas) ----
+    EmbSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: Natural-language query; scored against every org-scoped chunk.
+        k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+          description: Maximum number of chunk hits to return.
+        mode:
+          type: string
+          enum: [keyword, semantic, hybrid]
+          default: hybrid
+          description: |
+            Retrieval strategy. keyword: lexical leg only. semantic: pgvector
+            cosine leg only. hybrid: both legs fused (default). semantic and
+            hybrid degrade to keyword-only when the vector leg is unavailable
+            (pgvector-OPTIONAL migration, offline embeddings provider) — the
+            degradation is deliberate and the response shape never changes.
+        weights:
+          $ref: '#/components/schemas/EmbFusionWeights'
+    EmbFusionWeights:
+      type: object
+      description: |
+        Fusion tuning for mode=hybrid. Omitted fields keep the server-side
+        defaults (env: AGENTOS_HYBRID_KEYWORD_WEIGHT,
+        AGENTOS_HYBRID_VECTOR_WEIGHT, AGENTOS_HYBRID_FUSION — 0.5/0.5 and the
+        weighted min-max fusion). Weights are clamped to [0,1]; both-zero
+        inputs fall back to the defaults so the fused score can never
+        collapse to a constant. Ignored for mode=keyword/semantic.
+      properties:
+        keyword_weight:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.5
+          description: Weight of the min-max-normalized keyword-leg score.
+        vector_weight:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.5
+          description: Weight of the min-max-normalized vector-leg score.
+        fusion:
+          type: string
+          enum: [weights, rrf]
+          default: weights
+          description: |
+            Score-combination algorithm. weights: weighted sum of the
+            min-max-normalized per-leg scores. rrf: reciprocal rank fusion
+            (constant 60) — kwW/(60+kwRank) + vecW/(60+vecRank); scale-free
+            and robust to per-leg score distributions.
+    EmbSearchResult:
+      type: object
+      description: One retrieval hit — the contract-pinned fields plus additive title/chunk id.
+      required: [document_id, chunk_ordinal, content, score, citation]
+      properties:
+        document_id: { type: string }
+        document_title: { type: string }
+        chunk_id:
+          type: string
+          description: Deduplication key of the hybrid fusion (unique per hit).
+        chunk_ordinal:
+          type: integer
+          description: Zero-based position of the chunk inside its document.
+        content: { type: string }
+        score:
+          type: number
+          format: double
+          description: |
+            Relevance in [0,1]; semantics by mode — raw lexical token-overlap
+            score (keyword / degraded semantic+hybrid), raw cosine similarity
+            (semantic), or the fused score (hybrid: weighted normalized sum
+            or RRF contribution; RRF scores are small positive rationals, not
+            similarities).
+          examples:
+          - 0.83
+        citation:
+          type: string
+          description: Human-readable citation, e.g. "Billing FAQ (confluence/billing), chunk 3".
+    EmbSearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmbSearchResult'
+    EmbErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of VALIDATION_ERROR, INVALID_REQUEST, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message: { type: string }
+
+      # ---- wave-10 fragment: tracing.yaml (schemas) ----
+    TrRunTraceResponse:
+      type: object
+      required: [run_id, trace_id]
+      properties:
+        run_id:
+          type: string
+          description: The run id (echo of the path parameter).
+        trace_id:
+          type: string
+          description: W3C trace id (32 hex chars) of the run's distributed execution trace.
+    TrErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [trace_not_available, internal_error]
+            message:
+              type: string
+
+      # ---- wave-10 fragment: run-lifecycle.yaml (schemas) ----
+    RunLifecycleState:
+      type: string
+      description: |
+        One node of the run lifecycle state machine (issue #115). Canonical
+        persisted values are lowercase; legacy UPPERCASE worker spellings
+        normalize onto the same states.
+      enum:
+      - pending
+      - queued
+      - running
+      - paused
+      - waiting_approval
+      - cancelling
+      - completed
+      - failed
+      - cancelled
+      - timeout
+    RunLifecycleTransitionError:
+      type: object
+      description: |
+        Typed rejection of an illegal state move (HTTP 409, code
+        INVALID_STATE): the machine names BOTH endpoints of the refused
+        move and the targets that would have been legal from `from`.
+        Terminal runs allow no transitions at all.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [INVALID_STATE]
+            message:
+              type: string
+              description: >
+                Human-readable refusal including the allowed targets, e.g.
+                invalid run status transition "completed to paused"
+                (allowed: none — completed is terminal).
+            from:
+              $ref: '#/components/schemas/RunLifecycleState'
+            to:
+              $ref: '#/components/schemas/RunLifecycleState'
+            allowed:
+              type: array
+              description: Legal target states from `from` (empty when `from` is terminal).
+              items:
+                $ref: '#/components/schemas/RunLifecycleState'
+      required: [error]
+    RunLifecycleRun:
+      type: object
+      description: The controlled run (same shape as the base spec's Run; lifecycle fields highlighted).
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+        agent_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/RunLifecycleState'
+        input:
+          type: string
+        output:
+          type: string
+          description: Final output, or the recovery/transition annotation for recovered or gracefully-unwound runs.
+        cost_cents:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, organization_id, agent_id, status, created_at, updated_at]
+    RunLifecycleRunResponse:
+      type: object
+      description: The updated run after the control op landed.
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+        agent_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/RunLifecycleState'
+        input:
+          type: string
+        output:
+          type: string
+        cost_cents:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, organization_id, agent_id, status, created_at, updated_at]
+    RunLifecycleErrorEnvelope:
+      type: object
+      description: Structured error envelope (house pattern) for the non-transition failures (404 unknown/foreign run, 409 lost optimistic race STATUS_CONFLICT, 500).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [RUN_NOT_FOUND, STATUS_CONFLICT, RUNS_SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+            message:
+              type: string
+          required: [code, message]
+      required: [error]
+
+      # ---- wave-10 fragment: nats-core.yaml (schemas) ----
+    NcMessagingMode:
+      type: string
+      description: |
+        The task-dispatch plane selected by AGENTOS_MESSAGING. memory (the
+        default) keeps the platform queue as the only dispatch path with zero
+        infrastructure; nats dispatches run tasks as JetStream envelopes and
+        fails fast when the broker is unreachable; hybrid is nats with a
+        memory safety net (broker failures fall back to the memory queue, so
+        a run is never lost). The wire value is the lowercase enum member.
+      enum:
+        - memory
+        - nats
+        - hybrid
+      default: memory
+    NcRunEnvelope:
+      type: object
+      description: |
+        The wire shape published to agentos.runs.create when a run task is
+        dispatched through the messaging plane. The top-level identity fields
+        make routing, DLQ inspection and correlation possible without
+        decoding the payload; payload carries the exact keys the existing
+        execution path consumes (agent_id, input, workflow_run_id, node_id,
+        environment, ...).
+      required: [task_id, task_type, created_at]
+      properties:
+        task_id:
+          type: string
+          description: Logical task identity ("<task_type>-<rfc3339nano>", the Queue.Enqueue format).
+        task_type:
+          type: string
+          description: The queue task type (e.g. agent.run).
+        run_id:
+          type: string
+          description: The agent/tool run the task executes (empty when the caller has none yet).
+        organization_id:
+          type: string
+          description: Tenant scope, mirrored into the task's organization stamp.
+        trace_id:
+          type: string
+          description: Distributed-trace correlation id when the caller has one.
+        payload:
+          type: object
+          additionalProperties: true
+          description: The original enqueue payload, republished verbatim.
+        created_at:
+          type: string
+          format: date-time
+    NcNodeCompletedEnvelope:
+      type: object
+      description: |
+        The wire shape fanned out onto agentos.workflow.node.completed after
+        one workflow node reaches a terminal state. Consumers decide what
+        "completed" triggers; the framework guarantees at-least-once delivery
+        of the fact. Memory mode has no fan-out plane (single-process
+        deployments coordinate through the DAG executor directly).
+      required: [organization_id, workflow_run_id, node_id, status, completed_at]
+      properties:
+        organization_id:
+          type: string
+        workflow_run_id:
+          type: string
+        node_id:
+          type: string
+        run_id:
+          type: string
+          description: The node's agent/tool run when it has one.
+        status:
+          type: string
+          description: Terminal node status (completed | failed).
+        output:
+          type: string
+        error:
+          type: string
+          description: Error code for failed nodes (e.g. NODE_FAILED).
+        completed_at:
+          type: string
+          format: date-time
+    NcDLQEntry:
+      type: object
+      description: |
+        The inspected view of one retained dead letter. payload_base64 is the
+        original message bytes base64-encoded (bytes, not raw JSON, so even a
+        malformed payload dead-letters losslessly and requeue republishes it
+        verbatim). run_id/organization_id/task_id are best-effort identity
+        extractions from run-dispatch payloads.
+      required: [sequence, subject, error, attempts, dead_lettered_at]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+          description: The 1-based position in the agentos.dlq retained log (the requeue key).
+        subject:
+          type: string
+          description: The original subject the message was published to.
+        task_id:
+          type: string
+        run_id:
+          type: string
+        organization_id:
+          type: string
+        error:
+          type: string
+          description: The last handler error (or the recovered panic value).
+        attempts:
+          type: integer
+          format: int64
+          description: The delivery count at dead-letter time (the retry cap is 4 by default, mirroring the engine's rule).
+        dead_lettered_at:
+          type: string
+          format: date-time
+        payload_base64:
+          type: string
+          contentEncoding: base64
+          description: The original message bytes, base64-encoded.
+    NcReplayRequest:
+      type: object
+      required: [subject, from]
+      properties:
+        subject:
+          type: string
+          description: The subject to replay. Only agentos.runs.create and agentos.workflow.node.completed are accepted (the DLQ and foreign subjects are refused).
+          enum:
+            - agentos.runs.create
+            - agentos.workflow.node.completed
+        from:
+          type: string
+          format: date-time
+          description: Inclusive replay origin — retained entries with timestamp >= from are re-published, oldest-first.
+      example:
+        subject: agentos.runs.create
+        from: '2026-09-10T12:00:00Z'
+    NcReplayResult:
+      type: object
+      required: [subject, from, replayed]
+      properties:
+        subject:
+          type: string
+        from:
+          type: string
+          format: date-time
+        replayed:
+          type: integer
+          format: int64
+          description: How many retained entries matched the window and were re-published verbatim onto the subject.
+    NcErrorEnvelope:
+      type: object
+      description: Structured error model (mirrors the base spec).
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: not_replayable
+            message:
+              type: string
+
+      # ---- wave-10 fragment: rate-limits.yaml (schemas) ----
+    RateLimit:
+      type: object
+      description: |
+        One stored limit row (the internal limiter.Config projection).
+        subject_id null marks the scope's ORG DEFAULT. Zero means unlimited
+        for a dimension; RPD is enforced over a ROLLING 24h window and TPM
+        over a one-minute window with one-call-granularity token accounting.
+      properties:
+        scope:
+          type: string
+          enum:
+          - org
+          - agent
+          - tool
+          - model
+        subject_id:
+          type: [string, 'null']
+          description: Agent id / tool id / model name; null = the org default.
+        rpm:
+          type: integer
+          minimum: 0
+          description: Requests per one-minute sliding window (0 = unlimited).
+        rpd:
+          type: integer
+          minimum: 0
+          description: Requests per ROLLING 24h sliding window (0 = unlimited).
+        tpm:
+          type: integer
+          minimum: 0
+          description: Tokens per one-minute sliding window, model scope (0 = unlimited).
+        enabled:
+          type: boolean
+          description: |
+            False disables the row; a disabled SUBJECT row suppresses the org
+            default for that subject (the per-subject opt-out).
+        org_default:
+          type: boolean
+          description: Convenience mirror of subject_id == null on list responses.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - scope
+      - subject_id
+      - rpm
+      - rpd
+      - tpm
+      - enabled
+    RateLimitUpsertRequest:
+      type: object
+      description: |
+        Upsert payload. Omitted dimensions default to 0 (unlimited); an
+        enabled row must set at least one positive dimension (stage with
+        enabled=false instead).
+      properties:
+        rpm:
+          type: integer
+          minimum: 0
+        rpd:
+          type: integer
+          minimum: 0
+        tpm:
+          type: integer
+          minimum: 0
+        enabled:
+          type: boolean
+          default: true
+    RateLimitListResponse:
+      type: object
+      properties:
+        limits:
+          type: array
+          description: All stored rows of the caller's org (org defaults and subject rows).
+          items:
+            $ref: '#/components/schemas/RateLimit'
+      required:
+      - limits
+    RateLimitUpsertResponse:
+      type: object
+      properties:
+        limit:
+          $ref: '#/components/schemas/RateLimit'
+      required:
+      - limit
+    RateLimitDeleteResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          description: Always true on success.
+        scope:
+          type: string
+        subject_id:
+          type: string
+          description: The deleted row's subject ("" for an org default).
+      required:
+      - deleted
+      - scope
+      - subject_id
+    RateLimitErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of VALIDATION_ERROR, NOT_FOUND, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    RateLimitedError:
+      type: object
+      description: |
+        The 429 envelope of the run-creation gate (POST /runs): the house
+        error shape plus the two issue-#124 additions (scope, retry_after).
+        Sent with a Retry-After header (seconds, ceil, >= 1) equal to
+        error.retry_after.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Always rate_limited for a granular denial.
+              examples:
+              - rate_limited
+            message:
+              type: string
+              description: Human-readable denial (names the scope, window and observed usage).
+            scope:
+              type: string
+              enum:
+              - org
+              - agent
+              - tool
+              - model
+              description: The scope whose window denied.
+            retry_after:
+              type: integer
+              minimum: 1
+              description: Seconds until the first denying window frees up (mirrors Retry-After).
+          required:
+          - code
+          - message
+          - scope
+          - retry_after
+      required:
+      - error
+
+      # ---- wave-10 fragment: batch.yaml (schemas) ----
+    BatchErrorEnvelope:
+      type: object
+      description: Structured error model shared with the base spec.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (VALIDATION_ERROR, NOT_FOUND, UNAUTHORIZED, ...).
+            message:
+              type: string
+          required: [code, message]
+      required: [error]
+
+    BatchItem:
+      type: object
+      description: One batch item's outcome. Result metadata (run_id, deployment_id, name, ...) is flattened onto the item; a failed item carries the error string.
+      properties:
+        ref:
+          type: string
+          description: Caller-facing reference — the agent id, the input index or the secret name.
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, cancelled]
+        error:
+          type: string
+          description: The failure reason (present exactly when status is failed).
+        run_id:
+          type: string
+          description: runs items — the created run id.
+        task_id:
+          type: string
+          description: runs items — the enqueued "agent.run" task id.
+        workflow_run_id:
+          type: string
+          description: workflow items — the created workflow run id.
+        agent_id:
+          type: string
+          description: agent-update items — the patched agent id.
+        deployment_id:
+          type: string
+          description: agent-deploy items — the created deployment id.
+        version:
+          type: integer
+          description: agent-deploy items — the deployed version.
+        environment:
+          type: string
+          description: agent-deploy items — the deployment environment.
+        name:
+          type: string
+          description: secret items — the secret name (never the value).
+        key_version:
+          type: integer
+          description: secret items — the envelope key version.
+      required: [ref, status]
+
+    BatchSummary:
+      type: object
+      description: Rollup of the item states.
+      properties:
+        total:
+          type: integer
+        succeeded:
+          type: integer
+        failed:
+          type: integer
+        cancelled:
+          type: integer
+      required: [total, succeeded, failed, cancelled]
+
+    BatchRecord:
+      type: object
+      description: Full batch job record (GET /batch/{id} and POST /batch/{id}/cancel).
+      properties:
+        batch_id:
+          type: string
+        organization_id:
+          type: string
+        type:
+          type: string
+          enum: [runs, workflows, agent_update, agent_deploy, run_cancel, secrets]
+        status:
+          type: string
+          description: running while any item is unsettled; completed or cancelled when terminal.
+        max_concurrency:
+          type: integer
+          description: The effective pool size (clamped to the hard cap 32).
+        summary: { $ref: "#/components/schemas/BatchSummary" }
+        total:
+          type: integer
+        completed:
+          type: integer
+          description: Items in a terminal state.
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/BatchItem" }
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+      required: [batch_id, organization_id, type, status, summary, total, completed, items, created_at, updated_at]
+
+    BatchRunsRequest:
+      type: object
+      description: Either {agent_id, inputs[]} or {agent_ids[], input} — never both selectors.
+      properties:
+        agent_id:
+          type: string
+          description: One agent to run over every entry of inputs.
+        agent_ids:
+          type: array
+          items: { type: string }
+          description: N agents run over the shared input.
+        input:
+          type: string
+          description: Shared input for the agent_ids form.
+        inputs:
+          type: array
+          items: { type: string }
+          description: One input per item for the single-agent form.
+        max_concurrency:
+          type: integer
+          description: Pool size hint (default 4, clamped to the hard cap 32).
+    BatchRunsResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          run_ids:
+            type: array
+            items: { type: string }
+            description: The succeeded items' run ids in submission order.
+        required: [run_ids]
+
+    BatchWorkflowTriggerRequest:
+      type: object
+      properties:
+        inputs:
+          type: array
+          items: { type: string }
+          description: One workflow execution per entry.
+        max_concurrency:
+          type: integer
+      required: [inputs]
+    BatchWorkflowTriggerResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          workflow_id:
+            type: string
+          workflow_run_ids:
+            type: array
+            items: { type: string }
+        required: [workflow_id, workflow_run_ids]
+
+    BatchAgentPatch:
+      type: object
+      description: At least one field must be set; name/instructions/model must be non-blank when present.
+      properties:
+        name: { type: string }
+        description: { type: string }
+        instructions: { type: string }
+        model: { type: string }
+    BatchAgentUpdateRequest:
+      type: object
+      properties:
+        agent_ids:
+          type: array
+          items: { type: string }
+        patch: { $ref: "#/components/schemas/BatchAgentPatch" }
+        max_concurrency:
+          type: integer
+      required: [agent_ids, patch]
+    BatchAgentUpdateResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          updated_agent_ids:
+            type: array
+            items: { type: string }
+        required: [updated_agent_ids]
+
+    BatchAgentDeployRequest:
+      type: object
+      properties:
+        agent_ids:
+          type: array
+          items: { type: string }
+        version:
+          type: integer
+          description: Explicit version for every agent; when omitted each item resolves the agent's latest published version.
+        environment:
+          type: string
+          enum: [development, staging, production]
+          description: Defaults to production.
+        max_concurrency:
+          type: integer
+      required: [agent_ids]
+    BatchAgentDeployResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          environment:
+            type: string
+          deployment_ids:
+            type: array
+            items: { type: string }
+        required: [environment, deployment_ids]
+
+    BatchRunCancelRequest:
+      type: object
+      properties:
+        run_ids:
+          type: array
+          items: { type: string }
+        max_concurrency:
+          type: integer
+      required: [run_ids]
+    BatchRunCancelResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          cancelled_run_ids:
+            type: array
+            items: { type: string }
+        required: [cancelled_run_ids]
+
+    BatchSecretsRequest:
+      type: object
+      properties:
+        secrets:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              value: { type: string, writeOnly: true }
+            required: [name, value]
+        max_concurrency:
+          type: integer
+      required: [secrets]
+    BatchSecretsResponse:
+      allOf:
+      - $ref: "#/components/schemas/BatchSubmission"
+      - type: object
+        properties:
+          created:
+            type: array
+            items: { type: string }
+            description: The created secret names (values are never echoed).
+        required: [created]
+
+    BatchSubmission:
+      type: object
+      description: The settled batch body shared by every submission response (200 or 207).
+      properties:
+        batch_id:
+          type: string
+        status:
+          type: string
+          description: completed when every item settled; the 207 form still reports completed with failed/cancelled items.
+        summary: { $ref: "#/components/schemas/BatchSummary" }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/BatchItem" }
+      required: [batch_id, status, summary, items]
 
   requestBodies: {}
   headers: {}
