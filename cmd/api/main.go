@@ -22,6 +22,7 @@ import (
 	"agentos/internal/audit"
 	"agentos/internal/auth"
 	"agentos/internal/billing"
+	"agentos/internal/compliance"
 	"agentos/internal/config"
 	"agentos/internal/connectors"
 	"agentos/internal/database"
@@ -106,6 +107,10 @@ type app struct {
 	notifSvc       *notifications.Service
 	publisher      events.Publisher
 	eventsLister   events.PagedStore
+
+	// wave-9 issue #138: read-only compliance evidence pack (aggregates
+	// the services above into auditor-ready artifacts; never writes).
+	complianceSvc *compliance.Service
 }
 
 // newApp builds the service graph. When db is non-nil every service is
@@ -338,6 +343,9 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	// issue #51: eval-gated canary autopromotion (no-op unless
 	// AGENTOS_CANARY_AUTOPROMOTE is truthy)
 	WireCanaryAutoPromotion(a.evalSvc, a.deploymentsSvc, a.auditSvc, a.logr)
+	// wave-9 issue #138: compliance evidence pack — read-only aggregation
+	// over the existing services (no writes, no migration).
+	a.complianceSvc = newComplianceService(a)
 	// expose to handlers for backwards-compatible wiring in tests
 	runsServiceVar = a.runsSvc
 	// issue #47: expose billing to the create-run quota gate
@@ -421,6 +429,7 @@ func (a *app) routes() http.Handler {
 	registerAuditEventsRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
 	// wave-8 issue A: tamper-evident chain verify + evidence export
 	registerAuditChainRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
+	registerComplianceRoutes(apiMux, a.complianceSvc, a.authSvc, a.apiKeysSvc) // wave-9 issue #138: compliance evidence pack (audit.read = OWNER/ADMIN)
 	// issue #56: events read API (keyset-paginated, org-scoped)
 	registerEventsRoutes(apiMux, a.eventsLister, a.authSvc, a.apiKeysSvc)
 	// issue #24: billing plans/subscriptions/invoices

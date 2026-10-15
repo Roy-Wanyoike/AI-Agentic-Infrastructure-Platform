@@ -1,0 +1,337 @@
+# AgentOS API — OpenAPI 3.1 fragment for the compliance evidence pack
+# (wave-9 issue #138: control mapping, per-agent technical documentation,
+# deterministic evidence bundles for SOC 2 / ISO 42001 / EU AI Act / NIST).
+#
+# Merge target: api/openapi.yaml. Paths are written WITHOUT the /api/v1
+# prefix (routes mount on apiMux and are served under both /v1 and /api/v1).
+#
+# Contract notes:
+#   * All three endpoints are READ-ONLY: the compliance service consumes its
+#     collaborators through write-free reader interfaces and appends no audit
+#     rows (a GET that mutates the trail it evidences would be self-defeating).
+#   * Pure aggregation: NO database migration backs these endpoints.
+#   * RBAC: audit.read — OWNER/ADMIN only (the same evidence-level grant as
+#     /audit/verify + /audit/export; no new permission enum).
+#   * Standalone-valid: every local $ref resolves inside this fragment and the
+#     security scheme names used by `security:` are declared in this fragment's
+#     own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+#     `python3 scripts/check_fragment_refs.py api/fragments/compliance.yaml`
+#     passes. (audit-chain.yaml's bearerAuth shorthand dangles at fold time —
+#     this fragment deliberately uses the dominant bearerToken|apiKey form.)
+#   * x-required-permission documents the RBAC permission per operation.
+#   * Tenant scope comes exclusively from the auth claims; unknown AND
+#     foreign agent ids both answer 404 without an existence leak.
+#   * Determinism: the evidence bundle is byte-stable for unchanged data +
+#     fixed window (no generation timestamp by design — the window bounds are
+#     the only time coordinates; anchor the sha256 in WORM storage).
+paths:
+  /compliance/controls:
+    get:
+      operationId: listComplianceControls
+      summary: Control catalog with framework mapping and live evidence for the caller's organization
+      description: |
+        Static control catalog (identity & access, tenant isolation &
+        secrets, logging & audit, human oversight, risk & policy, lifecycle
+        & change management, supply chain, residency) rendered with, per
+        control, the satisfying platform primitives, framework tags
+        (SOC2_TSC_*, ISO42001_A_*, EUAI_ACT_ART_*, NIST_AIRMF_*) and live
+        evidence pointers measured at request time (e.g. the audit chain
+        head hash + length from ChainHead, approval/policy/canary/MCP
+        counts). Collectors that fail degrade that control to an explicit
+        `static_pointer` evidence entry with note "live evidence
+        unavailable" — the report never fails as a whole.
+      x-required-permission: audit.read
+      security:
+        - bearerToken: []
+        - apiKey: []
+      responses:
+        "200":
+          description: Control-mapping report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComControlsReport" }
+        "401": { $ref: "#/components/responses/ComUnauthorized" }
+        "403": { $ref: "#/components/responses/ComForbidden" }
+  /compliance/agents/{id}/technical-doc:
+    get:
+      operationId: getAgentTechnicalDoc
+      summary: Per-agent technical documentation (EU AI Act Annex IV style) generated from platform data
+      description: |
+        Annex-IV-STYLE document assembled from the agent's own records:
+        identity, version history, evaluation evidence (datasets, completed
+        runs, case-weighted pass rate), deployment + canary promotion policy
+        state, effective tool surface (from agent-scoped key allow-lists —
+        "unrestricted" when no active key constrains it), agent-relevant
+        policy bindings, and the tenant's audit posture (chain head + last
+        30-day entry count). `format=md` renders deterministic Markdown with
+        a stable section order; `format=json` (default) renders the
+        structured document. Unknown or foreign agents answer 404 without an
+        existence leak.
+      x-required-permission: audit.read
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, md], default: json }
+      responses:
+        "200":
+          description: |
+            The technical document — structured JSON, or deterministic
+            Markdown when format=md.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComTechDoc" }
+            text/markdown:
+              schema:
+                type: string
+                description: Deterministic Markdown (stable section order 1..7).
+        "400": { $ref: "#/components/responses/ComBadRequest" }
+        "401": { $ref: "#/components/responses/ComUnauthorized" }
+        "403": { $ref: "#/components/responses/ComForbidden" }
+        "404": { $ref: "#/components/responses/ComNotFound" }
+  /compliance/evidence:
+    get:
+      operationId: exportComplianceEvidence
+      summary: Deterministic JSONL compliance evidence bundle for a fixed window
+      description: |
+        One JSON object per line, fixed order: header
+        ({type:"compliance_evidence", org, from, to}), audit chain anchor
+        ({type:"audit_chain_head", head_hash, chain_length,
+        entries_in_window, chain_version}), policy summary, human-oversight
+        (approval) summary, access-lifecycle summary (api_keys, agent_keys),
+        footer ({type:"evidence_end", generated_for_window:true}).
+        BYTE-DETERMINISTIC for unchanged data + fixed window: there is no
+        generation timestamp (the inclusive [from, to] window is the only
+        time coordinate), so the file (or its sha256) can be parked in WORM
+        storage. NEVER includes secret material, audit metadata bodies or
+        message payloads — counts, hashes and bounds only.
+      x-required-permission: audit.read
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, description: "RFC3339 or YYYY-MM-DD (midnight UTC; inclusive)." }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, description: "RFC3339 or YYYY-MM-DD (end of day UTC for date-only; inclusive)." }
+      responses:
+        "200":
+          description: NDJSON evidence bundle.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: JSONL lines in the fixed order documented above.
+        "400": { $ref: "#/components/responses/ComBadRequest" }
+        "401": { $ref: "#/components/responses/ComUnauthorized" }
+        "403": { $ref: "#/components/responses/ComForbidden" }
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  responses:
+    ComUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ComError" }
+    ComForbidden:
+      description: Authenticated but not permitted (audit.read is OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ComError" }
+    ComNotFound:
+      description: Unknown or foreign agent — no existence leak.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ComError" }
+    ComBadRequest:
+      description: Invalid request (format must be json|md; window from/to required, RFC3339 or YYYY-MM-DD, from <= to).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ComError" }
+  schemas:
+    ComError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    ComEvidence:
+      type: object
+      required: [kind, source]
+      properties:
+        kind:
+          type: string
+          enum: [live, static_pointer]
+        source: { type: string }
+        value:
+          description: Measured value for kind=live (counts, hashes, states).
+        surface:
+          type: string
+          description: Pointer to the implementing surface for kind=static_pointer.
+        note: { type: string }
+    ComControl:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        satisfied_by:
+          type: array
+          items: { type: string }
+        frameworks:
+          type: array
+          items:
+            type: string
+            description: "SOC2_TSC_*, ISO42001_A_*, EUAI_ACT_ART_*, NIST_AIRMF_* tags."
+        evidence:
+          type: array
+          items: { $ref: "#/components/schemas/ComEvidence" }
+    ComDomain:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        controls:
+          type: array
+          items: { $ref: "#/components/schemas/ComControl" }
+    ComControlsReport:
+      type: object
+      properties:
+        organization_id: { type: string }
+        generated_at: { type: string, description: RFC3339 UTC. }
+        catalog_version: { type: string }
+        frameworks:
+          type: array
+          items: { type: string }
+        domains:
+          type: array
+          items: { $ref: "#/components/schemas/ComDomain" }
+    ComTechDoc:
+      type: object
+      description: |
+        Annex-IV-style per-agent technical document (see the endpoint
+        description for the section semantics; the JSON field order is part
+        of the determinism contract).
+      properties:
+        agent:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            description: { type: string }
+            model: { type: string }
+            status: { type: string }
+            created_at: { type: string }
+            updated_at: { type: string }
+        organization_id: { type: string }
+        generated_at: { type: string }
+        framework_reference: { type: string }
+        versions:
+          type: array
+          description: Ascending configuration versions.
+          items:
+            type: object
+            properties:
+              version: { type: integer }
+              status: { type: string }
+              created_at: { type: string }
+              published_at: { type: string }
+              published_by: { type: string }
+        evaluations:
+          type: object
+          properties:
+            datasets: { type: integer }
+            dataset_cases: { type: integer }
+            completed_runs: { type: integer }
+            pass_rate: { type: number }
+            total_cost_cents: { type: number }
+            last_run_at: { type: string }
+            note: { type: string }
+        deployments:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              environment: { type: string }
+              status: { type: string }
+              version: { type: integer }
+              canary:
+                type: object
+                nullable: true
+                properties:
+                  canary_version: { type: integer }
+                  weight_percent: { type: integer }
+                  active: { type: boolean }
+              promotion_policy:
+                type: object
+                nullable: true
+                properties:
+                  min_pass_rate: { type: number }
+                  min_canary_runs: { type: integer }
+                  max_p95_latency_ms: { type: integer }
+                  max_cost_per_run_cents: { type: integer }
+                  window_start: { type: string }
+              recorded_decision:
+                type: object
+                nullable: true
+                properties:
+                  action: { type: string, enum: [promote, rollback] }
+                  reason: { type: string }
+                  decided_at: { type: string }
+                  pass_rate: { type: number }
+                  runs_counted: { type: integer }
+        tool_surface:
+          type: object
+          properties:
+            mode: { type: string, enum: [allowlist, unrestricted] }
+            tools:
+              type: array
+              items: { type: string }
+            agent_keys: { type: integer }
+            note: { type: string }
+        policy_bindings:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              effect: { type: string, enum: [allow, deny] }
+              resource_type: { type: string }
+              actions:
+                type: array
+                items: { type: string }
+              enabled: { type: boolean }
+              priority: { type: integer }
+              require_approval: { type: boolean }
+        audit_posture:
+          type: object
+          properties:
+            chain_head: { type: string }
+            chain_length: { type: integer }
+            entries_last_30_days: { type: integer }
+            note: { type: string }
