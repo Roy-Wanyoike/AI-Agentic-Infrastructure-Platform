@@ -405,6 +405,8 @@ func (a *app) routes() http.Handler {
 	// issue #18: public tool registry + audit trail
 	registerToolsRoutes(apiMux, tools.DefaultRegistry(), a.authSvc, a.apiKeysSvc)
 	registerAuditEventsRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
+	// wave-8 issue A: tamper-evident chain verify + evidence export
+	registerAuditChainRoutes(apiMux, a.auditSvc, a.authSvc, a.apiKeysSvc)
 	// issue #56: events read API (keyset-paginated, org-scoped)
 	registerEventsRoutes(apiMux, a.eventsLister, a.authSvc, a.apiKeysSvc)
 	// issue #24: billing plans/subscriptions/invoices
