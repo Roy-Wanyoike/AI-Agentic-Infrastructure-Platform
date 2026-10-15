@@ -35,3 +35,21 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_episodes_org_ts ON knowledge_episodes(o
 -- Per-run drilldown (episode replay / memory prompt assembly).
 CREATE INDEX IF NOT EXISTS idx_knowledge_episodes_org_run ON knowledge_episodes(organization_id, run_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_episodes_org_agent ON knowledge_episodes(organization_id, agent_id);
+
+-- ---------------------------------------------------------------------------
+-- Knowledge ontologies (issue #131): org-scoped graph schemas. The whole
+-- vocabulary (entity_types / edge_types / attribute_defs) lives in the
+-- `schema` JSONB column so the row shape stays stable while the ontology
+-- vocabulary evolves; naming conventions and the reserved attributes
+-- (uuid, name, created_at) are enforced in Go (ValidateOntology).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS knowledge_ontologies (
+    id              TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL,
+    schema          JSONB NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_knowledge_ontologies_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+-- Tenant guard: org-scoped listing is the only enumeration path.
+CREATE INDEX IF NOT EXISTS idx_knowledge_ontologies_org ON knowledge_ontologies(organization_id);
