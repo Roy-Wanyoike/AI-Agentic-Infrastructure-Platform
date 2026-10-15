@@ -1,0 +1,520 @@
+# AgentOS API — OpenAPI 3.1 fragment for the dual-platform simulation engine
+# (issue #133, cross-platform agent behavior modeling).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern — the
+# securitySchemes block below is copied VERBATIM from that fragment), so
+# `python3 scripts/check_fragment_refs.py api/fragments/simulation.yaml`
+# passes. Components carry the track-unique `Simulation` prefix to avoid
+# collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation
+#     (issue #133 grants, internal/auth/permissions_simulation.go):
+#       - create (runs bounded compute) -> simulation.write (OWNER/ADMIN/MEMBER)
+#       - list/get (observability)      -> simulation.read  (all roles)
+#   * structured error model {"error":{"code","message"}}
+#
+# SEMANTICS (issue #133): an agent shares ONE core identity but exhibits
+# PLATFORM-SPECIFIC behavior (PlatformBehavior per environment kind:
+# social | market | network | custom). POST /simulations validates
+# synchronously (fail fast 422) and runs ASYNC on a detached goroutine —
+# the 202 body is the queued record; poll GET /simulations/{id} until the
+# status leaves queued/running. The engine is deterministic: the same
+# config, seed, and clock reproduce byte-identical results (injectable
+# rand + clock; timezone-aware activity multipliers; external activity
+# events injected at specific rounds). Emergence heuristics (documented
+# formulas, restated in each note's `detail`) accompany every result:
+# interaction_density (all kinds), echo_chamber (social), spread_rate
+# (network), liquidity_imbalance (market).
+openapi: 3.1.0
+info:
+  title: AgentOS — dual-platform simulation engine (issue #133 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the simulation operations added by issue #133.
+  Simulations are org-scoped runs of a round-based engine over registered
+  environments (built-ins: social feed, market order book, network message
+  graph; custom kinds via RegisterEnvironment). Agents are SimAgentPersona
+  records: a shared CoreIdentity (a lightweight, Persona-shaped struct that
+  deliberately does NOT import internal/synth — the projection mapping is
+  documented on the type) plus per-platform PlatformBehavior overlays, so
+  the same identity renders divergent behavior per platform. Execution is
+  asynchronous: create returns 202 with a queued record; the terminal
+  record carries the full per-round transcript (actions, metrics, state)
+  and emergence notes. Tenant scope always derives from the auth claims —
+  client-supplied organization ids are ignored — and cross-org reads are
+  the same 404 as unknown ids (no existence leak).
+paths:
+  /simulations:
+    post:
+      operationId: createSimulation
+      summary: Validate, queue and run a simulation asynchronously (202 = accepted)
+      description: |
+        Write operation (simulation.write, OWNER/ADMIN/MEMBER). The body is
+        a SimulationConfig: kind (registered environment), rounds [1,500],
+        seed (determinism anchor), optional IANA location for the
+        timezone-aware activity multipliers, 1..64 SimAgentPersona agents,
+        and optional external ActivityEvents at specific rounds. Validation
+        is synchronous and fails fast with 422 before any record exists.
+        On success the record is queued and a detached goroutine executes
+        the rounds (context detached from the request — completion never
+        depends on the caller staying connected). Poll
+        GET /simulations/{id} until status is completed or failed.
+      x-required-permission: simulation.write (OWNER/ADMIN/MEMBER)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulationConfig'
+      responses:
+        '202':
+          description: |
+            Simulation accepted: the queued record (status "queued") is
+            returned immediately; execution is in progress server-side.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationCreateResponse'
+        '401':
+          $ref: '#/components/responses/SimulationUnauthorized'
+        '403':
+          $ref: '#/components/responses/SimulationForbidden'
+        '422':
+          description: Validation failure (unknown kind, bounds violated, bad timezone, duplicate agent ids...). No record is created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationErrorEnvelope'
+    get:
+      operationId: listSimulations
+      summary: List the caller's organization's simulations (newest first)
+      description: |
+        Read operation (simulation.read, all roles — transcripts and
+        emergence metrics are observability surfaces). The listing is
+        org-scoped from the auth claims and always renders a JSON array
+        (empty registry -> [], never null).
+      x-required-permission: simulation.read (all roles)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The org's simulation records, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationListResponse'
+        '401':
+          $ref: '#/components/responses/SimulationUnauthorized'
+  /simulations/{id}:
+    get:
+      operationId: getSimulation
+      summary: Fetch one simulation record (config, status, result)
+      description: |
+        Read operation (simulation.read, all roles). Unknown AND foreign-org
+        ids are the same 404 (no existence leak across tenants). A completed
+        record carries the full SimulationResult: per-round RoundRecord
+        entries (ActionResult transcript, RoundMetrics, EnvState snapshot)
+        and EmergentNote heuristics with their formulas restated in `detail`.
+      x-required-permission: simulation.read (all roles)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/SimulationID'
+      responses:
+        '200':
+          description: The simulation record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationGetResponse'
+        '401':
+          $ref: '#/components/responses/SimulationUnauthorized'
+        '404':
+          description: Unknown or foreign-org id (indistinguishable by design).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    SimulationID:
+      name: id
+      in: path
+      required: true
+      description: Simulation id (UUID, as returned by the create operation).
+      schema:
+        type: string
+        minLength: 1
+      example: 7f2c1a5e-8e2b-4c1d-9a7b-2f0d5e6a1b2c
+  responses:
+    SimulationUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SimulationErrorEnvelope'
+    SimulationForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SimulationErrorEnvelope'
+  schemas:
+    SimulationCoreIdentity:
+      type: object
+      description: |
+        The platform-independent half of a simulated agent — who the agent
+        IS, independent of where it acts. A lightweight, Persona-shaped
+        struct that deliberately does NOT import internal/synth (documented
+        decoupling, issue #133): synth.Persona.ID/OrgID/Name/RoleHints/
+        Constraints project onto the same-named fields; Traits are a
+        simulation-local numeric vocabulary in [0,1] (missing = 0.5):
+        extraversion (initiating), agreeableness (reciprocal), openness
+        (exploratory), risk_appetite (market aggression).
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: Stable within the simulation; unique per config.
+        org_id:
+          type: string
+          description: Tenant scope (echoed from the config, claims-stamped).
+        name:
+          type: string
+        role_hints:
+          type: array
+          items:
+            type: string
+        constraints:
+          type: object
+          additionalProperties:
+            type: string
+        traits:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 1
+    SimulationPlatformBehavior:
+      type: object
+      description: |
+        The per-platform overlay: how the persona ACTS on one platform. The
+        SAME CoreIdentity with different overlays must produce observably
+        different action mixes (the divergence contract, tested).
+      properties:
+        actions:
+          type: array
+          items:
+            type: string
+          description: Optional vocabulary restriction (adapter verbs, e.g. post/like/follow/comment or buy/sell/bid or send/receive/route). Unknown verbs are rejected by the environment at apply time ("unknown_action").
+        frequency:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Per-round participation gate — the agent acts only if a uniform draw < frequency × activity multiplier. Omitted = always active.
+        weights:
+          type: object
+          additionalProperties:
+            type: number
+          description: Explicit per-action selection weights (normalized internally); REPLACE the trait-derived defaults for the listed verbs.
+    SimulationPersona:
+      type: object
+      description: One simulated agent — shared identity + platform overlays.
+      required: [core_identity, platform_behavior]
+      properties:
+        core_identity:
+          $ref: '#/components/schemas/SimulationCoreIdentity'
+        platform_behavior:
+          type: object
+          description: Keyed by environment kind (social | market | network | custom).
+          additionalProperties:
+            $ref: '#/components/schemas/SimulationPlatformBehavior'
+    SimulationActivityEvent:
+      type: object
+      description: |
+        An external event injected at a specific round (activity injection,
+        issue #133) so runs can be steered without bespoke configs. Adapter
+        vocabulary — social: trending_topic {topic}; market: price_shock
+        {symbol, pct (may be negative)}; network: viral_message {topic}.
+        Environments absorb events through an optional EventInjector seam;
+        the pinned SimulationEnvironment signature stays clean.
+      required: [round, kind]
+      properties:
+        round:
+          type: integer
+          minimum: 1
+          description: 1-based; must be within [1, rounds].
+        platform:
+          type: string
+          description: Empty, or the run kind (validated to match).
+        kind:
+          type: string
+        payload:
+          type: object
+          additionalProperties:
+            type: string
+    SimulationConfig:
+      type: object
+      description: |
+        The wire-level configuration for one simulation (POST body). The
+        tenant is derived from the auth claims — any client-supplied
+        org_id is force-stamped over server-side.
+      required: [kind, rounds, agents]
+      properties:
+        org_id:
+          type: string
+          description: Server-side only (claims); ignored on input.
+        name:
+          type: string
+        kind:
+          type: string
+          description: Registered environment kind (built-ins social | market | network; custom kinds via RegisterEnvironment).
+        rounds:
+          type: integer
+          minimum: 1
+          maximum: 500
+        seed:
+          type: integer
+          format: int64
+          description: Determinism anchor — same config + seed + clock reproduce byte-identical results.
+        location:
+          type: string
+          description: IANA timezone for the activity multipliers ("" = UTC); invalid names are a 422.
+        agents:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/SimulationPersona'
+        activity:
+          type: array
+          description: External events at specific rounds (see SimulationActivityEvent).
+          items:
+            $ref: '#/components/schemas/SimulationActivityEvent'
+        params:
+          type: object
+          additionalProperties:
+            type: string
+          description: Adapter tuning (social feed_depth; market symbols/price_<SYM>/starting_cash; network inbox_depth).
+    SimulationAction:
+      type: object
+      description: One atomic agent decision in a platform vocabulary.
+      properties:
+        agent_id:
+          type: string
+        kind:
+          type: string
+          description: Platform verb (post/like/follow/comment; buy/sell/bid; send/receive/route; custom).
+        target:
+          type: string
+          description: Object id (post, symbol, peer, message).
+        payload:
+          type: object
+          additionalProperties:
+            type: string
+    SimulationActionResult:
+      type: object
+      description: The environment's verdict on one attempted action.
+      properties:
+        action:
+          $ref: '#/components/schemas/SimulationAction'
+        accepted:
+          type: boolean
+        reason:
+          type: string
+          description: Rejection class (unknown_post, no_liquidity, insufficient_holdings, inbox_empty, max_hops, idle, ...).
+        detail:
+          type: string
+          description: Human-readable outcome (e.g. "filled 2/3 AGENTOS").
+        at:
+          type: string
+          format: date-time
+    SimulationRoundMetrics:
+      type: object
+      description: The per-round quantitative footprint.
+      properties:
+        round:
+          type: integer
+        total_agents:
+          type: integer
+        active_agents:
+          type: integer
+          description: Agents that passed the activity gate this round.
+        actions:
+          type: integer
+        accepted:
+          type: integer
+        rejected:
+          type: integer
+        action_mix:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Verb -> attempted count.
+        activity_multiplier:
+          type: number
+          description: Timezone-aware participation multiplier in force this round (documented piecewise table over the local hour).
+        events:
+          type: array
+          items:
+            type: string
+          description: External event kinds applied this round.
+    SimulationEnvState:
+      type: object
+      description: |
+        A point-in-time SNAPSHOT of the observable environment — JSON-
+        serializable, adapter-defined Facts (social feed + follow counts;
+        market symbols/order book/cash/holdings; network peers/inbox/edges),
+        safe to hand to agents and API responses alike. Snapshots are copies.
+      properties:
+        kind:
+          type: string
+        round:
+          type: integer
+        agent_ids:
+          type: array
+          items:
+            type: string
+        facts:
+          type: object
+          additionalProperties: true
+    SimulationRoundRecord:
+      type: object
+      description: The full transcript of one round.
+      properties:
+        round:
+          type: integer
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationActionResult'
+        metrics:
+          $ref: '#/components/schemas/SimulationRoundMetrics'
+        state:
+          $ref: '#/components/schemas/SimulationEnvState'
+    SimulationEmergentNote:
+      type: object
+      description: |
+        One emergence heuristic over the completed run. `detail` ALWAYS
+        restates the formula and raw counts — a score is never presented
+        without its derivation. Documented heuristics: interaction_density
+        (accepted targeted actions / max(1, agents×rounds), all kinds);
+        echo_chamber (own-post like+comment share, social, 1.0 = pure echo
+        chamber); spread_rate (unique recipients / max(1, agents-1),
+        network, 1.0 = full cast reached); liquidity_imbalance
+        (|bids-asks|/max(1,bids+asks) at the final state, market, 0 =
+        balanced book).
+      properties:
+        kind:
+          type: string
+        score:
+          type: number
+        detail:
+          type: string
+    SimulationResult:
+      type: object
+      description: The terminal product of a run (issue #133).
+      properties:
+        kind:
+          type: string
+        rounds:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationRoundRecord'
+        emergent_notes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationEmergentNote'
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+    SimulationRecord:
+      type: object
+      description: One org-scoped simulation record (the HTTP resource).
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        config:
+          $ref: '#/components/schemas/SimulationConfig'
+        result:
+          $ref: '#/components/schemas/SimulationResult'
+        error:
+          type: string
+          description: Terminal failure message (failed status only).
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SimulationCreateResponse:
+      type: object
+      required: [simulation]
+      properties:
+        simulation:
+          $ref: '#/components/schemas/SimulationRecord'
+    SimulationGetResponse:
+      type: object
+      required: [simulation]
+      properties:
+        simulation:
+          $ref: '#/components/schemas/SimulationRecord'
+    SimulationListResponse:
+      type: object
+      required: [simulations, count]
+      properties:
+        simulations:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationRecord'
+        count:
+          type: integer
+    SimulationErrorEnvelope:
+      type: object
+      description: Structured error model {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
