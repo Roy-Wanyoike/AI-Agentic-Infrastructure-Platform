@@ -316,7 +316,42 @@ func enforceQuota(w http.ResponseWriter, r *http.Request, orgID, agentID string,
 	return false
 }
 
-func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.HandlerFunc {
+// runDispatcherOf extracts the optional messaging dispatcher from the
+// variadic wiring slot (nil when absent).
+func runDispatcherOf(dispatch []*queue.Dispatcher) *queue.Dispatcher {
+	if len(dispatch) == 0 {
+		return nil
+	}
+	return dispatch[0]
+}
+
+// enqueueRunTask routes one run task through the active dispatch plane
+// (issue #116): nil dispatcher -> plain queue enqueue; non-nil ->
+// Dispatcher.Dispatch, which in memory-effective mode IS the queue enqueue
+// and in nats|hybrid publishes a RunEnvelope onto agentos.runs.create
+// (hybrid falls back to the memory queue on publish failure, so a broker
+// outage never loses a run). A nats-mode publish failure returns nil, which
+// the caller surfaces as the same "failed to enqueue run" 500 a failed
+// enqueue produces — fail-fast, no silent split of the task flow.
+func enqueueRunTask(q *queue.Queue, d *queue.Dispatcher, taskType string, payload map[string]any) *queue.Task {
+	if d == nil {
+		return q.Enqueue(taskType, payload)
+	}
+	task, err := d.Dispatch(taskType, payload)
+	if err != nil {
+		return nil
+	}
+	return task
+}
+
+// createRunHandler serves POST /runs/create. dispatch is the optional
+// messaging-plane wiring slot (issue #116; variadic so every existing call
+// site and test compiles unchanged — the API passes exactly one
+// *queue.Dispatcher). When provided, run creation rides
+// queue.Dispatcher.Dispatch: memory-effective mode delegates to the same
+// queue enqueue as before, nats|hybrid publish onto agentos.runs.create
+// (run_id + organization_id ride the envelope identity fields).
+func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service, dispatch ...*queue.Dispatcher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -463,6 +498,7 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service) http.Hand
 				ToolAllowList:  claims.ToolAllowList,
 			})
 		}
+		task := enqueueRunTask(workQueue, runDispatcherOf(dispatch), "agent.run", payload)
 		// Issue #114: the run trace root + W3C trace context on the queue
 		// task payload. The API-side run.enqueue span registers the run's
 		// trace id (GET /runs/{id}/trace); the worker joins the SAME trace

@@ -179,6 +179,17 @@ func main() {
 	// process-local and is unit-tested, not exposed over HTTP today.
 	metricsSvc := observability.NewMetrics()
 	runsService.SetMetrics(metricsSvc)
+	// issue #116: AGENTOS_MESSAGING task-dispatch plane (memory|nats|hybrid,
+	// default memory). memory keeps the platform queue as the only dispatch
+	// path; nats|hybrid additionally carry run tasks over the JetStream seam
+	// (cmd/worker/messaging.go). nats fails fast when the broker is
+	// unreachable — a silently idling worker would strand published runs.
+	dispatcher, mderr := newMessagingDispatcher(workQueue, logr, metricsSvc)
+	if mderr != nil {
+		logr.Error("messaging dispatcher init failed", "error", mderr)
+		os.Exit(1)
+	}
+	defer func() { _ = dispatcher.Close() }()
 	// issue #107: runner-wide runtime configuration (conversation history +
 	// token budget) from the AGENTOS_RUNTIME_* environment variables — safe
 	// defaults when unset — and the best-effort run lifecycle event seam
@@ -524,6 +535,17 @@ func main() {
 				fin, code = workflows.RunStatusFailed, "NODE_FAILED"
 			}
 			_ = wfSvc.FinishNodeRun(ctx, checkpoint.OrganizationID, checkpoint.ID, fin, code)
+			// issue #116 req 3: fan the finished node out onto
+			// agentos.workflow.node.completed (no-op in memory mode).
+			publishNodeCompleted(dispatcher, queue.NodeCompletedEnvelope{
+				OrganizationID: checkpoint.OrganizationID,
+				WorkflowRunID:  workflowRunID,
+				NodeID:         checkpoint.NodeID,
+				RunID:          runID,
+				Status:         string(fin),
+				Error:          code,
+				CompletedAt:    time.Now().UTC(),
+			})
 		}
 		_ = runsService.UpdateStatus(runID, runs.StatusCompleted, run.Output)
 		go func() {
@@ -551,6 +573,16 @@ func main() {
 	logr.Info("worker shutdown grace configured", "seconds", int(grace.Seconds()), "env", runtime.EnvShutdownGrace)
 	sigCtx, sigStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer sigStop()
+
+	// issue #116: consume the messaging plane (nats|hybrid) alongside the
+	// platform-queue loop below; memory mode starts nothing. The executor is
+	// processTask adapted to the framework's executor signature — the SAME
+	// task path the queue loop runs. Shares the shutdown signal + grace
+	// window with the queue loop.
+	stopMessaging := startMessagingConsumer(sigCtx, dispatcher,
+		func(_ context.Context, task *queue.Task) error { return processTask(task) },
+		messagingNodeTrigger(wfSvc), grace, logr)
+	defer stopMessaging()
 
 	// If AGENTOS_API_PULL=true, poll the API for tasks (development pull model)
 	if os.Getenv("AGENTOS_API_PULL") == "true" {

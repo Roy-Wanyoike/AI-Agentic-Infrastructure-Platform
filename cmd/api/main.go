@@ -82,8 +82,13 @@ type app struct {
 	agentsSvc  *agents.Service
 	runsSvc    *runs.Service
 	queueSvc   *queue.Queue
-	metricsSvc *observability.Metrics
-	streamSvc  *streaming.Service
+	// issue #116: AGENTOS_MESSAGING run-dispatch plane (memory|nats|hybrid).
+	// The API process is a PRODUCER + ADMIN on the plane: it never starts the
+	// dispatcher's consumer (worker processes own execution). Always non-nil
+	// after newApp; memory-effective mode makes Dispatch == Enqueue.
+	runDispatcher *queue.Dispatcher
+	metricsSvc    *observability.Metrics
+	streamSvc     *streaming.Service
 
 	// wave-2 verticals
 	wfSvc *workflows.Service
@@ -153,6 +158,24 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		metricsSvc: observability.NewMetrics(),
 		streamSvc:  streaming.NewService(),
 	}
+	// issue #116: AGENTOS_MESSAGING selects the run task-dispatch plane —
+	// memory (default; Dispatch == Enqueue, zero-infra dev unchanged), nats
+	// (broker fail-fast, same policy as queue.NewFromConfig for redis) or
+	// hybrid (memory-queue fallback on broker outage, never loses a run). The
+	// dispatcher's Consumer is deliberately NOT started here: the API is a
+	// producer + admin on the plane, workers own execution. Its
+	// InspectDLQ/RequeueDLQ/ReplayFrom surface backs the messaging admin API.
+	runDispatcher, mderr := queue.NewDispatcherFromEnv(queueSvc,
+		queue.WithDispatcherLogger(logr),
+		queue.WithDispatcherMetrics(a.metricsSvc),
+	)
+	if mderr != nil {
+		logr.Error("messaging dispatcher init failed", "error", mderr)
+		os.Exit(1)
+	}
+	a.runDispatcher = runDispatcher
+	logr.Info("messaging dispatch plane selected",
+		"mode", string(runDispatcher.Mode()), "effective", string(runDispatcher.EffectiveMode()), "degraded", runDispatcher.Degraded())
 	if db != nil {
 		a.authSvc = auth.NewServiceWithStore(jwtSecretVar, auth.NewPostgresStore(db))
 		a.apiKeysSvc = apikeys.NewServiceWithStore(apikeys.NewPostgresStore(db))
@@ -447,7 +470,7 @@ func (a *app) routes() http.Handler {
 		}
 		// default to create (POST); idempotency middleware honors Idempotency-Key
 		idempotent := httpx.NewIdempotencyMiddleware(httpx.NewIdempotencyStoreFromDB(a.db))
-		auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(idempotent(http.HandlerFunc(createRunHandler(a.queueSvc, a.auditSvc)))).ServeHTTP(w, r)
+		auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(idempotent(http.HandlerFunc(createRunHandler(a.queueSvc, a.auditSvc, a.runDispatcher)))).ServeHTTP(w, r)
 	})))
 	// queue pull endpoint for workers to pull tasks (dev-only)
 	apiMux.Handle("/queue/pull", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(http.HandlerFunc(queuePullHandler(a.queueSvc)))))
