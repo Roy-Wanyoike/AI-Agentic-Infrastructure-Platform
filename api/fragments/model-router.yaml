@@ -1,0 +1,170 @@
+# AgentOS API — OpenAPI 3.1 fragment for the model router surfaces
+# (issue #112, wave-10).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). This fragment carries SCHEMAS ONLY (no new paths today): the
+# router is configured through environment/agent runtime_config surfaces, not
+# through dedicated HTTP endpoints, so it contributes the wire-shape
+# vocabulary (RoutingPolicy, ModelCapabilities, RouterDecision) that run/step
+# payloads reference when router metadata is surfaced.
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/model-router.yaml`
+# passes.
+#
+# SECURITY BLOCK (verbatim from api/fragments/apikeys.yaml):
+#   security:
+#   - bearerToken: []
+#   - apiKey: []
+openapi: 3.1.0
+info:
+  title: AgentOS — model router (issue #112 fragment)
+  version: 3.0.0-fragment
+description: |
+  Schema fragment for the advanced model router (issue #112). The router
+  wraps the model provider and picks the serving model per request using a
+  routing policy: cost_optimize (cheapest capable model), latency_optimize
+  (lowest estimated latency), task_complexity (deterministic request
+  classification matched to capability tiers), round_robin (deterministic
+  rotation) or weighted (deterministic weighted selection keyed on the
+  request content). Per-agent overrides ride the agent runtime_config under
+  the `routing` key: {"policy": <RoutingPolicy>, "candidates":
+  [<model ids, optional "@<weight>" suffix>]}. The organization-wide default
+  is configured per process via AGENTOS_ROUTING_POLICY and
+  AGENTOS_ROUTING_CANDIDATES; model capability data comes from the built-in
+  registry, overridable per tenant via AGENTOS_MODELS_JSON. Candidate
+  selection filters by capability constraints (context fit, tool support,
+  vision support); circuit breakers skip providers whose consecutive
+  failures tripped them (default: 5 failures, 30s cooldown, 2 probe
+  successes to close).
+security:
+- bearerToken: []
+- apiKey: []
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    RoutingPolicy:
+      type: string
+      description: |
+        How the router orders its candidates for each request. All orderings
+        are deterministic functions of the request and candidate set:
+        cost_optimize ranks by estimated per-request cost (registry input/output
+        prices over estimated prompt tokens and the requested output budget);
+        latency_optimize by the registry latency estimate; task_complexity
+        classifies the request (prompt size, reasoning indicators, attached
+        tools, output budget) into Simple/Standard/Complex/Expert and prefers
+        the closest capability tier; round_robin rotates across the candidates;
+        weighted uses a seeded hash of the request content with the configured
+        candidate weights (weighted-random-key scheme — same request, same
+        model).
+      enum:
+      - cost_optimize
+      - latency_optimize
+      - task_complexity
+      - round_robin
+      - weighted
+    ModelCapabilities:
+      type: object
+      description: |
+        One model's routing capabilities as resolved from the capability
+        registry (built-in table + tenant overrides via AGENTOS_MODELS_JSON
+        or the registry API). Figures are approximations for routing and
+        ranking, not billing data.
+      properties:
+        model:
+          type: string
+          description: Canonical model id (matched case-insensitively; a "vendor/model" id also matches by bare suffix).
+        context_tokens:
+          type: integer
+          format: int64
+          description: Model context window in tokens (input+output); 0 means unknown (no context-fit filtering).
+        tool_support:
+          type: boolean
+          description: Whether the model can execute tool/function calls.
+        vision_support:
+          type: boolean
+          description: Whether the model accepts image input.
+        quality_tier:
+          type: string
+          description: Coarse capability band matched against the classified request complexity.
+          enum:
+          - basic
+          - standard
+          - premium
+          - frontier
+        latency_estimate_ms:
+          type: integer
+          format: int64
+          description: Rough median end-to-end latency for a typical ~1k-token completion (routing heuristic, not an SLA).
+        input_cost_per_1k:
+          type: number
+          format: double
+          description: List price in USD per 1k input tokens.
+        output_cost_per_1k:
+          type: number
+          format: double
+          description: List price in USD per 1k output tokens.
+      required:
+      - model
+    RouterDecision:
+      type: object
+      description: |
+        Observability projection of one routing choice. Surfaced on run/step
+        metadata (routing_policy / routing_model / routing_provider /
+        routing_complexity / routing_fallback) and available for diagnostics;
+        decisions are computed without calling providers.
+      properties:
+        policy:
+          $ref: '#/components/schemas/RoutingPolicy'
+        complexity:
+          type: string
+          description: Deterministic classification of the request (task_complexity policy input).
+          enum:
+          - simple
+          - standard
+          - complex
+          - expert
+        selected_model:
+          type: string
+          description: Model id chosen to serve the request (empty when no candidate qualified).
+        provider_name:
+          type: string
+          description: Name of the provider instance serving the request.
+        reason:
+          type: string
+          description: Human-readable explanation of why the first candidate was picked.
+        candidate_order:
+          type: array
+          description: Model ids in attempt order (after policy ordering and capability filtering).
+          items:
+            type: string
+        skipped:
+          type: array
+          description: Candidates excluded from (or jumped over during) routing, with reasons (capability_mismatch, vision_unsupported, tools_unsupported, context_overflow, not_configured, circuit_open).
+          items:
+            type: object
+            properties:
+              model:
+                type: string
+              provider:
+                type: string
+              reason:
+                type: string
+            required:
+            - model
+            - reason
+      required:
+      - policy
+      - complexity

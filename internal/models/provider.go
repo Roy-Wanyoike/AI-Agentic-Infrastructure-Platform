@@ -43,6 +43,21 @@ type CompletionRequest struct {
 	// Model optionally overrides the provider's configured model for this
 	// request (e.g. the model pinned by an agent version).
 	Model string
+	// Tools lists the tool names made available to the model for this
+	// request (issue #112, additive advisory metadata): the router uses it
+	// for capability filtering and complexity classification; providers that
+	// cannot execute tools ignore it. It does not change the wire payload of
+	// existing providers.
+	Tools []string
+	// NeedsVision flags requests that include image input (issue #112,
+	// additive advisory metadata used by the router's vision capability
+	// filter).
+	NeedsVision bool
+	// Routing carries the per-agent routing configuration parsed from the
+	// agent runtime_config `routing` object ({"policy","candidates"}, issue
+	// #112); nil means the router's default policy and candidate set apply.
+	// Non-routers ignore it.
+	Routing *RoutingConfig
 }
 
 // CompletionResponse is the vendor-agnostic completion output.
@@ -50,6 +65,10 @@ type CompletionResponse struct {
 	Text  string
 	Model string
 	Usage Usage
+	// Metadata carries optional observability notes (routing decision keys
+	// MetaRouting*, resilience fallbacks). Providers may leave it nil; it is
+	// never required to interpret a response.
+	Metadata map[string]string
 }
 
 // Provider is the minimal contract every model backend must satisfy.
