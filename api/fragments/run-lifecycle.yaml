@@ -1,0 +1,346 @@
+# AgentOS API — OpenAPI 3.1 fragment for the run lifecycle control surface
+# (issue #115 — complete run lifecycle: pause/resume/cancel).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes — COPIED VERBATIM from
+# api/fragments/apikeys.yaml — so
+# `python3 scripts/check_fragment_refs.py api/fragments/run-lifecycle.yaml`
+# passes. Components carry the track-unique `RunLifecycle` prefix to avoid
+# collisions (the base spec's wave-2 run-control operations documented these
+# same paths with the pending-vocabulary; this fragment is the issue #115
+# authoritative update — supersede on fold).
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation.
+#     No new permission enum was introduced: the middleware chain is
+#     RequireAuthOrAPIKey → RequirePermission(runs.control)
+#     (internal/auth/permissions_workflows.go: runs.control =
+#     OWNER/ADMIN/MEMBER — VIEWER is excluded; cmd/api/run_lifecycle.go).
+#   * structured error model {"error":{"code","message"}}
+#
+# State machine (internal/runs/lifecycle.go — enforced, typed
+# ErrInvalidTransition + optimistic store guard; illegal moves are 409):
+#
+#   pending → queued → running → paused
+#                     ↓          ↑ (resume re-enqueues: paused → queued)
+#                   cancelling → cancelled
+#   terminal: completed | failed | cancelled | timeout
+#
+# Resume semantics (issue #115): a paused run re-enters the QUEUE
+# (paused → queued) and the worker re-enqueues the agent.run task — the
+# queue is the only execution trigger. waiting_approval runs can NOT be
+# resumed through this endpoint (the approval decision is the only gate
+# out of waiting_approval; ResumeRunQueued accepts paused only).
+#
+# Cancel semantics (issue #115): cancelling an in-flight (running) run
+# first moves it to `cancelling` — the runtime lets the current step
+# finish and records the partial results before the confirming terminal
+# write lands in `cancelled`. Cancelling queued/pending/cancelling runs
+# moves/keeps them on the direct path; re-cancel is an idempotent 200.
+openapi: 3.1.0
+info:
+  title: AgentOS — run lifecycle control (issue #115 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the run pause/resume/cancel operations of issue
+  #115. Every control op moves a run through the ENFORCED lifecycle state
+  machine: the transition is validated against the authoritative table
+  BEFORE any write (illegal moves leave the run untouched and answer 409
+  with a typed TransitionError carrying the offending from→to pair), the
+  persisted write carries an optimistic expected-status guard so two racing
+  control ops (or a worker terminal write) can never corrupt the status —
+  the loser answers 409 STATUS_CONFLICT. In-flight executors registered in
+  the RunControlRegistry are signalled so the run stops gracefully at its
+  current step boundary (partial results preserved, durable checkpoints
+  kept for resume/recovery); a run not executing in the receiving process
+  still transitions durably. The tenant comes from the authenticated
+  claims — unknown or foreign run ids are indistinguishable 404s (no
+  existence leak across tenants). Landing transitions publish the additive
+  platform events run.paused / run.resumed / run.cancelled (and
+  run.recovered from the stale-run recovery sweeper).
+paths:
+  /runs/{id}/pause:
+    post:
+      operationId: pauseRun
+      tags: [run-control]
+      summary: Pause a run (idempotent)
+      description: |
+        Transitions a pending/queued/running/waiting_approval run to
+        `paused` (RUNNING first parks the in-flight executor at its current
+        step boundary; partial results and checkpoints are preserved).
+        Pausing an already-paused run is an idempotent no-op success;
+        pausing a completed/failed/cancelled/timed-out run is a 409
+        TransitionError. A resumed run continues from the latest durable
+        checkpoint (issue #115 checkpointing).
+      x-required-permission: runs.control
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/RunLifecycleRunID'
+      responses:
+        '200':
+          description: The updated run (status `paused`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunLifecycleRunResponse'
+        '401': { $ref: '#/components/responses/RunLifecycleUnauthorized' }
+        '403': { $ref: '#/components/responses/RunLifecycleForbidden' }
+        '404': { $ref: '#/components/responses/RunLifecycleNotFound' }
+        '409':
+          description: Illegal transition (terminal or cancelling run) or a lost optimistic race.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+                  - $ref: '#/components/schemas/RunLifecycleTransitionError'
+        '500': { $ref: '#/components/responses/RunLifecycleServerError' }
+  /runs/{id}/resume:
+    post:
+      operationId: resumeRun
+      tags: [run-control]
+      summary: Resume a paused run (idempotent)
+      description: |
+        Transitions a paused run back to `queued` and re-enqueues the
+        agent.run task — the queue is the only execution trigger — so the
+        run continues from its latest checkpoint. Only `paused` runs can be
+        resumed: resuming an already-queued/running run is an idempotent
+        no-op success, while runs in any other state (including
+        waiting_approval — the approval decision is the only gate out) are
+        a 409 TransitionError.
+      x-required-permission: runs.control
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/RunLifecycleRunID'
+      responses:
+        '200':
+          description: The updated run (status `queued`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunLifecycleRunResponse'
+        '401': { $ref: '#/components/responses/RunLifecycleUnauthorized' }
+        '403': { $ref: '#/components/responses/RunLifecycleForbidden' }
+        '404': { $ref: '#/components/responses/RunLifecycleNotFound' }
+        '409':
+          description: Illegal transition (not resumable) or a lost optimistic race.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+                  - $ref: '#/components/schemas/RunLifecycleTransitionError'
+        '500': { $ref: '#/components/responses/RunLifecycleServerError' }
+  /runs/{id}/cancel:
+    post:
+      operationId: cancelRun
+      tags: [run-control]
+      summary: Cancel a run (idempotent, two-phase for in-flight runs)
+      description: |
+        Cancels a run. A run that is currently RUNNING first moves to
+        `cancelling` — the graceful-unwind phase: the executor finishes the
+        current step and records the partial results, then confirms
+        `cancelled` — so the 200 response for an in-flight run reports
+        status `cancelling`. Queued/pending runs cancel directly;
+        re-cancelling a cancelled (or already-cancelling) run is an
+        idempotent no-op success; cancelling a completed/failed/timed-out
+        run is a 409 TransitionError.
+      x-required-permission: runs.control
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/RunLifecycleRunID'
+      responses:
+        '200':
+          description: The updated run (status `cancelled`, or `cancelling` for an in-flight run awaiting its graceful unwind).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunLifecycleRunResponse'
+        '401': { $ref: '#/components/responses/RunLifecycleUnauthorized' }
+        '403': { $ref: '#/components/responses/RunLifecycleForbidden' }
+        '404': { $ref: '#/components/responses/RunLifecycleNotFound' }
+        '409':
+          description: Illegal transition (terminal run) or a lost optimistic race.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+                  - $ref: '#/components/schemas/RunLifecycleTransitionError'
+        '500': { $ref: '#/components/responses/RunLifecycleServerError' }
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    RunLifecycleRunID:
+      name: id
+      in: path
+      required: true
+      description: Run id (UUID, as returned by the run-creation operation).
+      schema:
+        type: string
+        minLength: 1
+      example: 7e2b8e1a-4c1d-9a7b-2f0d-5e6a1b2c3f6c
+  schemas:
+    RunLifecycleState:
+      type: string
+      description: |
+        One node of the run lifecycle state machine (issue #115). Canonical
+        persisted values are lowercase; legacy UPPERCASE worker spellings
+        normalize onto the same states.
+      enum:
+      - pending
+      - queued
+      - running
+      - paused
+      - waiting_approval
+      - cancelling
+      - completed
+      - failed
+      - cancelled
+      - timeout
+    RunLifecycleTransitionError:
+      type: object
+      description: |
+        Typed rejection of an illegal state move (HTTP 409, code
+        INVALID_STATE): the machine names BOTH endpoints of the refused
+        move and the targets that would have been legal from `from`.
+        Terminal runs allow no transitions at all.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [INVALID_STATE]
+            message:
+              type: string
+              description: >
+                Human-readable refusal including the allowed targets, e.g.
+                invalid run status transition "completed to paused"
+                (allowed: none — completed is terminal).
+            from:
+              $ref: '#/components/schemas/RunLifecycleState'
+            to:
+              $ref: '#/components/schemas/RunLifecycleState'
+            allowed:
+              type: array
+              description: Legal target states from `from` (empty when `from` is terminal).
+              items:
+                $ref: '#/components/schemas/RunLifecycleState'
+      required: [error]
+    RunLifecycleRun:
+      type: object
+      description: The controlled run (same shape as the base spec's Run; lifecycle fields highlighted).
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+        agent_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/RunLifecycleState'
+        input:
+          type: string
+        output:
+          type: string
+          description: Final output, or the recovery/transition annotation for recovered or gracefully-unwound runs.
+        cost_cents:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, organization_id, agent_id, status, created_at, updated_at]
+    RunLifecycleRunResponse:
+      type: object
+      description: The updated run after the control op landed.
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+        agent_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/RunLifecycleState'
+        input:
+          type: string
+        output:
+          type: string
+        cost_cents:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, organization_id, agent_id, status, created_at, updated_at]
+    RunLifecycleErrorEnvelope:
+      type: object
+      description: Structured error envelope (house pattern) for the non-transition failures (404 unknown/foreign run, 409 lost optimistic race STATUS_CONFLICT, 500).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [RUN_NOT_FOUND, STATUS_CONFLICT, RUNS_SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+            message:
+              type: string
+          required: [code, message]
+      required: [error]
+  responses:
+    RunLifecycleUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+    RunLifecycleForbidden:
+      description: |
+        Authenticated but the role lacks runs.control (VIEWER).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+    RunLifecycleNotFound:
+      description: Unknown or foreign run (no existence leak across tenants).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RunLifecycleErrorEnvelope'
+    RunLifecycleServerError:
+      description: Internal error (or the runs service is unwired → 503 RUNS_SERVICE_UNAVAILABLE).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RunLifecycleErrorEnvelope'

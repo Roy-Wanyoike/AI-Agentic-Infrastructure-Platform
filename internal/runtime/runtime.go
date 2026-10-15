@@ -229,6 +229,11 @@ type Runner struct {
 	runtimeCfg  RuntimeConfig
 	agentCfgSrc func(agentID string) json.RawMessage
 	summarizer  Summarizer
+	// checkpointer is optional (nil-safe DI, issue #115): when wired, a
+	// snapshot (history + token usage + step index) is saved after each
+	// completed step and a re-executed run resumes from the latest one
+	// (pause/resume/recovery contract). See checkpoint.go.
+	checkpointer Checkpointer
 	// Shutdown gate (issue #107): stopping refuses new runs
 	// (ErrShuttingDown); inflight counts executing runs; drained is the
 	// one-shot channel Shutdown waits on. Guarded by gateMu.
@@ -579,7 +584,28 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 	history := NewConversationHistory(cfg.ConversationHistory.MaxTokens, cfg.ConversationHistory.Strategy)
 	history.Summarizer = r.summarizer
 	systemPrompt := buildSystemPrompt(agent, r.toolRegistry)
-	history.Append(models.Message{Role: "user", Content: input})
+
+	// Issue #115: checkpoint resume. When a previous execution of this run
+	// saved a snapshot (pause, cancel or a lost worker), the loop continues
+	// from the step AFTER the checkpoint: history and token accounting are
+	// restored, the user input is NOT appended again (the checkpointed
+	// history already carries it) and the max-steps bound still covers the
+	// cumulative step count. A corrupt or empty snapshot degrades to a
+	// fresh start.
+	resumeStart := 0
+	if state, ok := r.resumeFromCheckpoint(ctx, run.ID); ok {
+		resumeStart = state.StepIndex
+		run.Steps = resumeStart
+		if run.Tokens.TotalTokens == 0 && run.Tokens.PromptTokens == 0 && run.Tokens.CompletionTokens == 0 {
+			run.Tokens = state.Usage
+		}
+		if budget != nil {
+			budget.Record(state.Usage)
+		}
+		history.Messages = append(history.Messages, state.Messages...)
+	} else {
+		history.Append(models.Message{Role: "user", Content: input})
+	}
 
 	type lastCall struct {
 		tool string
@@ -588,7 +614,7 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 	var last lastCall
 	var lastRepeat int
 
-	for stepIndex := 1; stepIndex <= r.maxSteps; stepIndex++ {
+	for stepIndex := resumeStart + 1; stepIndex <= r.maxSteps; stepIndex++ {
 		if err := ctx.Err(); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				return "", fmt.Errorf("%w: %v", ErrMaxRuntimeExceeded, err)
@@ -664,6 +690,17 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 
 		toolName, toolArgs, isTool := parseToolCall(text)
 		if !isTool {
+			// Issue #115: the final answer is a completed step too — the
+			// end-of-step snapshot carries the whole conversation (input,
+			// reasoning trail and the answer), so a worker lost between
+			// this return and the terminal status write resumes with the
+			// full context instead of replaying the run.
+			history.Append(models.Message{Role: "assistant", Content: text})
+			r.saveCheckpoint(ctx, run.ID, CheckpointState{
+				StepIndex: stepIndex,
+				Messages:  history.Messages,
+				Usage:     run.Tokens,
+			})
 			return text, nil // final answer
 		}
 
@@ -726,6 +763,16 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			models.Message{Role: "assistant", Content: text},
 			models.Message{Role: "tool", Name: toolName, Content: observation},
 		)
+
+		// Issue #115: end-of-step checkpoint — the snapshot reflects every
+		// completed iteration (model reply + tool observation + budget
+		// accounting), so a pause/cancel/worker-loss here resumes with the
+		// next model call instead of replaying the step.
+		r.saveCheckpoint(ctx, run.ID, CheckpointState{
+			StepIndex: stepIndex,
+			Messages:  history.Messages,
+			Usage:     run.Tokens,
+		})
 	}
 	return "", fmt.Errorf("%w: budget was %d steps", ErrMaxStepsExceeded, r.maxSteps)
 }
