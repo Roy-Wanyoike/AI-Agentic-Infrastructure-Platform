@@ -1,0 +1,123 @@
+# AgentOS API — OpenAPI 3.1 fragment for the tamper-evident audit chain
+# (wave-8: SOC 2 monitoring evidence + EU AI Act Art. 12 record-keeping).
+#
+# Merge target: api/openapi.yaml. Paths are written WITHOUT the /api/v1
+# prefix (routes mount on apiMux and are served under both /v1 and /api/v1).
+#
+# Contract notes:
+#   * Both endpoints are READ-ONLY: they never append rows to the trail they
+#     evidence (access evidence lives in deployment access logs).
+#   * RBAC: audit.read — OWNER/ADMIN only (the audit list grant).
+#   * The export is byte-deterministic for unchanged data: the trailing
+#     chain_head line + X-Audit-Head-Hash header are the WORM anchor.
+paths:
+  /audit/verify:
+    get:
+      operationId: verifyAuditChain
+      summary: Verify the tamper-evident audit chain of the caller's organization
+      description: |
+        Replays the org's audit trail positionally and checks every
+        service-owned chain stamp. `valid` is the actionable verdict; the
+        first inconsistent entry (if any) is named by `broken_at_index`.
+        Unstamped rows (written before this feature, or during a store
+        listing outage) participate in the hash progression but carry no
+        verifiable link; they are reported via `unstamped`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          schema: { type: string }
+          description: Must agree with the authenticated claims (404 otherwise).
+      responses:
+        "200":
+          description: Chain verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AudChainReport" }
+        "401": { $ref: "#/components/responses/AudUnauthorized" }
+        "403": { $ref: "#/components/responses/AudForbidden" }
+        "404": { $ref: "#/components/responses/AudNotFound" }
+  /audit/export:
+    get:
+      operationId: exportAuditTrail
+      summary: Export the org's audit trail as deterministic JSONL evidence
+      description: |
+        One JSON entry per line; the final line is the `chain_head` anchor
+        ({type, head_hash, length, chain_version}) also mirrored in the
+        `X-Audit-Head-Hash` response header. Park the bytes (or just the
+        anchor) in WORM storage: any later rewrite of the trail disagrees
+        with the anchor.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema: { type: string, enum: [jsonl] }
+        - name: organization_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: NDJSON evidence snapshot.
+          headers:
+            X-Audit-Head-Hash:
+              description: Head hash of the exported chain.
+              schema: { type: string }
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: JSONL entries; final line is the chain_head anchor.
+        "400": { $ref: "#/components/responses/AudBadRequest" }
+        "401": { $ref: "#/components/responses/AudUnauthorized" }
+        "403": { $ref: "#/components/responses/AudForbidden" }
+        "404": { $ref: "#/components/responses/AudNotFound" }
+components:
+  responses:
+    AudUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AudError" }
+    AudForbidden:
+      description: Authenticated but not permitted (audit.read is OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AudError" }
+    AudNotFound:
+      description: Cross-tenant probe — no existence leak.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AudError" }
+    AudBadRequest:
+      description: Invalid request (e.g. format must be jsonl).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AudError" }
+  schemas:
+    AudError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    AudChainReport:
+      type: object
+      required: [valid, length]
+      properties:
+        valid: { type: boolean }
+        length: { type: integer, description: Number of entries in the org trail. }
+        head_hash: { type: string, description: What the data hashes to now. }
+        expected_head_hash:
+          type: string
+          description: The head the stamps claim (rendered on mismatch).
+        broken_at_index:
+          type: integer
+          description: Index of the first inconsistent entry (omitted when valid).
+        unstamped:
+          type: integer
+          description: Rows participating in the chain without a verifiable stamp.

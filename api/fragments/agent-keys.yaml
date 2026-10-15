@@ -1,0 +1,172 @@
+# AgentOS API — OpenAPI 3.1 fragment for agent-scoped API keys (wave-8:
+# non-human identity & least privilege, v1).
+#
+# Merge target: api/openapi.yaml. Paths WITHOUT the /api/v1 prefix.
+#
+# Contract notes:
+#   * Keys belong to ONE agent of ONE organization; plaintext ("value") is
+#     returned EXACTLY ONCE on mint; only prefix + hash are stored.
+#   * Tool allow-list semantics: omitted/null = ALL tools; empty array = NO
+#     tools; listed names = exactly those tools (enforced at the tool
+#     execution seam with machine-readable agent_key_tool_not_allowed).
+#   * RBAC: agents.write (OWNER/ADMIN) — non-human credential management
+#     never falls to MEMBER.
+paths:
+  /agents/{id}/keys:
+    post:
+      operationId: createAgentKey
+      summary: Mint an agent-scoped key (plaintext exactly once)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentKeyCreate" }
+      responses:
+        "201":
+          description: Minted. `value` is the ONLY delivery of the plaintext.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_key: { $ref: "#/components/schemas/AgentKey" }
+                  value: { type: string, description: Plaintext key; shown once. }
+        "401": { $ref: "#/components/responses/AgentKeyUnauthorized" }
+        "403": { $ref: "#/components/responses/AgentKeyForbidden" }
+        "404": { $ref: "#/components/responses/AgentKeyNotFound" }
+        "422": { $ref: "#/components/responses/AgentKeyValidation" }
+    get:
+      operationId: listAgentKeys
+      summary: List keys of one agent (no secrets)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Key list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_keys:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentKey" }
+        "401": { $ref: "#/components/responses/AgentKeyUnauthorized" }
+        "403": { $ref: "#/components/responses/AgentKeyForbidden" }
+        "404": { $ref: "#/components/responses/AgentKeyNotFound" }
+  /agents/{id}/keys/{keyID}:
+    patch:
+      operationId: updateAgentKey
+      summary: Update name / allow-list / expiry
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: keyID, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentKeyUpdate" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_key: { $ref: "#/components/schemas/AgentKey" }
+        "401": { $ref: "#/components/responses/AgentKeyUnauthorized" }
+        "403": { $ref: "#/components/responses/AgentKeyForbidden" }
+        "404": { $ref: "#/components/responses/AgentKeyNotFound" }
+        "422": { $ref: "#/components/responses/AgentKeyValidation" }
+    delete:
+      operationId: revokeAgentKey
+      summary: Revoke an agent key
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: keyID, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: boolean }
+        "401": { $ref: "#/components/responses/AgentKeyUnauthorized" }
+        "403": { $ref: "#/components/responses/AgentKeyForbidden" }
+        "404": { $ref: "#/components/responses/AgentKeyNotFound" }
+components:
+  responses:
+    AgentKeyUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AgentKeyError" }
+    AgentKeyForbidden:
+      description: Not permitted (agents.write is OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AgentKeyError" }
+    AgentKeyNotFound:
+      description: Unknown agent/key or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AgentKeyError" }
+    AgentKeyValidation:
+      description: Validation error (blank name, bad expiry, empty allow-list entries).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AgentKeyError" }
+  schemas:
+    AgentKeyError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    AgentKeyCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        tool_allow_list:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: Omitted/null = all tools; empty = none.
+        expires_at: { type: string, format: date-time, nullable: true }
+    AgentKeyUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        tool_allow_list: { type: array, items: { type: string }, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+    AgentKey:
+      type: object
+      properties:
+        id: { type: string }
+        organization_id: { type: string }
+        agent_id: { type: string }
+        name: { type: string }
+        key_prefix: { type: string, description: Display prefix (ak_...). }
+        tool_allow_list: { type: array, items: { type: string }, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }

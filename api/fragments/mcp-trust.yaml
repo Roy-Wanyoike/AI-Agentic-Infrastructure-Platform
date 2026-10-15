@@ -1,0 +1,122 @@
+# AgentOS API — OpenAPI 3.1 fragment for the MCP registry trust layer (wave-8).
+#
+# Merge target: api/openapi.yaml. Paths WITHOUT the /api/v1 prefix.
+#
+# Contract notes:
+#   * Toolset fingerprint: sha256 over sorted (name + canonical inputSchema);
+#     descriptions are excluded BY DESIGN (schema drift = rug-pull signal).
+#   * While a server is pinned, a re-test that detects a changed toolset
+#     keeps the OLD cached tools and reports drift; POST pin/accept adopts
+#     the fresh toolset (re-probes) as cache + pin.
+#   * Outages (unreachable) are NOT drift — hash and pin survive.
+#   * RBAC mirrors the registry: reads MEMBER+, pin/accept OWNER/ADMIN.
+paths:
+  /mcp-servers/{id}/drift:
+    get:
+      operationId: getMcpServerDrift
+      summary: Drift history + current/pinned toolset hashes
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Trust state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpTrustState" }
+        "401": { $ref: "#/components/responses/McpTrustUnauthorized" }
+        "403": { $ref: "#/components/responses/McpTrustForbidden" }
+        "404": { $ref: "#/components/responses/McpTrustNotFound" }
+  /mcp-servers/{id}/pin:
+    post:
+      operationId: pinMcpServerToolset
+      summary: Pin the CURRENT cached toolset (rug-pull protection)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Pin state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpTrustState" }
+        "401": { $ref: "#/components/responses/McpTrustUnauthorized" }
+        "403": { $ref: "#/components/responses/McpTrustForbidden" }
+        "404": { $ref: "#/components/responses/McpTrustNotFound" }
+  /mcp-servers/{id}/pin/accept:
+    post:
+      operationId: acceptMcpServerDrift
+      summary: Adopt the fresh toolset as cache + pin (accept detected drift)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated trust state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpTrustState" }
+        "401": { $ref: "#/components/responses/McpTrustUnauthorized" }
+        "403": { $ref: "#/components/responses/McpTrustForbidden" }
+        "404": { $ref: "#/components/responses/McpTrustNotFound" }
+components:
+  responses:
+    McpTrustUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/McpTrustError" }
+    McpTrustForbidden:
+      description: Not permitted for this tier.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/McpTrustError" }
+    McpTrustNotFound:
+      description: Unknown id or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/McpTrustError" }
+  schemas:
+    McpTrustError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    McpTrustDriftEvent:
+      type: object
+      properties:
+        at: { type: string, format: date-time }
+        old_hash: { type: string }
+        new_hash: { type: string }
+        added: { type: array, items: { type: string } }
+        removed: { type: array, items: { type: string } }
+        changed: { type: array, items: { type: string } }
+    McpTrustState:
+      type: object
+      properties:
+        mcp_server:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            toolset_hash: { type: string }
+            pinned_toolset_hash: { type: string }
+            last_drift_at: { type: string, format: date-time }
+        toolset_hash: { type: string }
+        pinned_toolset_hash: { type: string }
+        last_drift_at: { type: string, format: date-time }
+        drift_history:
+          type: array
+          items: { $ref: "#/components/schemas/McpTrustDriftEvent" }
