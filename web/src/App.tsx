@@ -66,6 +66,7 @@ import { OpsView } from './views/ops'
 import { ToolsView } from './views/tools'
 import { SecurityView } from './views/security'
 import { SettingsView } from './views/settings'
+import { DeveloperPortalView } from './views/developerPortal'
 import {
   canDecide,
   canDeploy,
@@ -1418,6 +1419,8 @@ export default function App() {
             organizationName={auth.user?.organizationName ?? auth.user?.organization ?? ''}
           />
         )
+      case 'Portal':
+        return <DeveloperPortalView />
       default:
         return <OverviewView onNavigate={setActiveView} onOpenRun={openRun} canReadEvents={canReadEventsRole} />
     }
