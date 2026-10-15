@@ -450,6 +450,8 @@ func writeApprovalErrorWF(w http.ResponseWriter, err error) {
 		writeErrorWF(w, http.StatusNotFound, "APPROVAL_NOT_FOUND", "approval not found")
 	case errors.Is(err, approvals.ErrInvalidDecision):
 		writeErrorWF(w, http.StatusUnprocessableEntity, "INVALID_DECISION", err.Error())
+	case errors.Is(err, approvals.ErrDualSelfApproval):
+		writeErrorWF(w, http.StatusConflict, "DUAL_CONTROL_SELF_APPROVAL", err.Error())
 	case errors.Is(err, approvals.ErrAlreadyDecided):
 		writeErrorWF(w, http.StatusConflict, "ALREADY_DECIDED", err.Error())
 	default:

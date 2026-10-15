@@ -441,6 +441,8 @@ func (a *app) routes() http.Handler {
 	registerBudgetRoutes(apiMux, a.db, billing.NewRunsConsumptionSource(a.runsSvc), a.agentsSvc, a.authSvc, a.apiKeysSvc)
 	// wave-8 issue C (6-6c): showback/chargeback reports over the runs ledger
 	registerShowbackRoutes(apiMux, billing.NewRunsShowbackSource(a.runsSvc), a.authSvc, a.apiKeysSvc)
+	// wave-9 issue #137: approvals enterprise oversight (delegation, escalation SLAs, dual control, evidence export)
+	registerApprovalEnterpriseRoutes(apiMux, a.apSvc, a.orgsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #25: encrypted secrets CRUD + one-time reveal (org-scoped, audit-logged)
 	registerSecretsRoutes(apiMux, a.secretsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #29: OIDC SSO browser flow + SCIM 2.0 provisioning
