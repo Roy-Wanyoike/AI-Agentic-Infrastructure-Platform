@@ -507,7 +507,6 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service, dispatch 
 				ToolAllowList:  claims.ToolAllowList,
 			})
 		}
-		task := enqueueRunTask(workQueue, runDispatcherOf(dispatch), "agent.run", payload)
 		// Issue #114: the run trace root + W3C trace context on the queue
 		// task payload. The API-side run.enqueue span registers the run's
 		// trace id (GET /runs/{id}/trace); the worker joins the SAME trace
@@ -515,7 +514,8 @@ func createRunHandler(workQueue *queue.Queue, auditSvc *audit.Service, dispatch 
 		// (payload untouched, no span) when tracing is disabled.
 		enqueueCtx, enqueueSpan := observability.StartRunEnqueueSpan(r.Context(), req.OrganizationID, req.AgentID, runID)
 		observability.InjectTraceToPayload(enqueueCtx, payload)
-		task := workQueue.Enqueue("agent.run", payload)
+		// Issue #116: AGENTOS_MESSAGING aware dispatch (memory queue | NATS subject | hybrid fallback).
+		task := enqueueRunTask(workQueue, runDispatcherOf(dispatch), "agent.run", payload)
 		if task == nil {
 			enqueueSpan.End()
 			http.Error(w, "failed to enqueue run", http.StatusInternalServerError)

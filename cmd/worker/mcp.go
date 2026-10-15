@@ -54,10 +54,7 @@ type orgRunnerCache struct {
 	agentKeyAudit *audit.Service          // wave-8: agent-key tool-denial audit sink (nil-safe)
 	runtimeCfg    runtime.RuntimeConfig   // issue #107: runner-wide conversation-history/budget defaults (nil-safe)
 	eventPub      events.Publisher        // issue #107: run lifecycle event seam (nil-safe)
-	agentKeyAudit *audit.Service        // wave-8: agent-key tool-denial audit sink (nil-safe)
-	runtimeCfg    runtime.RuntimeConfig // issue #107: runner-wide conversation-history/budget defaults (nil-safe)
-	eventPub      events.Publisher      // issue #107: run lifecycle event seam (nil-safe)
-	checkpoints   runs.CheckpointStore  // issue #115: durable-checkpoint store (nil-safe; org-bound per runner)
+	checkpoints   runs.CheckpointStore    // issue #115: durable-checkpoint store (nil-safe; org-bound per runner)
 	sandbox       tools.SandboxExecutor
 	mcpReg        *mcp.Registry
 	stopped       bool // issue #107: set by stopAll; runners built afterwards refuse runs
