@@ -1,0 +1,277 @@
+# AgentOS API — OpenAPI 3.1 fragment for the embeddings/hybrid-search surface
+# of the knowledge base (issue #113).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). The fragment RESTATES the existing `POST /knowledge/search`
+# operation (base fragment api/fragments/knowledge.yaml, operationId
+# searchKnowledge) so the merge can fold the ADDITIVE request parameters
+# `mode` and `weights` into the base operation — the path key and operationId
+# deliberately match the base fragment. Paths are written WITHOUT the /api/v1
+# prefix, matching the existing spec (routes mount on apiMux and are served
+# under both /v1 and /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/embeddings.yaml`
+# passes. Components carry the track-unique `Emb*` prefix to avoid collisions.
+#
+# SECURITY (copied VERBATIM from api/fragments/apikeys.yaml): the
+# `security:` blocks and components.securitySchemes below are byte-identical
+# to the apikeys fragment conventions (bearerToken | apiKey, mirroring the
+# base spec components.securitySchemes).
+#
+# x-required-permission: agents.read — the permission ACTUALLY enforced by
+# auth.RequirePermission on POST /knowledge/search (registerKnowledgeRoutes,
+# cmd/api/knowledge.go). No new permission enum was introduced: the wave-3
+# `knowledge:read` contract permission does not exist in internal/auth yet
+# (x-contract-permission records it for the orchestrator's future constants).
+#
+# Semantics (mirrored in internal/knowledge/hybrid.go, issue #113):
+#   * mode=keyword (default): the existing lexical token-overlap leg only —
+#     RAW lexical scores in [0,1], no vector infrastructure touched.
+#   * mode=semantic: the pgvector cosine leg only (embedding_vec <=> query,
+#     HNSW-indexed, migration 033). RAW cosine similarities in [0,1].
+#   * mode=hybrid: both legs fused — weighted min-max score fusion
+#     (fusion=weights, default) or reciprocal rank fusion (fusion=rrf,
+#     constant 60); results deduplicated by chunk id, deterministic order
+#     (score desc, then chunk id, then chunk ordinal).
+#   * GRACEFUL DEGRADATION: when the vector leg is unavailable (pgvector not
+#     installed — the migration is pgvector-OPTIONAL on plain Postgres, the
+#     embeddings provider offline/unconfigured, an embedding or store
+#     failure, or zero vector matches), semantic and hybrid return the
+#     keyword leg with its raw lexical scores. Search is a read path:
+#     availability beats completeness; the response shape never changes.
+#   * Server-side defaults for the fusion weights come from
+#     AGENTOS_HYBRID_KEYWORD_WEIGHT / AGENTOS_HYBRID_VECTOR_WEIGHT
+#     (default 0.5/0.5, clamped to [0,1]) and AGENTOS_HYBRID_FUSION
+#     (weights|rrf, default weights). Per-request `weights` values, when
+#     honored by the deployment, override the env-configured fusion weights
+#     for that request and are clamped to [0,1] server-side (both-zero
+#     inputs fall back to the defaults so fusion can never collapse).
+#   * Embeddings provider selection (out of band for this endpoint):
+#     AGENTOS_EMBEDDING_PROVIDER=openai|offline — openai POSTs
+#     {AGENTOS_EMBEDDING_BASE_URL}/v1/embeddings with
+#     AGENTOS_EMBEDDING_MODEL (default text-embedding-3-small, 1536d) and
+#     AGENTOS_EMBEDDING_API_KEY, batching ~100 inputs with retry/backoff on
+#     429/5xx; offline (default) keeps the deterministic hash embedder so
+#     dev/test need no external infrastructure.
+openapi: 3.1.0
+info:
+  title: AgentOS — knowledge embeddings + hybrid search (issue #113 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the embeddings/hybrid-search parameters added by
+  issue #113 on POST /knowledge/search: the additive `mode` selector
+  (keyword | semantic | hybrid) and the optional `weights` fusion tuning
+  object. The response shape is UNCHANGED from the wave-3 contract —
+  {"results":[{"document_id","chunk_ordinal","content","score","citation"}]}
+  plus additive document_title/chunk_id — so existing clients keep working;
+  only the `score` semantics vary by mode (raw lexical, raw cosine, or fused).
+paths:
+  /knowledge/search:
+    post:
+      operationId: searchKnowledge
+      tags: [Knowledge]
+      summary: Top-k chunk retrieval (keyword | semantic | hybrid)
+      description: |
+        Scores the caller's org-scoped knowledge chunks against the query and
+        returns at most `k` hits (default 5, capped at 50) with citations.
+        The retrieval strategy is selected by `mode`:
+          * keyword — lexical token-overlap leg only (raw lexical scores).
+          * semantic — pgvector cosine leg only over the HNSW-indexed
+            embedding_vec column (raw cosine similarities); requires an
+            embeddings provider, otherwise degrades to keyword.
+          * hybrid (default) — both legs fused with the configured fusion
+            algorithm and weights; chunks hit by both legs rank highest.
+        When the vector leg is unavailable (pgvector not installed, provider
+        offline, embedding/search failure, zero vector matches) semantic and
+        hybrid degrade gracefully to the keyword leg — the response shape is
+        identical either way. Results are deduplicated by chunk id and
+        ordered deterministically (score desc, then chunk id, then ordinal).
+      x-required-permission: agents.read
+      x-contract-permission: knowledge:read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbSearchRequest'
+            example:
+              query: How do budgets roll over at period end?
+              k: 5
+              mode: hybrid
+              weights:
+                keyword_weight: 0.5
+                vector_weight: 0.5
+                fusion: weights
+      responses:
+        '200':
+          description: Top-k chunk hits; empty `results` when nothing matches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbSearchResponse'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/EmbUnauthorized'
+        '403':
+          $ref: '#/components/responses/EmbForbidden'
+        '422':
+          description: Validation failed (query required, unknown mode).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbErrorEnvelope'
+        '500':
+          description: Unexpected server failure (e.g. store unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    EmbSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: Natural-language query; scored against every org-scoped chunk.
+        k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+          description: Maximum number of chunk hits to return.
+        mode:
+          type: string
+          enum: [keyword, semantic, hybrid]
+          default: hybrid
+          description: |
+            Retrieval strategy. keyword: lexical leg only. semantic: pgvector
+            cosine leg only. hybrid: both legs fused (default). semantic and
+            hybrid degrade to keyword-only when the vector leg is unavailable
+            (pgvector-OPTIONAL migration, offline embeddings provider) — the
+            degradation is deliberate and the response shape never changes.
+        weights:
+          $ref: '#/components/schemas/EmbFusionWeights'
+    EmbFusionWeights:
+      type: object
+      description: |
+        Fusion tuning for mode=hybrid. Omitted fields keep the server-side
+        defaults (env: AGENTOS_HYBRID_KEYWORD_WEIGHT,
+        AGENTOS_HYBRID_VECTOR_WEIGHT, AGENTOS_HYBRID_FUSION — 0.5/0.5 and the
+        weighted min-max fusion). Weights are clamped to [0,1]; both-zero
+        inputs fall back to the defaults so the fused score can never
+        collapse to a constant. Ignored for mode=keyword/semantic.
+      properties:
+        keyword_weight:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.5
+          description: Weight of the min-max-normalized keyword-leg score.
+        vector_weight:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.5
+          description: Weight of the min-max-normalized vector-leg score.
+        fusion:
+          type: string
+          enum: [weights, rrf]
+          default: weights
+          description: |
+            Score-combination algorithm. weights: weighted sum of the
+            min-max-normalized per-leg scores. rrf: reciprocal rank fusion
+            (constant 60) — kwW/(60+kwRank) + vecW/(60+vecRank); scale-free
+            and robust to per-leg score distributions.
+    EmbSearchResult:
+      type: object
+      description: One retrieval hit — the contract-pinned fields plus additive title/chunk id.
+      required: [document_id, chunk_ordinal, content, score, citation]
+      properties:
+        document_id: { type: string }
+        document_title: { type: string }
+        chunk_id:
+          type: string
+          description: Deduplication key of the hybrid fusion (unique per hit).
+        chunk_ordinal:
+          type: integer
+          description: Zero-based position of the chunk inside its document.
+        content: { type: string }
+        score:
+          type: number
+          format: double
+          description: |
+            Relevance in [0,1]; semantics by mode — raw lexical token-overlap
+            score (keyword / degraded semantic+hybrid), raw cosine similarity
+            (semantic), or the fused score (hybrid: weighted normalized sum
+            or RRF contribution; RRF scores are small positive rationals, not
+            similarities).
+          examples:
+          - 0.83
+        citation:
+          type: string
+          description: Human-readable citation, e.g. "Billing FAQ (confluence/billing), chunk 3".
+    EmbSearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmbSearchResult'
+    EmbErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: One of VALIDATION_ERROR, INVALID_REQUEST, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message: { type: string }
+  responses:
+    EmbUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmbErrorEnvelope'
+    EmbForbidden:
+      description: |
+        Authenticated but not allowed to act for the requested organization
+        (cross-tenant access is rejected; agents.read required).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmbErrorEnvelope'
