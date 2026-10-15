@@ -1,0 +1,380 @@
+# AgentOS API — OpenAPI 3.1 fragment for the LLM-driven auto-configuration
+# surface (issue #129).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/configgen.yaml` passes.
+# Components carry the track-unique `ConfigGen` prefix to avoid collisions.
+#
+# SECURITY (verbatim conventions from api/fragments/apikeys.yaml):
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission: configgen.use — the NEW grant registered by
+#     internal/auth/permissions_configgen.go (init() append):
+#     OWNER/ADMIN/MEMBER; VIEWER is intentionally excluded because drafts
+#     shape future resource creation.
+#   * structured error model {"error":{"code","message"}}
+#
+# SAFETY (drafts only): POST /config/generate NEVER creates or mutates a
+# resource. The response is a reviewable draft; callers create the real
+# objects through the normal endpoints (POST /agents/create, POST
+# /workflows), where the usual agents.write / workflows RBAC applies. The
+# generators have no store seam at all, so nothing is persisted by this
+# endpoint. Workflow drafts bind {{placeholder}} agent_id / tool_id / url
+# values on purpose — reviewers MUST replace them before creation.
+openapi: 3.1.0
+info:
+  title: AgentOS — LLM-driven auto-configuration (issue #129 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the auto-configuration operation added by issue
+  #129. POST /config/generate translates a natural-language description into
+  an AgentOS configuration DRAFT through step-by-step generation (5 steps:
+  agent selection/structure → tool config → policy/permissions → runtime
+  params → validate+assemble). The default generator is deterministic
+  (keyword/intent mapping onto the tool catalog with sensible defaults); when
+  a model provider is configured the same narrow LLM seam is consulted and —
+  if it returns nothing usable — the deterministic heuristics take over, so
+  the endpoint always returns a VALID draft and never fails because of a
+  model outage. Every generated config passes validation before it is
+  returned; workflow drafts only ever use the existing DSL node vocabulary.
+paths:
+  /config/generate:
+    post:
+      operationId: generateConfig
+      summary: Translate a natural-language description into a configuration draft (never applied)
+      description: |
+        Takes {type, description, context?} and returns a DRAFT: an agent
+        configuration (model, tools, policy, runtime knobs, system
+        instructions) or a workflow DSL graph. Nothing is persisted and no
+        resource is created — the draft is returned for review, and the
+        caller creates the real objects through the normal endpoints
+        afterwards. Generation runs in 5 steps; the response's `progress`
+        array reports each completed step so UIs can render partial
+        progress. The draft's `assumptions` array documents every
+        non-obvious decision the generator made. Workflow drafts reference
+        {{placeholder}} agent_id / tool_id / url values that reviewers must
+        bind before creating the workflow.
+      x-required-permission: configgen.use
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigGenGenerateRequest'
+      responses:
+        '200':
+          description: |
+            Draft generated. Exactly one of agent_draft / workflow_draft is
+            populated, matching the request type; `valid` is always true for
+            server-generated drafts (every draft is validated before it is
+            returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigGenGenerateResponse'
+        '400':
+          description: Malformed or empty JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/ConfigGenUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConfigGenForbidden'
+        '422':
+          description: |
+            Validation error: blank description, missing type or unknown type
+            (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  responses:
+    ConfigGenUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+    ConfigGenForbidden:
+      description: Authenticated but lacking the configgen.use permission (VIEWER role).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+  schemas:
+    ConfigGenGenerateRequest:
+      type: object
+      description: |
+        Draft request. `type` selects the generator; `description` is the
+        natural-language intent; `context` is optional free-form caller
+        context (team conventions, existing resource names) that is echoed
+        into the draft's assumptions — the server never interprets it.
+      properties:
+        type:
+          type: string
+          enum:
+          - agent
+          - workflow
+          description: Which configuration to draft.
+        description:
+          type: string
+          minLength: 1
+          description: Natural-language description of the desired agent or workflow.
+          examples:
+          - An agent that triages our support inbox: categorize tickets and draft replies
+        context:
+          type: object
+          additionalProperties: true
+          description: Optional free-form caller context, echoed into draft assumptions.
+      required:
+      - type
+      - description
+    ConfigGenGenerateResponse:
+      type: object
+      description: Draft envelope. Exactly one draft field is populated.
+      properties:
+        type:
+          type: string
+          enum:
+          - agent
+          - workflow
+        agent_draft:
+          $ref: '#/components/schemas/AgentConfigDraft'
+        workflow_draft:
+          $ref: '#/components/schemas/WorkflowDSLDraft'
+        progress:
+          type: array
+          description: Completed generation steps in order (1..total).
+          items:
+            $ref: '#/components/schemas/GenerationProgress'
+        valid:
+          type: boolean
+          description: Whether the returned draft passed validation (always true for generated drafts).
+        issues:
+          type: array
+          description: Validation issues (empty for generated drafts).
+          items:
+            type: string
+      required:
+      - type
+      - progress
+      - valid
+    GenerationProgress:
+      type: object
+      description: One completed generation step (step-by-step progress for UIs).
+      properties:
+        step:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: 1-based step number (1 structure, 2 tools, 3 policy, 4 runtime, 5 validate).
+        total:
+          type: integer
+          minimum: 5
+          maximum: 5
+          description: Total steps (always 5).
+      required:
+      - step
+      - total
+    AgentConfigDraft:
+      type: object
+      description: |
+        Reviewable agent configuration draft. Nothing here is persisted:
+        the caller creates the agent via POST /agents/create
+        (name/instructions/model) and adopts the tool/policy/runtime pieces
+        it wants. The `assumptions` array documents every non-obvious
+        decision.
+      properties:
+        name:
+          type: string
+          description: Short agent name derived from the description.
+        description:
+          type: string
+          description: The caller's intent, restated.
+        model:
+          type: string
+          description: Provider model id (e.g. gpt-4o-mini).
+          examples:
+          - gpt-4o-mini
+        system_instructions:
+          type: string
+          description: Generated system prompt.
+        tools:
+          type: array
+          description: Proposed catalog tool bindings (possibly empty — an agent needs no tools).
+          items:
+            $ref: '#/components/schemas/ConfigGenToolBinding'
+        policy:
+          $ref: '#/components/schemas/ConfigGenPolicyDraft'
+        runtime:
+          $ref: '#/components/schemas/ConfigGenRuntimeDraft'
+        intent:
+          type: string
+          description: Heuristic intent classification (support_inbox, research, ops, data, automation); empty when generic.
+        assumptions:
+          type: array
+          description: Every non-obvious generation decision, for review.
+          items:
+            type: string
+      required:
+      - name
+      - model
+      - system_instructions
+      - policy
+      - runtime
+    ConfigGenToolBinding:
+      type: object
+      description: One catalog tool proposal with the reason it was selected.
+      properties:
+        tool:
+          type: string
+          description: Tool catalog name (GET /tools registry key).
+          examples:
+          - json_transform
+        reason:
+          type: string
+          description: Why the tool was proposed.
+      required:
+      - tool
+    ConfigGenPolicyDraft:
+      type: object
+      description: |
+        Proposed tool policy. Generated drafts are always effect=allow with
+        an explicit tool_allowlist (default-deny elsewhere) — generated
+        configs never widen permissions beyond what the description asked
+        for.
+      properties:
+        effect:
+          type: string
+          enum:
+          - allow
+          description: Policy effect (always allow for generated drafts).
+        tool_allowlist:
+          type: array
+          description: Exact tool names allowed (sorted, mirrors the selected tools).
+          items:
+            type: string
+        rationale:
+          type: string
+          description: One-line posture explanation.
+      required:
+      - effect
+    ConfigGenRuntimeDraft:
+      type: object
+      description: |
+        Generated runtime parameters: the ReAct step budget plus the
+        runtime_config document (conversation_history + token_budget, issue
+        #107) the runtime already parses.
+      properties:
+        max_steps:
+          type: integer
+          minimum: 1
+          description: ReAct loop step budget (simple 5, default 10, complex 20).
+        conversation_history:
+          type: object
+          description: runtime_config.conversation_history document.
+          properties:
+            strategy:
+              type: string
+              enum:
+              - sliding_window
+              - summarize_older
+              - drop_oldest
+            max_tokens:
+              type: integer
+              description: History window size in tokens (0 = runtime default 8000).
+        token_budget:
+          type: object
+          description: runtime_config.token_budget document.
+          properties:
+            max_total_tokens:
+              type: integer
+              description: Cumulative total-token cap (0 = unlimited).
+            max_prompt_tokens:
+              type: integer
+              description: Cumulative prompt-token cap (0 = unlimited).
+            max_completion_tokens:
+              type: integer
+              description: Cumulative completion-token cap (0 = unlimited).
+            alert_threshold:
+              type: number
+              description: Fractional usage crossing that records the one-time warning (within (0, 1]).
+      required:
+      - max_steps
+    WorkflowDSLDraft:
+      type: object
+      description: |
+        Reviewable workflow definition draft. The embedded DSL uses ONLY the
+        existing workflow node vocabulary and passes the same validation as
+        POST /workflows. Bind values marked {{placeholder}} before creating
+        the workflow.
+      properties:
+        name:
+          type: string
+          description: Short workflow name derived from the description.
+        description:
+          type: string
+          description: The caller's intent, restated.
+        dsl:
+          type: object
+          description: |
+            The node graph ({nodes, edges}) in the exact shape POST
+            /workflows accepts. Generated chains follow the documented
+            trigger → research → approval → send shape with forward-only
+            on_success edges.
+        assumptions:
+          type: array
+          description: Generation decisions recorded for review.
+          items:
+            type: string
+      required:
+      - name
+      - dsl
+    ConfigGenErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of INVALID_REQUEST, VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
