@@ -43,8 +43,6 @@ func fndFailedAssertion() AssertionOutcome {
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
-
 // aiOrNil avoids the typed-nil-interface trap when a table case has no
 // classifier (a nil *stubClassifier converted to RootCauseClassifier would
 // be a non-nil interface).
