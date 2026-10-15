@@ -51,6 +51,7 @@ import (
 	"agentos/internal/secrets"
 	"agentos/internal/sso"
 	"agentos/internal/streaming"
+	"agentos/internal/synth"
 	"agentos/internal/tenant"
 	"agentos/internal/tools"
 	"agentos/internal/webhooks"
@@ -129,6 +130,13 @@ type app struct {
 	// posture; the residency store is the source of truth — org schema
 	// untouched). Audit seam is wired at route registration.
 	residencySvc *tenant.ResidencyService
+
+	// issue #147: synthetic assurance registry (projects, targets with
+	// ownership verification, environments with hard safety rails,
+	// personas). Dual-mode: Postgres-backed via migration 034 when a DSN
+	// is configured, in-memory otherwise. The ScopeGuard seam
+	// (AssertExecutionAllowed) is consumed by the worker tracks (#148/#155).
+	synthSvc *synth.Service
 
 	// issue #124: granular rate limits (org/agent/tool/model scopes).
 	// Dual-mode: the config store is Postgres-backed when a DSN is
@@ -210,6 +218,8 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.auditSvc = audit.NewServiceWithStore(audit.NewPostgresStore(db))
 		// issue #140: org data-residency in Postgres mode (migration 031)
 		a.residencySvc = tenant.NewResidencyServiceWithStore(tenant.NewPostgresStore(db))
+		// issue #147: synthetic assurance registry in Postgres mode (migration 034)
+		a.synthSvc = synth.NewServiceWithStore(synth.NewPostgresStore(db))
 		a.agentsSvc = agents.NewServiceWithStore(agents.NewPostgresStore(db))
 		a.apiKeysSvc.SetAgentChecker(a.agentsSvc) // wave-8: agent-membership seam for agent keys
 		a.runsSvc = runs.NewServiceWithStore(runs.NewPostgresStore(db))
@@ -291,6 +301,7 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.orgsSvc = organizations.NewService()
 		a.auditSvc = audit.NewService()
 		a.residencySvc = tenant.NewResidencyService() // issue #140: org data-residency (in-memory mode)
+		a.synthSvc = synth.NewService()               // issue #147: synthetic assurance registry (in-memory mode)
 		a.agentsSvc = agents.NewService()
 		a.apiKeysSvc.SetAgentChecker(a.agentsSvc) // wave-8: agent-membership seam for agent keys
 		a.runsSvc = runs.NewService()
@@ -609,6 +620,7 @@ func (a *app) routes() http.Handler {
 	registerBatchRoutes(apiMux, a.batchSvc, newBatchSeams(a), a.streamSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #123: batch operations
 	registerLimiterRoutes(apiMux, a.limiterSvc, a.authSvc, a.apiKeysSvc)                                        // issue #124: granular rate limits
 	registerQualityGateRoutes(apiMux, a.qualityGateSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)                    // issue #152: unified release quality gates
+	registerSynthRoutes(apiMux, a.synthSvc, a.authSvc, a.apiKeysSvc)                                            // issue #147: synthetic assurance registry
 	registerRunLifecycleRoutes(apiMux, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)                          // issue #115: run pause/resume/cancel
 	registerRunTraceRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)                                          // issue #114: run trace exposure
 	// issue #28: agent marketplace

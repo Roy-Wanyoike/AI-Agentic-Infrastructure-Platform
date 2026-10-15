@@ -1,0 +1,332 @@
+# AgentOS API — OpenAPI 3.1 fragment for the synthetic assurance journeys
+# surface, SCHEMA-ONLY (issue #149, wave 10-q).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). This fragment declares NO paths — the journey/persona HTTP
+# operations are mounted by the registry track (#147) and worker track
+# (#148); #149 owns the domain vocabulary below so every track serializes
+# identical wire shapes (mirrors internal/synth/types.go, pinned contract;
+# personas.go/journeys.go implementations).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names are declared in this fragment's own
+# components.securitySchemes, copied VERBATIM from
+# api/fragments/apikeys.yaml (bearerToken | apiKey), so
+# `python3 scripts/check_fragment_refs.py api/fragments/synth-journeys.yaml`
+# passes. Components carry the track-unique `Synth` prefix to avoid
+# collisions.
+#
+# Semantics pinned by issue #149 (do not soften when merging):
+#   * Assertions are ALWAYS present on a journey — explicit deterministic
+#     success criteria; model confidence can never mark a run passed.
+#   * Lifecycle: draft → reviewed → scheduled → retired. Drafts editable;
+#     reviewed/scheduled immutable except the version-bump clone.
+#   * Write-op steps are flagged (write_op) and write journeys carry cleanup
+#     steps; runtime enforcement against the environment mode is #148's job.
+#   * Persona records map to dedicated synthetic credentials by reference —
+#     no customer PII ever appears in a persona or journey payload.
+openapi: 3.1.0
+info:
+  title: AgentOS — synthetic journeys & personas schemas (issue #149 fragment)
+  version: 3.0.0-fragment
+description: |
+  Schema-only fragment for the synthetic assurance flagship (#118): the
+  Persona, Journey, JourneyStep, Assertion and JourneyCoverage vocabulary
+  shared by the registry (#147), workers (#148), evidence (#150) and
+  exploration (#155) tracks. All records are org-scoped (tenant isolation is
+  non-negotiable).
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    SynthPersona:
+      type: object
+      description: |
+        A synthetic identity profile (issue #147/#149). Personas NEVER
+        impersonate real customer accounts — they map to dedicated synthetic
+        credentials by reference only. `built_in` is empty for custom
+        personas; when set it must be one of the 9 built-in keys and the
+        profile must match the canonical definition exactly (anti-forgery:
+        custom personas cannot claim built-in keys).
+      properties:
+        id:
+          type: string
+          description: Persona id (org-scoped).
+        org_id:
+          type: string
+          description: Owning organization id.
+        name:
+          type: string
+          description: Human-readable persona name.
+        built_in:
+          type: string
+          enum:
+          - ''
+          - visitor
+          - new_user
+          - returning_user
+          - standard_customer
+          - administrator
+          - restricted_user
+          - mobile_user
+          - accessibility_user
+          - slow_network_user
+          description: |
+            Empty for custom personas; else the built-in key. A persona
+            carrying a built-in key must match the canonical role hints and
+            constraints byte-for-byte.
+        role_hints:
+          type: array
+          description: Role/permission hints for journey planning (advisory).
+          items:
+            type: string
+        constraints:
+          type: object
+          description: |
+            Deterministic test constraints (lowercase snake_case keys).
+            Canonical keys: network (slow3g|regular), viewport
+            (mobile|desktop), a11y (strict|none), input
+            (keyboard_only|touch|pointer). Org-extension keys are allowed.
+          additionalProperties:
+            type: string
+        version:
+          type: integer
+          description: |
+            Bumped on every mutation; run snapshots pin (id, version).
+            Built-in personas are immutable (derive a custom one instead).
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - name
+      - role_hints
+      - constraints
+      - version
+    SynthJourneyStep:
+      type: object
+      description: |
+        One atomic action. Deterministic steps carry explicit
+        selectors/inputs; AI-assisted navigation is a hint (Hint), never the
+        oracle. Write operations MUST be flagged (write_op); runtime
+        enforcement against the environment mode is the worker's (#148).
+      properties:
+        index:
+          type: integer
+          description: Sequential position (0-based); spec identity requires strict ordering.
+        action:
+          type: string
+          enum:
+          - navigate
+          - click
+          - fill
+          - select
+          - wait
+          - api_call
+          - assert
+          - extract
+        target:
+          type: string
+          description: Selector, URL, or API spec reference (may be empty only for wait).
+        value:
+          type: string
+          description: Input value or wait duration; never a secret (no PII).
+        write_op:
+          type: boolean
+          description: True when the step changes application state.
+        timeout_ms:
+          type: integer
+          description: Step timeout; 0 = worker default.
+        hint:
+          type: string
+          description: Optional AI navigation hint — never part of the oracle.
+      required:
+      - index
+      - action
+      - target
+      - write_op
+    SynthAssertion:
+      type: object
+      description: |
+        A deterministic, versioned expected outcome. Every journey carries at
+        least one assertion — explicit success criteria are mandatory and
+        model confidence can never mark a run passed (issue #149).
+      properties:
+        kind:
+          type: string
+          enum:
+          - element_visible
+          - text_contains
+          - api_status
+          - json_schema
+          - url_pattern
+          - no_console_error
+          - a11y_violations_below
+          - latency_below_ms
+        target:
+          type: string
+          description: Selector/URL/schema reference; may be empty only for page-wide kinds (no_console_error, a11y_violations_below).
+        expected:
+          type: string
+          description: The expected value (text, status code, pattern, threshold).
+        severity:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+          - critical
+          description: Failure severity; drives finding triage (#150).
+      required:
+      - kind
+      - target
+      - expected
+      - severity
+    SynthJourney:
+      type: object
+      description: |
+        A versioned test specification: explicit preconditions, steps,
+        assertions, cleanup. Lifecycle draft → reviewed → scheduled → retired;
+        drafts are the only editable state (reviewed/scheduled are immutable
+        except via the version-bump clone). Write-op journeys MUST define
+        cleanup steps.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        project_id:
+          type: string
+        environment_id:
+          type: string
+          description: Environment the journey runs against (verified target, #147).
+        persona_id:
+          type: string
+          description: Synthetic persona executing the journey (same org).
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+          - draft
+          - reviewed
+          - scheduled
+          - retired
+        risk:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+          - critical
+          description: Risk classification; required. Scheduling requires review, and high/critical journeys require an auditable review record for the current version.
+        version:
+          type: integer
+          description: Bumped on every spec mutation and on the version-bump clone.
+        preconditions:
+          type: array
+          description: Explicit preconditions; fixture references (fixture:<name>:v<n>) travel here and feed run snapshots.
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthJourneyStep'
+        assertions:
+          type: array
+          minItems: 1
+          description: ALWAYS non-empty — the deterministic success criteria.
+          items:
+            $ref: '#/components/schemas/SynthAssertion'
+        cleanup:
+          type: array
+          description: Steps restoring state; REQUIRED when any step has write_op=true.
+          items:
+            $ref: '#/components/schemas/SynthJourneyStep'
+        tags:
+          type: array
+          description: Product capability tags; drive the coverage report (JourneyCoverage).
+          items:
+            type: string
+        source:
+          type: string
+          enum:
+          - authored
+          - exploration
+          - regression
+          description: Provenance of the spec.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - project_id
+      - environment_id
+      - persona_id
+      - name
+      - status
+      - risk
+      - version
+      - steps
+      - assertions
+    SynthCapabilityCoverage:
+      type: object
+      description: Journeys covering one normalized product capability tag.
+      properties:
+        capability:
+          type: string
+          description: Normalized tag (trimmed, lowercased).
+        journey_ids:
+          type: array
+          items:
+            type: string
+        status_counts:
+          type: object
+          description: Journey count per lifecycle status within this capability.
+          additionalProperties:
+            type: integer
+      required:
+      - capability
+      - journey_ids
+      - status_counts
+    SynthJourneyCoverage:
+      type: object
+      description: |
+        Capability coverage report (MapCapabilities): journeys → product
+        capability tags from SynthJourney.tags. Deterministic ordering
+        (sorted capabilities, sorted journey ids); journeys without tags are
+        listed separately and never silently count as coverage. Gaps
+        (requested capabilities with zero journeys) are the release-gate
+        primitive (#152).
+      properties:
+        total_journeys:
+          type: integer
+        untagged_journey_ids:
+          type: array
+          items:
+            type: string
+        capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthCapabilityCoverage'
+      required:
+      - total_journeys
+      - untagged_journey_ids
+      - capabilities

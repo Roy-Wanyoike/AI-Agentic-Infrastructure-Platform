@@ -1,0 +1,353 @@
+# AgentOS API — OpenAPI 3.1 fragment for the Synthetic Assurance evidence &
+# findings schemas (issue #150, wave 10-r flagship #118).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). This is a SCHEMA-ONLY fragment: it declares the shared component
+# schemas for evidence bundles, findings, occurrence log entries and
+# reproduction results. Paths are intentionally absent — the HTTP surfaces
+# that project these schemas are owned by their respective track fragments
+# (#147 registry, #148 workers, #151 GitHub sync).
+#
+# Standalone-valid: the security scheme names used in components.securitySchemes
+# are declared in this fragment (copied VERBATIM from
+# api/fragments/apikeys.yaml, the house security block), so
+# `python3 scripts/check_fragment_refs.py api/fragments/synth-evidence.yaml`
+# passes. Components carry the track-unique `Synth` prefix to avoid collisions.
+#
+# Contract notes (issue #150):
+#   * Evidence bundles are VERSIONED via schema_version; consumers pin the
+#     version they parse. All artifact references point at REDACTED
+#     artifacts — raw secrets and PII never enter a bundle (RedactionEngine
+#     strips cookies/bearer tokens/JWTs/API keys from metadata before
+#     bundling).
+#   * Findings carry a stable SHA-256 `fingerprint` over
+#     org+target+assertion-kind+failure-class. The org is INSIDE the hash:
+#     dedup never merges across tenants. Occurrence history is append-only.
+#   * Statuses come from the pinned taxonomy: confirmed | likely | flaky |
+#     harness_failure | environmental_failure | inconclusive. A CONFIRMED
+#     defect is INDEPENDENTLY REPRODUCED; hypotheses are never presented as
+#     verified root cause — AI-assisted text is language-enforced to carry a
+#     "hypothesis:" prefix marker.
+#   * confidence is 0..1, computed from the evidence-completeness score with
+#     documented weights; uncertainty is explicit, never collapsed.
+#   * reproducibility is only ever asserted after an isolated re-run
+#     (repro_run_id); production writes are never replayed, and
+#     production_read_only environments admit only the read-only subset.
+openapi: 3.1.0
+info:
+  title: AgentOS — Synthetic assurance evidence & findings schemas (issue #150 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone schema-only fragment for the synthetic assurance evidence
+  bundle and defect finding vocabulary added by issue #150. An evidence
+  bundle is the versioned, self-contained record of WHY a synthetic run
+  failed (failing assertion, timestamps, app/build version, journey and
+  persona versions, redacted artifact references, correlation ids, and a
+  deterministic reproduction procedure). A finding links the exact
+  run/journey/assertion that produced it with a stable dedup fingerprint,
+  an enforced status, and — only after an independent isolated re-run —
+  reproducibility evidence. Occurrences are append-only history entries;
+  they are never merged across organizations.
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    SynthEvidenceBundle:
+      type: object
+      description: |
+        Versioned evidence record for one synthetic run (issue #150). Every
+        artifact reference points at REDACTED artifacts; secrets never enter
+        the bundle. The schema_version must be pinned by consumers; the
+        bundle id is deterministic (evd_<sha256[0:16]> over version, org,
+        run, journey, journey version and capture time).
+      properties:
+        schema_version:
+          type: integer
+          description: Bundle schema version (currently 1). Bumped on incompatible changes.
+        bundle_id:
+          type: string
+          description: Deterministic id, "evd_" + 16 hex chars.
+        org_id:
+          type: string
+          description: Owning organization (tenant scope; isolation is non-negotiable).
+        project_id:
+          type: string
+        run_id:
+          type: string
+        run_kind:
+          type: string
+          enum: [browser, api]
+        run_status:
+          type: string
+          description: >
+            Run status at capture time: pending, queued, running, paused,
+            cancelling, completed, failed, cancelled or inconclusive.
+        journey_id:
+          type: string
+        journey_version:
+          type: integer
+          description: Journey spec version the run executed.
+        persona_id:
+          type: string
+        persona_version:
+          type: integer
+          description: Persona version the run executed.
+        environment_id:
+          type: string
+        environment_kind:
+          type: string
+          enum: [local, dev, staging, production]
+        environment_mode:
+          type: string
+          enum: [pre_production, production_read_only, release_comparison]
+        app_version:
+          type: string
+          description: App/build under test (release comparison).
+        captured_at:
+          type: string
+          format: date-time
+        run_started_at:
+          type: string
+          format: date-time
+          nullable: true
+        run_finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        failing_assertion:
+          nullable: true
+          $ref: '#/components/schemas/SynthAssertionOutcome'
+        assertion_results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthAssertionOutcome'
+        repro_steps:
+          type: array
+          description: Deterministic, human-executable reproduction procedure.
+          items:
+            type: string
+        screenshot_refs:
+          type: array
+          description: >
+            Redacted screenshot artifact refs. Structurally absent for
+            non-admin roles (heavy artifacts are withheld, with tombstone
+            markers left in redacted_meta).
+          items:
+            type: string
+        browser_trace_ref:
+          type: string
+          nullable: true
+          description: Redacted browser trace artifact ref; withheld for non-admin roles.
+        console_refs:
+          type: array
+          items:
+            type: string
+        network_refs:
+          type: array
+          items:
+            type: string
+        other_refs:
+          type: array
+          description: 'Refs outside the screenshot:/trace:/console:/network: prefix convention.'
+          items:
+            type: string
+        correlation_ids:
+          type: object
+          description: Trace/span/request ids, post-redaction.
+          additionalProperties:
+            type: string
+        redacted_meta:
+          type: object
+          description: Free-form metadata after RedactionEngine processing.
+          additionalProperties:
+            type: string
+      required:
+      - schema_version
+      - bundle_id
+      - org_id
+      - run_id
+      - captured_at
+    SynthAssertionOutcome:
+      type: object
+      description: Deterministic result of one journey assertion as observed.
+      properties:
+        index:
+          type: integer
+          description: Index within the journey's assertion list.
+        kind:
+          type: string
+          enum: [element_visible, text_contains, api_status, json_schema, url_pattern, no_console_error, a11y_violations_below, latency_below_ms]
+        target:
+          type: string
+          description: Selector / URL / schema ref the assertion checked.
+        expected:
+          type: string
+        actual:
+          type: string
+        passed:
+          type: boolean
+        message:
+          type: string
+          description: Failure detail (pre-redacted by the worker).
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        at:
+          type: string
+          format: date-time
+      required:
+      - index
+      - kind
+      - passed
+    SynthFinding:
+      type: object
+      description: |
+        A defect finding linking the exact run/journey/assertion that
+        produced it with a stable dedup fingerprint (issue #150). Statuses
+        follow the enforced taxonomy; a confirmed defect is independently
+        reproduced. Hypothesis text (if any) is language-enforced to carry
+        the "hypothesis:" prefix marker and is never presented as verified
+        root cause.
+      properties:
+        id:
+          type: string
+          description: Occurrence-row id ("fnd_" + 24 hex chars).
+        org_id:
+          type: string
+        run_id:
+          type: string
+          description: Run that produced this occurrence.
+        journey_id:
+          type: string
+        assertion_ix:
+          type: integer
+          description: Failing assertion index (-1 when none).
+        status:
+          type: string
+          enum: [confirmed, likely, flaky, harness_failure, environmental_failure, inconclusive]
+          description: |
+            confirmed = independently reproduced; likely = failed with
+            consistent deterministic signals, no repro yet; flaky = passes
+            on isolated re-run; harness_failure = driver/worker errors (app
+            not implicated); environmental_failure = infra signals;
+            inconclusive = insufficient signals. Terminal-ish statuses
+            (harness/environmental) are reclassified only with new evidence.
+        severity:
+          type: string
+          enum: [info, low, medium, high, critical]
+        title:
+          type: string
+        description:
+          type: string
+          description: >
+            Deterministic description; AI-assisted root-cause hypotheses are
+            appended as separate lines starting with "hypothesis:".
+        fingerprint:
+          type: string
+          description: >
+            Stable SHA-256 over the canonical JSON of
+            {org, target, assertion_kind, failure_class}. The org is inside
+            the hash, so dedup never merges across tenants.
+        repro_steps:
+          type: string
+        evidence_refs:
+          type: array
+          description: Redacted artifact refs (union across occurrences; history preserved).
+          items:
+            type: string
+        repro_run_id:
+          type: string
+          nullable: true
+          description: Run id of the isolated reproduction attempt, when one exists.
+        reproducible:
+          type: boolean
+          nullable: true
+          description: >
+            True only when the isolated re-run independently reproduced the
+            failure; false when it did not; null when never attempted.
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: >
+            0-1 confidence from documented per-status bases plus 0.10 x
+            evidence-bundle completeness.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - run_id
+      - status
+      - severity
+      - fingerprint
+      - confidence
+      - created_at
+      - updated_at
+    SynthOccurrence:
+      type: object
+      description: |
+        One observed instance of a deduped finding. The occurrence log is
+        append-only (extend via the occurrence history, never rewrite it)
+        and never merged across organizations.
+      properties:
+        run_id:
+          type: string
+          description: Run that produced this occurrence.
+        at:
+          type: string
+          format: date-time
+          description: When the occurrence was recorded (injectable server clock).
+      required:
+      - run_id
+      - at
+    SynthReproResult:
+      type: object
+      description: |
+        Outcome of one independent reproduction attempt. Reproduction runs
+        in an ISOLATED environment via a narrow runner seam; production
+        writes are never replayed, and production_read_only environments
+        admit only the read-only subset (runners that cannot guarantee it
+        are refused up-front).
+      properties:
+        repro_run_id:
+          type: string
+          description: Run id of the isolated re-run.
+        reproduced:
+          type: boolean
+          description: True when the failure independently reproduced.
+        at:
+          type: string
+          format: date-time
+        environment_id:
+          type: string
+          description: Isolated environment used (allocated by the runner).
+        mode:
+          type: string
+          enum: [pre_production, production_read_only, release_comparison]
+        read_only_subset:
+          type: boolean
+          description: >
+            True when the attempt was constrained to non-write steps
+            (mandatory under production_read_only).
+        note:
+          type: string
+          description: Optional runner note (runner-owned, pre-redacted).
+      required:
+      - repro_run_id
+      - reproduced
+      - at
