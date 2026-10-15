@@ -51,3 +51,4 @@ Migrations are discovered automatically by filename (`NNN_name.sql`, see
 file requires no registration anywhere else.
 
 A migration tool such as goose or migrate can be adopted later, but the SQL files in this directory remain the source of truth for local and CI schema evolution.
+- 034_synth_registry.sql (issue #147 flagship #118: synthetic assurance registry — projects/targets/environments/personas/journeys/runs/findings, org-scoped with safety-posture constraints)
