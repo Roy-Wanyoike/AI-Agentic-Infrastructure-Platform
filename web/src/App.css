@@ -2180,3 +2180,354 @@ Tools (registry), Security (audit trail), Settings (identity admin)
   max-height: 260px;
   overflow: auto;
 }
+
+/* ---------------------------------------------------------------------------
+   Issue #126: real-time execution trace viewer (views/traceViewer.tsx)
+   Waterfall, per-step latency/token/cost attribution, trace id chip,
+   live SSE event log. Pure CSS — no chart dependencies.
+--------------------------------------------------------------------------- */
+
+.trace-viewer {
+  /* fixed lengths so the "now" cursor calc stays valid (no minmax in calc) */
+  --trace-label-col: 150px;
+  --trace-dur-col: 84px;
+  --trace-col-gap: 10px;
+}
+
+.trace-viewer .panel-header {
+  margin-bottom: 6px;
+}
+
+.trace-viewer .live-note {
+  color: #6ee7b7;
+}
+
+/* Trace id row (GET /runs/{id}/trace) */
+.trace-id-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.trace-id-row .trace-id-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7dd3fc;
+}
+
+.trace-id-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  padding: 3px 8px;
+  border-radius: 6px;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-id-row.muted span {
+  color: #94a3b8;
+  font-size: 12.5px;
+}
+
+.trace-id-source {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.trace-refresh-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* Summary strip */
+.trace-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.04);
+  font-size: 12.5px;
+  color: #cbd5f5;
+}
+
+/* Waterfall: axis + rows share one grid so bars align to the axis */
+.waterfall {
+  margin-top: 16px;
+}
+
+.waterfall-axis,
+.waterfall-row {
+  display: grid;
+  grid-template-columns: var(--trace-label-col) 1fr var(--trace-dur-col);
+  column-gap: var(--trace-col-gap);
+  align-items: center;
+}
+
+.waterfall-axis-track {
+  position: relative;
+  height: 20px;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.25);
+}
+
+.waterfall-tick {
+  position: absolute;
+  bottom: 2px;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  color: #64748b;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.waterfall-tick.first {
+  transform: none;
+}
+
+.waterfall-tick.last {
+  transform: translateX(-100%);
+}
+
+.waterfall-rows {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px 0 12px;
+}
+
+.waterfall-track {
+  position: relative;
+  height: 14px;
+  border-radius: 4px;
+  background-color: rgba(148, 163, 184, 0.07);
+  /* quarter grid lines inside the track only — keeps bars axis-aligned */
+  background-image: linear-gradient(to right, rgba(148, 163, 184, 0.14) 1px, transparent 1px);
+  background-size: 25% 100%;
+}
+
+.waterfall-bar {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  min-width: 3px;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.55);
+}
+
+.waterfall-bar[data-status='succeeded'] {
+  background: linear-gradient(90deg, rgba(52, 211, 153, 0.5), rgba(52, 211, 153, 0.95));
+}
+
+.waterfall-bar[data-status='failed'] {
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.5), rgba(248, 113, 113, 0.95));
+}
+
+.waterfall-bar[data-status='pending'],
+.waterfall-bar[data-status='running'] {
+  background: linear-gradient(90deg, rgba(96, 165, 250, 0.45), rgba(96, 165, 250, 0.95));
+  animation: timeline-pulse 1.6s ease-in-out infinite;
+}
+
+.waterfall-label {
+  font-size: 11.5px;
+  color: #94a3b8;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.waterfall-duration {
+  font-size: 11.5px;
+  color: #64748b;
+  text-align: right;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.waterfall-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(125, 211, 252, 0.7);
+  box-shadow: 0 0 6px rgba(125, 211, 252, 0.6);
+  pointer-events: none;
+}
+
+/* Attribution by step type */
+.trace-attribution {
+  margin-top: 16px;
+}
+
+.trace-attribution table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 12.5px;
+}
+
+.trace-attribution th,
+.trace-attribution td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  color: #cbd5f5;
+}
+
+.trace-attribution th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7dd3fc;
+}
+
+.trace-attribution td:nth-child(n + 3) {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* Step cards */
+.trace-steps {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trace-step {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.trace-step[data-status='failed'] {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.trace-step-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.trace-attempt {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.14);
+  color: #fcd34d;
+}
+
+.trace-attempt.retry {
+  background: rgba(251, 146, 60, 0.16);
+  color: #fdba74;
+}
+
+.trace-error-code {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(248, 113, 113, 0.18);
+  color: #fca5a5;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.trace-latency {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.trace-latency span {
+  background: rgba(125, 211, 252, 0.08);
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #7dd3fc;
+}
+
+.trace-io {
+  margin-top: 10px;
+}
+
+.trace-io .run-output {
+  max-height: 120px;
+  overflow: auto;
+}
+
+/* Live SSE event log */
+.trace-event-log {
+  margin-top: 16px;
+  font-size: 12.5px;
+}
+
+.trace-event-log summary {
+  cursor: pointer;
+  color: #93c5fd;
+  user-select: none;
+}
+
+.trace-event-log ul {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.trace-event-log li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  min-width: 0;
+}
+
+.trace-event-time {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: #64748b;
+  flex: 0 0 auto;
+}
+
+.trace-event-name {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: #a5b4fc;
+  flex: 0 0 auto;
+}
+
+.trace-event-detail {
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}

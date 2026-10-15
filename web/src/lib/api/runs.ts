@@ -13,7 +13,7 @@
 // body. That works with Bearer tokens and X-API-Key headers alike.
 
 import { ApiError, apiFetch, apiUrl, applyAuthHeaders, extractErrorMessage } from './client'
-import { normalizeRun, normalizeRunEvent, normalizeRunStep, pickField, type Run, type RunEvent, type RunStep } from './types'
+import { asString, normalizeRun, normalizeRunEvent, normalizeRunStep, pickField, type Run, type RunEvent, type RunStep } from './types'
 
 export type CreateRunInput = {
   agentId: string
@@ -44,6 +44,29 @@ export async function listRunSteps(runId: string): Promise<RunStep[]> {
   const wrapped = pickField(raw, 'steps', 'items', 'data')
   const list = Array.isArray(raw) ? raw : Array.isArray(wrapped) ? wrapped : []
   return list.map((step, index) => normalizeRunStep(step, index))
+}
+
+export type RunTrace = {
+  runId: string
+  traceId: string
+}
+
+/**
+ * GET /runs/{id}/trace → {"run_id": "...", "trace_id": "<32-hex>"}
+ * (TrRunTraceResponse, issue #114 — W3C trace id of the run's distributed
+ * execution trace, served from the in-memory run-trace registry).
+ *
+ * 404 `trace_not_available` is an expected "no trace id" answer (tracing
+ * disabled, registry eviction, cross-process start) and is propagated as an
+ * ApiError so callers can render it as an informational state instead of a
+ * failure.
+ */
+export async function getRunTrace(runId: string): Promise<RunTrace> {
+  const raw = await apiFetch<unknown>(`/runs/${encodeURIComponent(runId)}/trace`)
+  return {
+    runId: asString(pickField(raw, 'runId', 'run_id')) ?? '',
+    traceId: asString(pickField(raw, 'traceId', 'trace_id')) ?? '',
+  }
 }
 
 export async function createRun(payload: CreateRunInput): Promise<Run> {

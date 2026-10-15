@@ -9,6 +9,7 @@ import { useRunSteps } from '../lib/hooks'
 import { formatCost, formatDateTime, formatDurationMs, formatNumber } from '../lib/format'
 import type { RunStep } from '../lib/api/types'
 import { EmptyState, Skeleton } from './shared'
+import { TraceViewer } from './traceViewer'
 
 function metaString(meta: Record<string, unknown>, keys: string[]): string | null {
   for (const key of keys) {
@@ -131,7 +132,8 @@ export function RunTimeline({ runId, live }: { runId: string; live: boolean }) {
   }, [steps])
 
   return (
-    <article className="panel wide" id="run-timeline">
+    <>
+      <article className="panel wide" id="run-timeline">
       <div className="panel-header">
         <div>
           <p className="eyebrow">Trace</p>
@@ -176,6 +178,10 @@ export function RunTimeline({ runId, live }: { runId: string; live: boolean }) {
           </ol>
         </>
       )}
-    </article>
+      </article>
+      {/* Issue #126: real-time trace viewer (waterfall, token/cost attribution,
+          SSE live updates) — reads the same steps cache, so no extra fetches. */}
+      <TraceViewer runId={runId} live={live} />
+    </>
   )
 }
