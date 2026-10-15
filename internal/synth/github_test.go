@@ -26,30 +26,33 @@ import (
 // Test doubles
 // ---------------------------------------------------------------------------
 
-// fakeSecrets is a SecretSource that records lookups and returns a fixed
-// token. It asserts the client fetches by (org, ref) and never embeds the
-// token anywhere in configuration.
+// fakeSecrets is a SecretSource that records lookups and returns ref-keyed
+// values (the GitHub token, the webhook secret, …). It asserts the client
+// fetches by (org, ref) and never embeds values anywhere in configuration.
 type fakeSecrets struct {
-	t     *testing.T
-	org   string
-	ref   string
-	token string
-	calls int
+	t       *testing.T
+	org     string
+	values  map[string]string // ref → value
+	calls   int
+	lastOrg string
+	lastRef string
 }
 
 func (f *fakeSecrets) Resolve(_ context.Context, orgID, ref string) (string, error) {
 	f.calls++
-	if orgID != f.org || ref != f.ref {
-		f.t.Fatalf("SecretSource: unexpected lookup org=%q ref=%q (want %q/%q)", orgID, ref, f.org, f.ref)
+	f.lastOrg, f.lastRef = orgID, ref
+	v, ok := f.values[ref]
+	if !ok {
+		f.t.Fatalf("SecretSource: unexpected lookup ref=%q (known: %v)", ref, f.values)
 	}
-	return f.token, nil
+	return v, nil
 }
 
 // newTestClient wires a GitHubClient to an httptest server with deterministic
 // clock/sleep injection and returns the recorded sleeps.
 func newTestClient(t *testing.T, baseURL, org string) (*GitHubClient, *fakeSecrets, *[]time.Duration) {
 	t.Helper()
-	secrets := &fakeSecrets{t: t, org: org, ref: "gh-token", token: "tok-abc123"}
+	secrets := &fakeSecrets{t: t, org: org, values: map[string]string{"gh-token": "tok-abc123"}}
 	c, err := NewGitHubClient(GitHubClientConfig{
 		OrgID:        org,
 		TokenRef:     "gh-token",
@@ -70,7 +73,7 @@ func newTestClient(t *testing.T, baseURL, org string) (*GitHubClient, *fakeSecre
 // ---------------------------------------------------------------------------
 
 func TestNewGitHubClientValidation(t *testing.T) {
-	secrets := &fakeSecrets{t: t, org: "o", ref: "r", token: "t"}
+	secrets := &fakeSecrets{t: t, org: "o", values: map[string]string{"r": "t"}}
 	cases := []struct {
 		name string
 		cfg  GitHubClientConfig
@@ -409,7 +412,7 @@ func TestGitHubClientVerifyWebhookSignatureResolvesSecret(t *testing.T) {
 	mac.Write(payload)
 	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
-	whSecrets := &fakeSecrets{t: t, org: "org1", ref: "wh-secret", token: "whsec-1"}
+	whSecrets := &fakeSecrets{t: t, org: "org1", values: map[string]string{"wh-secret": "whsec-1"}}
 	c, err := NewGitHubClient(GitHubClientConfig{
 		OrgID:            "org1",
 		TokenRef:         "unused",
