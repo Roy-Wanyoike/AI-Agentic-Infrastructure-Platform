@@ -107,6 +107,9 @@ type app struct {
 	notifSvc       *notifications.Service
 	publisher      events.Publisher
 	eventsLister   events.PagedStore
+	// wave-9 issue #139: gateway virtual keys (model allow-lists + enforced
+	// monthly spend caps at the provider seam).
+	gatewaySvc *models.GatewayService
 
 	// wave-9 issue #138: read-only compliance evidence pack (aggregates
 	// the services above into auditor-ready artifacts; never writes).
@@ -350,6 +353,16 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	runsServiceVar = a.runsSvc
 	// issue #47: expose billing to the create-run quota gate
 	billingServiceVar = a.billingSvc
+	// wave-9 issue #139: gateway virtual keys — dual-mode construction
+	// (Postgres-backed store when a DSN is configured, in-memory otherwise),
+	// mirroring the mcpRegSvc pattern; the audit seam records lifecycle +
+	// denial rows through the same Auditor convention as the MCP registry.
+	if a.db != nil {
+		a.gatewaySvc = models.NewGatewayServiceWithStore(models.NewGatewayPostgresStore(a.db))
+	} else {
+		a.gatewaySvc = models.NewGatewayService()
+	}
+	a.gatewaySvc.SetAuditor(a.auditSvc)
 	return a
 }
 
@@ -439,6 +452,9 @@ func (a *app) routes() http.Handler {
 	// wave-8 issue C (6-6c): per-scope budget gates + dry-run evaluate; also
 	// assigns budgetServiceVar for the create-run budget gate (enforceBudget)
 	registerBudgetRoutes(apiMux, a.db, billing.NewRunsConsumptionSource(a.runsSvc), a.agentsSvc, a.authSvc, a.apiKeysSvc)
+	// wave-9 issue #139: gateway virtual keys — CRUD + month-to-date spend
+	// view (OWNER/ADMIN; denials map to 402/403 at the provider seam)
+	registerGatewayRoutes(apiMux, a.gatewaySvc, a.authSvc, a.apiKeysSvc)
 	// wave-8 issue C (6-6c): showback/chargeback reports over the runs ledger
 	registerShowbackRoutes(apiMux, billing.NewRunsShowbackSource(a.runsSvc), a.authSvc, a.apiKeysSvc)
 	// wave-9 issue #137: approvals enterprise oversight (delegation, escalation SLAs, dual control, evidence export)

@@ -1,0 +1,499 @@
+# AgentOS API — OpenAPI 3.1 fragment for the gateway VIRTUAL KEYS surface
+# (wave-9, issue #139: model allow-lists + enforced monthly spend caps).
+#
+# Merge target: api/openapi.yaml. Paths WITHOUT the /api/v1 prefix.
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern — the
+# dominant convention; NOT the bearerAuth shorthand of budgets.yaml, which
+# leaves dangling scheme refs at fold time), so
+# `python3 scripts/check_fragment_refs.py api/fragments/gateway.yaml` passes.
+# Components carry the track-unique `Gateway` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * x-required-permission documents the RBAC permission per operation.
+#     No new permission enum was introduced — the users.manage grant
+#     (OWNER/ADMIN) is reused for EVERY gateway operation, mirroring
+#     cmd/api/budgets.go: virtual keys decide which models a credential may
+#     touch and how much it may spend — account administration, the
+#     billing-write tier.
+#   * structured error model {"error":{...}}
+#
+# CONTRACT NOTES:
+#   * A virtual key (vk_…) is an org-scoped credential gating MODEL SPEND:
+#     it carries a model allow-list and an enforced monthly spend cap. The
+#     worker (or any provider consumer) binds it via AGENTOS_GATEWAY_KEY;
+#     every completion is authorized BEFORE the provider call and its actual
+#     token cost is recorded into a per-(key, month UTC) ledger.
+#   * Allow-list semantics are contractual nil-vs-empty: absent or JSON null
+#     = allow-list DISABLED (every model allowed); [] = ENABLED and empty
+#     (no model allowed); else exactly the listed model ids (matched
+#     case-insensitively; a "vendor/model" id also matches its bare suffix,
+#     consistent with model pricing lookup).
+#   * monthly_limit_cents uses the 0 = unlimited sentinel (same as budgets).
+#     Money is USD CENTS (fractional) — the single money unit of the billing
+#     stack. Ledger months are calendar months in UTC ("YYYY-MM").
+#   * CREDENTIAL HANDLING (mirrors POST /api-keys): the plaintext credential
+#     appears in exactly one wire place — the POST /gateway/keys response,
+#     returned EXACTLY ONCE as the top-level `plaintext` sibling. Only the
+#     SHA-256 hash of the full secret is persisted; no list/get/patch
+#     response ever carries it or the hash. Lifecycle writes audit
+#     `gateway.key_created` / `gateway.key_revoked` (no key material).
+#   * ENFORCEMENT DENIALS (mapped where guarded completions fail — run
+#     serving handlers use the same envelope as below): projected overspend
+#     is HTTP 402 with error.code "spend_limit_exceeded" (carrying key_id,
+#     limit_cents, used_cents, projected_cents — see
+#     GatewaySpendLimitErrorBody); a model outside the allow-list is HTTP
+#     403 with error.code "model_not_allowed" (carrying key_id, model — see
+#     GatewayModelNotAllowedErrorBody). Exactly-at-limit projections are
+#     allowed; strictly-over projections are denied.
+openapi: 3.1.0
+info:
+  title: AgentOS — gateway virtual keys (issue #139 fragment)
+  version: 3.0.0-fragment
+  description: |
+    Standalone fragment for the gateway virtual-key operations added by
+    issue #139. Virtual keys are org-scoped model-gateway credentials
+    minted by OWNER/ADMIN users: model allow-lists (nil = all, [] = none,
+    else the exact list), enforced monthly spend caps (0 = unlimited) and
+    an append-only spend ledger keyed by (key, month UTC).
+paths:
+  /gateway/keys:
+    post:
+      operationId: createGatewayKey
+      summary: Mint a virtual key (plaintext vk_… returned exactly once)
+      description: |
+        Write operation (users.manage, OWNER/ADMIN). Body carries label,
+        optional models allow-list, optional monthly_limit_cents and
+        optional expires_at. The server generates the secret (`vk_` + 32
+        random bytes), persists only its SHA-256 hash, and returns the
+        plaintext EXACTLY ONCE as the top-level `plaintext` sibling of the
+        key metadata — this is the only response in the whole API that
+        carries the credential. Minting is audit-logged
+        (`gateway.key_created`, no key material in metadata).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GatewayKeyCreateRequest'
+      responses:
+        '201':
+          description: |
+            Key minted. `id` and `plaintext` sit top-level (create
+            contract); `key` is the redacted metadata view (never the
+            plaintext or the hash).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayKeyCreatedResponse'
+        '400':
+          description: |
+            Validation error (error.code VALIDATION_ERROR): missing/blank
+            label, negative limit, malformed models / expires_at.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+    get:
+      operationId: listGatewayKeys
+      summary: List virtual keys of the caller's organization (no hashes, no secrets)
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: Key list (possibly empty; structurally secret-free).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GatewayKey'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+  /gateway/keys/{id}:
+    get:
+      operationId: getGatewayKey
+      summary: Get one virtual key (redacted view)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      x-required-permission: users.manage
+      parameters:
+        - $ref: '#/components/parameters/GatewayKeyId'
+      responses:
+        '200':
+          description: The key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key:
+                    $ref: '#/components/schemas/GatewayKey'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+        '404':
+          $ref: '#/components/responses/GatewayNotFound'
+    patch:
+      operationId: updateGatewayKey
+      summary: Update label / allow-list / monthly limit / expiry
+      description: |
+        Partial update: omitted members are unchanged. `models` accepts the
+        full nil-vs-empty contract (null = ALL models allowed, [] = NONE,
+        else the exact list); `expires_at: null` clears the expiry.
+        Unknown/foreign ids are 404 with no existence leak.
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/GatewayKeyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GatewayKeyUpdateRequest'
+      responses:
+        '200':
+          description: Updated key (redacted view).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key:
+                    $ref: '#/components/schemas/GatewayKey'
+        '400':
+          description: Validation error (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+        '404':
+          $ref: '#/components/responses/GatewayNotFound'
+    delete:
+      operationId: revokeGatewayKey
+      summary: Revoke a virtual key (idempotent, terminal)
+      description: |
+        Flips the key to revoked; revocation is terminal and keeps the row
+        for audit. Re-revoking an already-revoked key stays 204. A revoked
+        key stops resolving at the authentication path (same 404 collapse
+        as unknown/foreign credentials).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/GatewayKeyId'
+      responses:
+        '204':
+          description: Revoked (or already revoked).
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+        '404':
+          $ref: '#/components/responses/GatewayNotFound'
+  /gateway/keys/{id}/spend:
+    get:
+      operationId: getGatewayKeySpend
+      summary: Month-to-date spend view for one virtual key
+      description: |
+        The (key, month UTC) ledger view the enforcement gate reads.
+        `?month=YYYY-MM` selects a bucket (default: the current UTC month).
+        `remaining_cents` is null for unlimited keys (limit sentinel 0).
+        A ledger read failure is a 500 — the endpoint never reports a false
+        zero. Unknown/foreign key ids are 404.
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/GatewayKeyId'
+        - name: month
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+            description: Ledger month bucket in UTC ("YYYY-MM").
+      responses:
+        '200':
+          description: Spend view for the requested month.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewaySpendView'
+        '400':
+          description: Malformed month parameter (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/GatewayUnauthorized'
+        '403':
+          $ref: '#/components/responses/GatewayForbidden'
+        '404':
+          $ref: '#/components/responses/GatewayNotFound'
+components:
+  parameters:
+    GatewayKeyId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    GatewayUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayErrorEnvelope'
+    GatewayForbidden:
+      description: Not permitted for this tier (gateway surface is OWNER/ADMIN).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayErrorEnvelope'
+    GatewayNotFound:
+      description: Unknown id or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayErrorEnvelope'
+  schemas:
+    GatewayErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: >
+                VALIDATION_ERROR | GATEWAY_KEY_NOT_FOUND |
+                spend_limit_exceeded (HTTP 402) | model_not_allowed
+                (HTTP 403) on guarded completions.
+            message:
+              type: string
+    GatewayKeyCreateRequest:
+      type: object
+      required: [label]
+      properties:
+        label:
+          type: string
+          minLength: 1
+        models:
+          description: >
+            Allow-list contract: absent or null = ALL models allowed;
+            [] = NONE; else the exact model ids (case-insensitive; a
+            "vendor/model" id also matches its bare suffix).
+          oneOf:
+            - type: "null"
+            - type: array
+              items:
+                type: string
+        monthly_limit_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+          description: Monthly spend ceiling in USD cents; 0 = unlimited.
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional expiry; enforced at the authentication path.
+    GatewayKeyUpdateRequest:
+      type: object
+      properties:
+        label:
+          type: string
+          minLength: 1
+        models:
+          description: >
+            Absent = unchanged; null = allow-list DISABLED (ALL models);
+            [] = ENABLED and empty (NONE); else the exact list.
+          oneOf:
+            - type: "null"
+            - type: array
+              items:
+                type: string
+        monthly_limit_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 0 = unlimited.
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Absent = unchanged; null = clear the expiry.
+    GatewayKey:
+      type: object
+      description: >
+        Redacted key view. The persisted SHA-256 hash and the plaintext
+        credential are structurally absent (no property exists for either).
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        prefix:
+          type: string
+          description: >
+            12-char display prefix of the minted credential; authenticates
+            nothing (the hash covers the FULL secret).
+        models:
+          description: >
+            null = allow-list disabled (every model allowed); [] = enabled
+            and empty (no model allowed); else the exact allow-list.
+          oneOf:
+            - type: "null"
+            - type: array
+              items:
+                type: string
+        monthly_limit_cents:
+          type: integer
+          format: int64
+          description: 0 = unlimited.
+        status:
+          type: string
+          enum: [active, revoked]
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    GatewayKeyCreatedResponse:
+      type: object
+      description: >
+        Mint response. `key` is metadata-only; `plaintext` is the vk_…
+        credential, returned exactly here and exactly once — the server
+        stores only the hash and can never return it again.
+      required: [id, plaintext, key]
+      properties:
+        id:
+          type: string
+        plaintext:
+          type: string
+          pattern: '^vk_'
+          description: The plaintext credential. Appears exactly here and exactly once.
+        key:
+          $ref: '#/components/schemas/GatewayKey'
+    GatewaySpendView:
+      type: object
+      required: [used_cents, limit_cents, remaining_cents, month]
+      properties:
+        used_cents:
+          type: number
+          format: double
+          description: Month-to-date recorded spend (USD cents, fractional).
+        limit_cents:
+          type: number
+          format: double
+          description: The key's monthly ceiling; 0 = unlimited.
+        remaining_cents:
+          type: number
+          format: double
+          nullable: true
+          description: limit - used; null for unlimited keys.
+        month:
+          type: string
+          pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+          description: The UTC calendar month bucket of this view.
+    GatewaySpendLimitErrorBody:
+      type: object
+      description: >
+        HTTP 402 body shape for guarded-completion overspend denials
+        (spend_limit_exceeded); rendered by the run-serving handlers via
+        the shared mapper.
+      properties:
+        error:
+          type: object
+          required: [code, message, key_id, limit_cents, used_cents, projected_cents]
+          properties:
+            code:
+              type: string
+              enum: [spend_limit_exceeded]
+            message:
+              type: string
+            key_id:
+              type: string
+            limit_cents:
+              type: number
+              format: double
+            used_cents:
+              type: number
+              format: double
+            projected_cents:
+              type: number
+              format: double
+    GatewayModelNotAllowedErrorBody:
+      type: object
+      description: >
+        HTTP 403 body shape for guarded-completion allow-list denials
+        (model_not_allowed); rendered by the run-serving handlers via the
+        shared mapper.
+      properties:
+        error:
+          type: object
+          required: [code, message, key_id, model]
+          properties:
+            code:
+              type: string
+              enum: [model_not_allowed]
+            message:
+              type: string
+            key_id:
+              type: string
+            model:
+              type: string
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
