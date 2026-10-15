@@ -10151,8 +10151,180 @@ paths:
         "422": { $ref: "#/components/responses/QualityGatesValidation" }
         "500": { $ref: "#/components/responses/QualityGatesInternal" }
 
+# ---- wave-10 round-4 fragment: simulation.yaml (paths) ----
+  /simulations:
+    post:
+      operationId: createSimulation
+      summary: Validate, queue and run a simulation asynchronously (202 = accepted)
+      description: |
+        Write operation (simulation.write, OWNER/ADMIN/MEMBER). The body is
+        a SimulationConfig: kind (registered environment), rounds [1,500],
+        seed (determinism anchor), optional IANA location for the
+        timezone-aware activity multipliers, 1..64 SimAgentPersona agents,
+        and optional external ActivityEvents at specific rounds. Validation
+        is synchronous and fails fast with 422 before any record exists.
+        On success the record is queued and a detached goroutine executes
+        the rounds (context detached from the request — completion never
+        depends on the caller staying connected). Poll
+        GET /simulations/{id} until status is completed or failed.
+      x-required-permission: simulation.write (OWNER/ADMIN/MEMBER)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulationConfig'
+      responses:
+        '202':
+          description: |
+            Simulation accepted: the queued record (status "queued") is
+            returned immediately; execution is in progress server-side.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationCreateResponse'
+        '401':
+          $ref: '#/components/responses/SimulationUnauthorized'
+        '403':
+          $ref: '#/components/responses/SimulationForbidden'
+        '422':
+          description: Validation failure (unknown kind, bounds violated, bad timezone, duplicate agent ids...). No record is created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationErrorEnvelope'
+    get:
+      operationId: listSimulations
+      summary: List the caller's organization's simulations (newest first)
+      description: |
+        Read operation (simulation.read, all roles — transcripts and
+        emergence metrics are observability surfaces). The listing is
+        org-scoped from the auth claims and always renders a JSON array
+        (empty registry -> [], never null).
+      x-required-permission: simulation.read (all roles)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        '200':
+          description: The org's simulation records, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationListResponse'
+        '401':
+          $ref: '#/components/responses/SimulationUnauthorized'
+  /simulations/{id}:
+    get:
+      operationId: getSimulation
+      summary: Fetch one simulation record (config, status, result)
+      description: |
+        Read operation (simulation.read, all roles). Unknown AND foreign-org
+        ids are the same 404 (no existence leak across tenants). A completed
+        record carries the full SimulationResult: per-round RoundRecord
+        entries (ActionResult transcript, RoundMetrics, EnvState snapshot)
+        and EmergentNote heuristics with their formulas restated in `detail`.
+      x-required-permission: simulation.read (all roles)
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/SimulationID'
+      responses:
+        '200':
+          description: The simulation record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationGetResponse'
+        '401':
+          $ref: '#/components/responses/SimulationUnauthorized'
+        '404':
+          description: Unknown or foreign-org id (indistinguishable by design).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationErrorEnvelope'
+
+# ---- wave-10 round-4 fragment: configgen.yaml (paths) ----
+  /config/generate:
+    post:
+      operationId: generateConfig
+      summary: Translate a natural-language description into a configuration draft (never applied)
+      description: |
+        Takes {type, description, context?} and returns a DRAFT: an agent
+        configuration (model, tools, policy, runtime knobs, system
+        instructions) or a workflow DSL graph. Nothing is persisted and no
+        resource is created — the draft is returned for review, and the
+        caller creates the real objects through the normal endpoints
+        afterwards. Generation runs in 5 steps; the response's `progress`
+        array reports each completed step so UIs can render partial
+        progress. The draft's `assumptions` array documents every
+        non-obvious decision the generator made. Workflow drafts reference
+        {{placeholder}} agent_id / tool_id / url values that reviewers must
+        bind before creating the workflow.
+      x-required-permission: configgen.use
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigGenGenerateRequest'
+      responses:
+        '200':
+          description: |
+            Draft generated. Exactly one of agent_draft / workflow_draft is
+            populated, matching the request type; `valid` is always true for
+            server-generated drafts (every draft is validated before it is
+            returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigGenGenerateResponse'
+        '400':
+          description: Malformed or empty JSON body (error.code INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/ConfigGenUnauthorized'
+        '403':
+          $ref: '#/components/responses/ConfigGenForbidden'
+        '422':
+          description: |
+            Validation error: blank description, missing type or unknown type
+            (error.code VALIDATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+
 components:
   parameters:
+    # ---- wave-10 round-4 fragment: simulation.yaml (parameters) ----
+    SimulationID:
+      name: id
+      in: path
+      required: true
+      description: Simulation id (UUID, as returned by the create operation).
+      schema:
+        type: string
+        minLength: 1
+      example: 7f2c1a5e-8e2b-4c1d-9a7b-2f0d5e6a1b2c
+
     # ---- wave-10 round-3 fragment: synth-registry.yaml (parameters) ----
     SynthID:
       name: id
@@ -10512,6 +10684,54 @@ components:
         type: string
 
   securitySchemes:
+    # ---- wave-10 round-4 fragment: knowledge-graph.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 round-4 fragment: retrieval-tools.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 round-4 fragment: simulation.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
+    # ---- wave-10 round-4 fragment: configgen.yaml (securitySchemes) ----
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+
     # ---- wave-10 round-3 fragment: synth-registry.yaml (securitySchemes) ----
     bearerToken:
       type: http
@@ -10848,6 +11068,34 @@ components:
 
         '
   responses:
+    # ---- wave-10 round-4 fragment: simulation.yaml (responses) ----
+    SimulationUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SimulationErrorEnvelope'
+    SimulationForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SimulationErrorEnvelope'
+
+    # ---- wave-10 round-4 fragment: configgen.yaml (responses) ----
+    ConfigGenUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+    ConfigGenForbidden:
+      description: Authenticated but lacking the configgen.use permission (VIEWER role).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConfigGenErrorEnvelope'
+
     # ---- wave-10 round-3 fragment: synth-registry.yaml (responses) ----
     SynthValidationError:
       description: Invalid input (400 VALIDATION_ERROR).
@@ -22618,6 +22866,892 @@ components:
       - meaningful
       - reasons
       - thresholds
+
+      # ---- wave-10 round-4 fragment: knowledge-graph.yaml (schemas) ----
+    ActivityEpisode:
+      type: object
+      description: |
+        One agent activity captured from a run (issue #130). Episodes are the
+        temporal layer of the knowledge graph: persisted timestamped with
+        episode content chunked like documents and embedded via the knowledge
+        embedder; retrieval weights raw relevance by exponential half-life
+        decay (24h default). action_type is one of tool_call | reasoning |
+        decision | observation.
+      required: [agent_id, run_id, action_type, content, timestamp]
+      properties:
+        agent_id:
+          type: string
+          description: Agent that produced the activity (authoritative from the recorder).
+        run_id:
+          type: string
+          description: Run the activity belongs to (authoritative from the recorder).
+        organization_id:
+          type: string
+          description: Owning organization (tenant guard; stamped server-side).
+        action_type:
+          type: string
+          enum: [tool_call, reasoning, decision, observation]
+        content:
+          type: string
+          minLength: 1
+          description: Activity payload; chunked at ~800 runes on boundaries at ingest.
+        entities:
+          type: array
+          description: Entity surface forms mentioned by the activity (graph seeds).
+          items:
+            type: string
+        timestamp:
+          type: string
+          format: date-time
+          description: |
+            When the activity happened (NOT insert time). Zero timestamps are
+            stamped with the ingest time by the episode ingestor.
+    AttributeDef:
+      type: object
+      description: One typed attribute of an entity or edge type. Name is snake_case; reserved names (uuid, name, created_at) cannot be redefined with another type.
+      required: [name, type]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z][a-z0-9_]*$'
+        type:
+          type: string
+          enum: [string, number, integer, boolean, datetime]
+        required:
+          type: boolean
+          default: false
+        description:
+          type: string
+    EntityType:
+      type: object
+      description: |
+        One node type of the knowledge graph. Name is PascalCase. fallback
+        marks the guaranteed types (Person, Organization) present in every
+        generated ontology. cues are lowercase trigger words the
+        deterministic extractor matches against a candidate's context.
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: '^[A-Z][A-Za-z0-9]*$'
+        attributes:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttributeDef'
+        fallback:
+          type: boolean
+          description: True for the guaranteed fallback types (Person, Organization).
+        cues:
+          type: array
+          items:
+            type: string
+    EdgeType:
+      type: object
+      description: One relationship type; UPPER_SNAKE_CASE name, endpoints referencing declared entity types. The (name, source_type, target_type) triple is the edge identity.
+      required: [name, source_type, target_type]
+      properties:
+        name:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]*$'
+        source_type:
+          type: string
+        target_type:
+          type: string
+        attributes:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttributeDef'
+    Ontology:
+      type: object
+      description: |
+        Org-scoped schema of one knowledge graph (issue #131). Generated via
+        the LLMGateway seam or the deterministic RuleBasedGenerator;
+        validation errors are typed (ErrOntologyValidation) and carry field
+        paths — schema violations are never silently fixed.
+      required: [entity_types]
+      properties:
+        id:
+          type: string
+        organization_id:
+          type: string
+          description: Owning organization (tenant guard).
+        entity_types:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/EntityType'
+        edge_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeType'
+        attribute_defs:
+          type: array
+          description: Shared attribute library (canonical reserved attributes ship by default).
+          items:
+            $ref: '#/components/schemas/AttributeDef'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ExtractionResult:
+      type: object
+      description: |
+        Outcome of one schema-driven extraction query. Entities are typed
+        against the ontology; edges connect co-occurring typed entities
+        through declared edge types only; every schema violation (unknown
+        type filter, undeclared or mistyped attribute value) is collected in
+        rejected — type errors are NEVER silent.
+      required: [entities]
+      properties:
+        entities:
+          type: array
+          items:
+            type: object
+            required: [type, name]
+            properties:
+              type:
+                type: string
+                description: Declared EntityType name.
+              name:
+                type: string
+                description: Surface form of the entity mention.
+              attributes:
+                type: object
+                additionalProperties: true
+                description: Validated attribute values keyed by declared attribute name.
+              position:
+                type: integer
+                description: Token offset of the first mention (deterministic ordering).
+        edges:
+          type: array
+          items:
+            type: object
+            required: [type, source, target]
+            properties:
+              type:
+                type: string
+                description: Declared EdgeType name.
+              source:
+                type: string
+              target:
+                type: string
+        rejected:
+          type: array
+          description: Collected schema violations (never silent).
+          items:
+            type: object
+            required: [surface, reason]
+            properties:
+              surface:
+                type: string
+                description: The offending candidate, value or filter.
+              type:
+                type: string
+                description: Entity type the violation relates to, when known.
+              reason:
+                type: string
+
+      # ---- wave-10 round-4 fragment: retrieval-tools.yaml (schemas) ----
+    RetrievalTier:
+      type: string
+      description: |
+        One depth tier of the multi-depth search hierarchy (issue #132),
+        cheapest first. Tiers are policy-restrictable: the existing
+        tool_allowlist condition can admit quick searches for every agent
+        while reserving the deeper tiers for trusted runs. Each tier tool
+        exposes its tier via TierName().
+      enum:
+      - quick
+      - panorama
+      - insight
+      x-tier-cost:
+        quick: low
+        panorama: medium
+        insight: high
+    RetrievalToolSpec:
+      type: object
+      description: |
+        The contract of one tiered retrieval tool as registered into the
+        platform tool registry (registry names: quick_search,
+        panorama_search, insight_forge). Tools implement the platform tool
+        interface (Name + Execute, plus ContextAware for deadline/cancel
+        propagation) and are registered with the one-line
+        knowledge.RegisterRetrievalTools helper — the internal/tools catalog
+        itself is not modified.
+      required: [name, tier, description, cost_class]
+      properties:
+        name:
+          type: string
+          description: Registry name (the value tool_allowlist policies match).
+          enum: [quick_search, panorama_search, insight_forge]
+        tier:
+          $ref: '#/components/schemas/RetrievalTier'
+        description:
+          type: string
+          description: What the tier does.
+        cost_class:
+          type: string
+          enum: [low, medium, high]
+          description: Relative cost of one call (observability hint; the per-call estimated_tokens counters carry the numbers).
+        input:
+          type: object
+          description: Tool arguments (JSON object passed to Execute).
+          required: [org_id, query]
+          properties:
+            org_id:
+              type: string
+              minLength: 1
+              description: Caller organization id (tenant guard; fail-closed when missing).
+            query:
+              type: string
+              minLength: 1
+              description: Search query (insight_forge decomposes it into sub-questions).
+            k:
+              type: integer
+              minimum: 1
+              maximum: 50
+              description: Top-K result cap (quick_search default 5, panorama_search default 20).
+            include_archived:
+              type: boolean
+              default: false
+              description: panorama_search only — widen the window to archived/expired documents (the metadata convention archived/status/expires_at).
+        output:
+          type: object
+          description: |
+            Tool result map: tier, org_id, query, results (contract search
+            result fields document_id/document_title/chunk_id/chunk_ordinal/
+            content/score/citation), count and estimated_tokens.
+            panorama_search adds full per-result context
+            (document_source/document_metadata/created_at) and
+            include_archived. insight_forge adds sub_questions, findings
+            (per sub-question results) and synthesis.
+          properties:
+            tier:
+              $ref: '#/components/schemas/RetrievalTier'
+            count:
+              type: integer
+            estimated_tokens:
+              type: integer
+              description: Deterministic token-cost estimate of the call (~4 chars/token; budgeting signal, not billing).
+            results:
+              type: array
+              items: { type: object, additionalProperties: true }
+            synthesis:
+              type: string
+              description: insight_forge only — the composed insight over the deduplicated, ranked findings.
+    LeaseState:
+      type: object
+      description: |
+        Point-in-time snapshot of one graph's lifecycle coordination state
+        (issue #135): read leases + exclusive write locks per org-scoped
+        graph key ("org/<org_id>/kb/<kb_id>"). Mirrors
+        knowledge.LeaseState; exposed for observability rendering and a
+        future admin status endpoint — the coordination itself is in-process
+        (mutex + broadcast channels, no goroutines, no network surface).
+      required: [graph_key, active_readers, write_locked, queue]
+      properties:
+        graph_key:
+          type: string
+          description: Org-scoped lifecycle key built by knowledge.GraphKey — "org/<org_id>/kb/<kb_id>". Tenant keys are disjoint by construction.
+          examples:
+          - org/9f1c…/kb/2b7e…
+        active_readers:
+          type: integer
+          minimum: 0
+          description: Read leases currently held (search/run duration).
+        write_locked:
+          type: boolean
+          description: True while the exclusive write lease (reset/re-ingest/schema change) is held; no reader can be admitted.
+        queue:
+          type: integer
+          minimum: 0
+          description: Writers waiting for active readers to release (writer-priority — new readers queue behind them).
+
+      # ---- wave-10 round-4 fragment: simulation.yaml (schemas) ----
+    SimulationCoreIdentity:
+      type: object
+      description: |
+        The platform-independent half of a simulated agent — who the agent
+        IS, independent of where it acts. A lightweight, Persona-shaped
+        struct that deliberately does NOT import internal/synth (documented
+        decoupling, issue #133): synth.Persona.ID/OrgID/Name/RoleHints/
+        Constraints project onto the same-named fields; Traits are a
+        simulation-local numeric vocabulary in [0,1] (missing = 0.5):
+        extraversion (initiating), agreeableness (reciprocal), openness
+        (exploratory), risk_appetite (market aggression).
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: Stable within the simulation; unique per config.
+        org_id:
+          type: string
+          description: Tenant scope (echoed from the config, claims-stamped).
+        name:
+          type: string
+        role_hints:
+          type: array
+          items:
+            type: string
+        constraints:
+          type: object
+          additionalProperties:
+            type: string
+        traits:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 1
+    SimulationPlatformBehavior:
+      type: object
+      description: |
+        The per-platform overlay: how the persona ACTS on one platform. The
+        SAME CoreIdentity with different overlays must produce observably
+        different action mixes (the divergence contract, tested).
+      properties:
+        actions:
+          type: array
+          items:
+            type: string
+          description: Optional vocabulary restriction (adapter verbs, e.g. post/like/follow/comment or buy/sell/bid or send/receive/route). Unknown verbs are rejected by the environment at apply time ("unknown_action").
+        frequency:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Per-round participation gate — the agent acts only if a uniform draw < frequency × activity multiplier. Omitted = always active.
+        weights:
+          type: object
+          additionalProperties:
+            type: number
+          description: Explicit per-action selection weights (normalized internally); REPLACE the trait-derived defaults for the listed verbs.
+    SimulationPersona:
+      type: object
+      description: One simulated agent — shared identity + platform overlays.
+      required: [core_identity, platform_behavior]
+      properties:
+        core_identity:
+          $ref: '#/components/schemas/SimulationCoreIdentity'
+        platform_behavior:
+          type: object
+          description: Keyed by environment kind (social | market | network | custom).
+          additionalProperties:
+            $ref: '#/components/schemas/SimulationPlatformBehavior'
+    SimulationActivityEvent:
+      type: object
+      description: |
+        An external event injected at a specific round (activity injection,
+        issue #133) so runs can be steered without bespoke configs. Adapter
+        vocabulary — social: trending_topic {topic}; market: price_shock
+        {symbol, pct (may be negative)}; network: viral_message {topic}.
+        Environments absorb events through an optional EventInjector seam;
+        the pinned SimulationEnvironment signature stays clean.
+      required: [round, kind]
+      properties:
+        round:
+          type: integer
+          minimum: 1
+          description: 1-based; must be within [1, rounds].
+        platform:
+          type: string
+          description: Empty, or the run kind (validated to match).
+        kind:
+          type: string
+        payload:
+          type: object
+          additionalProperties:
+            type: string
+    SimulationConfig:
+      type: object
+      description: |
+        The wire-level configuration for one simulation (POST body). The
+        tenant is derived from the auth claims — any client-supplied
+        org_id is force-stamped over server-side.
+      required: [kind, rounds, agents]
+      properties:
+        org_id:
+          type: string
+          description: Server-side only (claims); ignored on input.
+        name:
+          type: string
+        kind:
+          type: string
+          description: Registered environment kind (built-ins social | market | network; custom kinds via RegisterEnvironment).
+        rounds:
+          type: integer
+          minimum: 1
+          maximum: 500
+        seed:
+          type: integer
+          format: int64
+          description: Determinism anchor — same config + seed + clock reproduce byte-identical results.
+        location:
+          type: string
+          description: IANA timezone for the activity multipliers ("" = UTC); invalid names are a 422.
+        agents:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/SimulationPersona'
+        activity:
+          type: array
+          description: External events at specific rounds (see SimulationActivityEvent).
+          items:
+            $ref: '#/components/schemas/SimulationActivityEvent'
+        params:
+          type: object
+          additionalProperties:
+            type: string
+          description: Adapter tuning (social feed_depth; market symbols/price_<SYM>/starting_cash; network inbox_depth).
+    SimulationAction:
+      type: object
+      description: One atomic agent decision in a platform vocabulary.
+      properties:
+        agent_id:
+          type: string
+        kind:
+          type: string
+          description: Platform verb (post/like/follow/comment; buy/sell/bid; send/receive/route; custom).
+        target:
+          type: string
+          description: Object id (post, symbol, peer, message).
+        payload:
+          type: object
+          additionalProperties:
+            type: string
+    SimulationActionResult:
+      type: object
+      description: The environment's verdict on one attempted action.
+      properties:
+        action:
+          $ref: '#/components/schemas/SimulationAction'
+        accepted:
+          type: boolean
+        reason:
+          type: string
+          description: Rejection class (unknown_post, no_liquidity, insufficient_holdings, inbox_empty, max_hops, idle, ...).
+        detail:
+          type: string
+          description: Human-readable outcome (e.g. "filled 2/3 AGENTOS").
+        at:
+          type: string
+          format: date-time
+    SimulationRoundMetrics:
+      type: object
+      description: The per-round quantitative footprint.
+      properties:
+        round:
+          type: integer
+        total_agents:
+          type: integer
+        active_agents:
+          type: integer
+          description: Agents that passed the activity gate this round.
+        actions:
+          type: integer
+        accepted:
+          type: integer
+        rejected:
+          type: integer
+        action_mix:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Verb -> attempted count.
+        activity_multiplier:
+          type: number
+          description: Timezone-aware participation multiplier in force this round (documented piecewise table over the local hour).
+        events:
+          type: array
+          items:
+            type: string
+          description: External event kinds applied this round.
+    SimulationEnvState:
+      type: object
+      description: |
+        A point-in-time SNAPSHOT of the observable environment — JSON-
+        serializable, adapter-defined Facts (social feed + follow counts;
+        market symbols/order book/cash/holdings; network peers/inbox/edges),
+        safe to hand to agents and API responses alike. Snapshots are copies.
+      properties:
+        kind:
+          type: string
+        round:
+          type: integer
+        agent_ids:
+          type: array
+          items:
+            type: string
+        facts:
+          type: object
+          additionalProperties: true
+    SimulationRoundRecord:
+      type: object
+      description: The full transcript of one round.
+      properties:
+        round:
+          type: integer
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationActionResult'
+        metrics:
+          $ref: '#/components/schemas/SimulationRoundMetrics'
+        state:
+          $ref: '#/components/schemas/SimulationEnvState'
+    SimulationEmergentNote:
+      type: object
+      description: |
+        One emergence heuristic over the completed run. `detail` ALWAYS
+        restates the formula and raw counts — a score is never presented
+        without its derivation. Documented heuristics: interaction_density
+        (accepted targeted actions / max(1, agents×rounds), all kinds);
+        echo_chamber (own-post like+comment share, social, 1.0 = pure echo
+        chamber); spread_rate (unique recipients / max(1, agents-1),
+        network, 1.0 = full cast reached); liquidity_imbalance
+        (|bids-asks|/max(1,bids+asks) at the final state, market, 0 =
+        balanced book).
+      properties:
+        kind:
+          type: string
+        score:
+          type: number
+        detail:
+          type: string
+    SimulationResult:
+      type: object
+      description: The terminal product of a run (issue #133).
+      properties:
+        kind:
+          type: string
+        rounds:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationRoundRecord'
+        emergent_notes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationEmergentNote'
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+    SimulationRecord:
+      type: object
+      description: One org-scoped simulation record (the HTTP resource).
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        config:
+          $ref: '#/components/schemas/SimulationConfig'
+        result:
+          $ref: '#/components/schemas/SimulationResult'
+        error:
+          type: string
+          description: Terminal failure message (failed status only).
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SimulationCreateResponse:
+      type: object
+      required: [simulation]
+      properties:
+        simulation:
+          $ref: '#/components/schemas/SimulationRecord'
+    SimulationGetResponse:
+      type: object
+      required: [simulation]
+      properties:
+        simulation:
+          $ref: '#/components/schemas/SimulationRecord'
+    SimulationListResponse:
+      type: object
+      required: [simulations, count]
+      properties:
+        simulations:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationRecord'
+        count:
+          type: integer
+    SimulationErrorEnvelope:
+      type: object
+      description: Structured error model {"error":{"code","message"}}.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+
+      # ---- wave-10 round-4 fragment: configgen.yaml (schemas) ----
+    ConfigGenGenerateRequest:
+      type: object
+      description: |
+        Draft request. `type` selects the generator; `description` is the
+        natural-language intent; `context` is optional free-form caller
+        context (team conventions, existing resource names) that is echoed
+        into the draft's assumptions — the server never interprets it.
+      properties:
+        type:
+          type: string
+          enum:
+          - agent
+          - workflow
+          description: Which configuration to draft.
+        description:
+          type: string
+          minLength: 1
+          description: Natural-language description of the desired agent or workflow.
+          examples:
+          - An agent that triages our support inbox: categorize tickets and draft replies
+        context:
+          type: object
+          additionalProperties: true
+          description: Optional free-form caller context, echoed into draft assumptions.
+      required:
+      - type
+      - description
+    ConfigGenGenerateResponse:
+      type: object
+      description: Draft envelope. Exactly one draft field is populated.
+      properties:
+        type:
+          type: string
+          enum:
+          - agent
+          - workflow
+        agent_draft:
+          $ref: '#/components/schemas/AgentConfigDraft'
+        workflow_draft:
+          $ref: '#/components/schemas/WorkflowDSLDraft'
+        progress:
+          type: array
+          description: Completed generation steps in order (1..total).
+          items:
+            $ref: '#/components/schemas/GenerationProgress'
+        valid:
+          type: boolean
+          description: Whether the returned draft passed validation (always true for generated drafts).
+        issues:
+          type: array
+          description: Validation issues (empty for generated drafts).
+          items:
+            type: string
+      required:
+      - type
+      - progress
+      - valid
+    GenerationProgress:
+      type: object
+      description: One completed generation step (step-by-step progress for UIs).
+      properties:
+        step:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: 1-based step number (1 structure, 2 tools, 3 policy, 4 runtime, 5 validate).
+        total:
+          type: integer
+          minimum: 5
+          maximum: 5
+          description: Total steps (always 5).
+      required:
+      - step
+      - total
+    AgentConfigDraft:
+      type: object
+      description: |
+        Reviewable agent configuration draft. Nothing here is persisted:
+        the caller creates the agent via POST /agents/create
+        (name/instructions/model) and adopts the tool/policy/runtime pieces
+        it wants. The `assumptions` array documents every non-obvious
+        decision.
+      properties:
+        name:
+          type: string
+          description: Short agent name derived from the description.
+        description:
+          type: string
+          description: The caller's intent, restated.
+        model:
+          type: string
+          description: Provider model id (e.g. gpt-4o-mini).
+          examples:
+          - gpt-4o-mini
+        system_instructions:
+          type: string
+          description: Generated system prompt.
+        tools:
+          type: array
+          description: Proposed catalog tool bindings (possibly empty — an agent needs no tools).
+          items:
+            $ref: '#/components/schemas/ConfigGenToolBinding'
+        policy:
+          $ref: '#/components/schemas/ConfigGenPolicyDraft'
+        runtime:
+          $ref: '#/components/schemas/ConfigGenRuntimeDraft'
+        intent:
+          type: string
+          description: Heuristic intent classification (support_inbox, research, ops, data, automation); empty when generic.
+        assumptions:
+          type: array
+          description: Every non-obvious generation decision, for review.
+          items:
+            type: string
+      required:
+      - name
+      - model
+      - system_instructions
+      - policy
+      - runtime
+    ConfigGenToolBinding:
+      type: object
+      description: One catalog tool proposal with the reason it was selected.
+      properties:
+        tool:
+          type: string
+          description: Tool catalog name (GET /tools registry key).
+          examples:
+          - json_transform
+        reason:
+          type: string
+          description: Why the tool was proposed.
+      required:
+      - tool
+    ConfigGenPolicyDraft:
+      type: object
+      description: |
+        Proposed tool policy. Generated drafts are always effect=allow with
+        an explicit tool_allowlist (default-deny elsewhere) — generated
+        configs never widen permissions beyond what the description asked
+        for.
+      properties:
+        effect:
+          type: string
+          enum:
+          - allow
+          description: Policy effect (always allow for generated drafts).
+        tool_allowlist:
+          type: array
+          description: Exact tool names allowed (sorted, mirrors the selected tools).
+          items:
+            type: string
+        rationale:
+          type: string
+          description: One-line posture explanation.
+      required:
+      - effect
+    ConfigGenRuntimeDraft:
+      type: object
+      description: |
+        Generated runtime parameters: the ReAct step budget plus the
+        runtime_config document (conversation_history + token_budget, issue
+        #107) the runtime already parses.
+      properties:
+        max_steps:
+          type: integer
+          minimum: 1
+          description: ReAct loop step budget (simple 5, default 10, complex 20).
+        conversation_history:
+          type: object
+          description: runtime_config.conversation_history document.
+          properties:
+            strategy:
+              type: string
+              enum:
+              - sliding_window
+              - summarize_older
+              - drop_oldest
+            max_tokens:
+              type: integer
+              description: History window size in tokens (0 = runtime default 8000).
+        token_budget:
+          type: object
+          description: runtime_config.token_budget document.
+          properties:
+            max_total_tokens:
+              type: integer
+              description: Cumulative total-token cap (0 = unlimited).
+            max_prompt_tokens:
+              type: integer
+              description: Cumulative prompt-token cap (0 = unlimited).
+            max_completion_tokens:
+              type: integer
+              description: Cumulative completion-token cap (0 = unlimited).
+            alert_threshold:
+              type: number
+              description: Fractional usage crossing that records the one-time warning (within (0, 1]).
+      required:
+      - max_steps
+    WorkflowDSLDraft:
+      type: object
+      description: |
+        Reviewable workflow definition draft. The embedded DSL uses ONLY the
+        existing workflow node vocabulary and passes the same validation as
+        POST /workflows. Bind values marked {{placeholder}} before creating
+        the workflow.
+      properties:
+        name:
+          type: string
+          description: Short workflow name derived from the description.
+        description:
+          type: string
+          description: The caller's intent, restated.
+        dsl:
+          type: object
+          description: |
+            The node graph ({nodes, edges}) in the exact shape POST
+            /workflows accepts. Generated chains follow the documented
+            trigger → research → approval → send shape with forward-only
+            on_success edges.
+        assumptions:
+          type: array
+          description: Generation decisions recorded for review.
+          items:
+            type: string
+      required:
+      - name
+      - dsl
+    ConfigGenErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of INVALID_REQUEST, VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - VALIDATION_ERROR
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
 
   requestBodies: {}
   headers: {}
