@@ -352,10 +352,11 @@ func (f AssessorFunc) Assess(ctx context.Context, req AssessRequest) (QualityAss
 //     from any observation appears in the draft, -0.25 otherwise; with no
 //     observations, +0.25 when the draft reaches heuristicMinDraftTokens.
 //     A draft of at least heuristicSubstantiveTokens earns a further +0.25.
-//   - Accuracy — unresolved-failure markers: base 0.5; -0.25 when the draft
-//     itself carries a failure marker ("tool error", "denied by policy",
-//     "rate limited", "not registered") instead of a resolved answer;
-//     +0.25 when the draft reaches heuristicMinDraftTokens.
+//   - Accuracy — unresolved-failure markers: base 0.5; +0.25 when the draft
+//     itself carries NO failure marker ("tool error", "denied by policy",
+//     "rate limited", "not registered"); +0.25 when the draft reaches
+//     heuristicMinDraftTokens. A strong draft scores 1.0; one that echoes
+//     unresolved tool failures stalls at 0.75 and earns a reflection round.
 //   - Coherence — structure: base 0.5; +0.25 for 2+ sentence-ish segments;
 //     +0.25 when the draft reaches heuristicSubstantiveTokens or ends with
 //     terminal punctuation.
@@ -387,8 +388,8 @@ func (HeuristicAssessor) Assess(_ context.Context, req AssessRequest) (QualityAs
 	}
 
 	accuracy := 0.5
-	if draftHasFailureMarkers(draft) {
-		accuracy -= 0.25
+	if !draftHasFailureMarkers(draft) {
+		accuracy += 0.25
 	}
 	if tokens >= heuristicMinDraftTokens {
 		accuracy += 0.25
