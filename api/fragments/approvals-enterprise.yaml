@@ -1,0 +1,276 @@
+# AgentOS API — OpenAPI 3.1 fragment for approvals enterprise oversight
+# (wave-9 issue #137: delegation, escalation SLAs, dual control, evidence export).
+#
+# Merge target: api/openapi.yaml. Paths WITHOUT the /api/v1 prefix.
+#
+# Contract notes:
+#   * Delegation is pending-only; the delegatee must be an organization
+#     member. Expired delegations lazily return the approval to the original
+#     queue on read (no timers).
+#   * Escalation: one policy row per org (target_status marker + SLA minutes;
+#     0 disables). POST /approvals/escalate-due is the explicit sweep; the
+#     same evaluation also runs lazily on List/Get (boundary inclusive:
+#     exactly at SLA = escalated, reason "sla_breach").
+#   * Dual control (two-person rule): approvals carrying require_dual park in
+#     status "partially_approved" after the first decision; completion needs
+#     a DISTINCT second approver (self-approval -> 409
+#     dual_control_self_approval). Enforced on the EXISTING
+#     POST /approvals/{id}/decide endpoint — transparent.
+#   * Evidence export is a byte-deterministic NDJSON snapshot of the org's
+#     immutable oversight event log: one line per event plus the trailing
+#     {"type":"evidence_head","count":N} line. Pure read — never mutates state.
+#   * RBAC: delegate/escalate-due/policy = approvals.decide (OWNER/ADMIN);
+#     evidence = approvals.read at the middleware + OWNER/ADMIN in-handler.
+#   * Standalone-valid per the api/fragments/scim-token-revoke.yaml pattern:
+#     the fragment carries its OWN components.securitySchemes (bearerAuth
+#     mirrors the main spec's bearerToken HS256-HMAC scheme; the folding
+#     tooling merges securitySchemes last-key-wins).
+paths:
+  /approvals/{id}/delegate:
+    post:
+      operationId: delegateApproval
+      summary: Delegate a pending approval to an organization member
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ApprovalId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApprovalDelegationInput" }
+      responses:
+        "200":
+          description: Delegation recorded (approval + chain entry).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval: { $ref: "#/components/schemas/Approval" }
+                  delegation: { $ref: "#/components/schemas/ApprovalDelegation" }
+        "400": { $ref: "#/components/responses/ApprovalsEnterpriseBadRequest" }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+        "404": { $ref: "#/components/responses/ApprovalsEnterpriseNotFound" }
+        "409": { $ref: "#/components/responses/ApprovalsEnterpriseAlreadyDecided" }
+        "422": { $ref: "#/components/responses/ApprovalsEnterpriseValidationError" }
+  /approvals/escalate-due:
+    post:
+      operationId: escalateDueApprovals
+      summary: Sweep pending approvals past their escalation SLA
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The approvals escalated by this call.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  escalated:
+                    type: array
+                    items: { $ref: "#/components/schemas/Approval" }
+                  count: { type: integer }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+  /approvals/escalation-policy:
+    get:
+      operationId: getApprovalEscalationPolicy
+      summary: Get the org escalation SLA policy (disabled default when unset)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/ApprovalEscalationPolicy" }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+    put:
+      operationId: setApprovalEscalationPolicy
+      summary: Write the org escalation SLA policy
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApprovalEscalationPolicyInput" }
+      responses:
+        "200":
+          description: The stored policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/ApprovalEscalationPolicy" }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+        "422": { $ref: "#/components/responses/ApprovalsEnterpriseValidationError" }
+  /approvals/evidence:
+    get:
+      operationId: exportApprovalEvidence
+      summary: Byte-deterministic NDJSON oversight snapshot for a window
+      description: >
+        Newline-delimited JSON: one line per approval event (requested,
+        delegated, delegation_expired, escalated, first_decision, decided —
+        including dual-control pairs) ordered by (created_at, id), then the
+        trailing {"type":"evidence_head","count":N} anchor. Pure read; never
+        mutates approval state. Two exports over unchanged data are
+        byte-identical (hashable for WORM storage).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: Window start (inclusive, RFC3339; open when omitted).
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: Window end (inclusive, RFC3339; open when omitted).
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [jsonl], default: jsonl }
+      responses:
+        "200":
+          description: NDJSON snapshot (X-Evidence-Count carries the event count).
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/ApprovalsEnterpriseBadRequest" }
+        "401": { $ref: "#/components/responses/ApprovalsEnterpriseUnauthorized" }
+        "403": { $ref: "#/components/responses/ApprovalsEnterpriseForbidden" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: >-
+        HMAC-SHA256 JWT-style token from POST /auth/login (24h expiry) — the
+        main spec's bearerToken scheme — or the X-API-Key API-key path; see
+        the main spec's securitySchemes.
+  parameters:
+    ApprovalId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    ApprovalsEnterpriseBadRequest:
+      description: Malformed request (bad JSON body or RFC3339 bound).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseForbidden:
+      description: Not permitted for this role (evidence needs OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseNotFound:
+      description: Unknown id or cross-tenant probe (no existence leak).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseAlreadyDecided:
+      description: The approval is not pending.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+    ApprovalsEnterpriseValidationError:
+      description: Validation error (empty delegatee, non-member delegatee, bad policy, inverted window).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApprovalsEnterpriseError" }
+  schemas:
+    ApprovalsEnterpriseError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, description: "dual_control_self_approval on the two-person-rule conflict." }
+            message: { type: string }
+    ApprovalDelegationInput:
+      type: object
+      required: [to_user]
+      properties:
+        to_user: { type: string, description: Organization member receiving the assignment. }
+        note: { type: string }
+        expires_at: { type: string, format: date-time, description: Optional expiry; expired delegations lazily return the approval to the queue. }
+    ApprovalDelegation:
+      type: object
+      properties:
+        id: { type: string }
+        organization_id: { type: string }
+        approval_id: { type: string }
+        from_user: { type: string }
+        to_user: { type: string }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+    ApprovalEscalationPolicyInput:
+      type: object
+      properties:
+        target_status:
+          type: string
+          enum: [pending, partially_approved]
+          default: pending
+          description: The pending-state marker the SLA clock applies to.
+        sla_minutes:
+          type: integer
+          minimum: 0
+          description: Minutes an approval may wait; 0 disables the sweep.
+    ApprovalEscalationPolicy:
+      type: object
+      properties:
+        organization_id: { type: string }
+        target_status: { type: string, enum: [pending, partially_approved] }
+        sla_minutes: { type: integer }
+        updated_by: { type: string }
+        updated_at: { type: string, format: date-time }
+    Approval:
+      type: object
+      description: >
+        The wave-2 approval record with additive oversight fields (all
+        optional): require_dual, first_approver, first_decision,
+        first_decided_at, delegated_to, delegated_by, delegation_note,
+        delegation_expires_at, escalated_at, escalation_reason
+        ("sla_breach"), escalation_deadline. Dual-controlled approvals use
+        status "partially_approved" between the two decisions.
+      properties:
+        id: { type: string }
+        organization_id: { type: string }
+        run_id: { type: string }
+        workflow_run_id: { type: string }
+        resource: { type: string }
+        action: { type: string }
+        reason: { type: string }
+        risk: { type: string, enum: [low, medium, high] }
+        status: { type: string, enum: [pending, partially_approved, approved, rejected, cancelled] }
+        requester: { type: string }
+        approver: { type: string }
+        decision_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time, nullable: true }
+        require_dual: { type: boolean }
+        first_approver: { type: string }
+        first_decision: { type: string, enum: [approved, rejected] }
+        first_decided_at: { type: string, format: date-time, nullable: true }
+        delegated_to: { type: string }
+        delegated_by: { type: string }
+        delegation_note: { type: string }
+        delegation_expires_at: { type: string, format: date-time, nullable: true }
+        escalated_at: { type: string, format: date-time, nullable: true }
+        escalation_reason: { type: string }
+        escalation_deadline: { type: string, format: date-time, nullable: true }
