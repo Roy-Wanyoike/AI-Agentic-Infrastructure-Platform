@@ -30,6 +30,7 @@ Current migration structure:
 - 024_notifications_subscriptions.sql (issue #83)
 - 025_mcp_registry.sql (issue #82)
 - 027_agent_api_keys.sql (wave-8: agent-scoped API keys with tool allow-lists)
+- 029_approval_oversight.sql (issue #137: approvals enterprise HITL v2 — delegation chain, escalation SLA policy, dual-control columns, oversight event log)
 
 Migration conventions:
 
