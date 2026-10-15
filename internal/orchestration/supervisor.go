@@ -206,6 +206,12 @@ func (s *Supervisor) candidatesLocked(task SupervisorTask) ([]WorkerAgent, error
 		}
 		return workers, nil
 	case RouteCapabilityMatch:
+		if len(workers) == 0 {
+			// Same contract as the other strategies: an empty worker
+			// list surfaces ErrNoWorkers at RunTask time, never an
+			// all-workers-failed trace with zero attempts.
+			return nil, ErrNoWorkers
+		}
 		if strings.TrimSpace(task.RequiredCapability) == "" {
 			// No requirement: every worker is a candidate in config order.
 			return workers, nil

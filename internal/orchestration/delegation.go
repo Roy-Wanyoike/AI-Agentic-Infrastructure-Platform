@@ -197,7 +197,7 @@ func (r *DelegationRecord) clone() *DelegationRecord {
 // DelegationRequest is one delegation order.
 type DelegationRequest struct {
 	OrgID           string
-	FromAgentID     string // the delegator
+	FromAgentID     string // the delegator ("" = supervisor-initiated: no response routing)
 	ToAgentID       string // the delegated-to agent
 	Task            string // the subtask text (becomes the child run input)
 	ParentRunID     string // delegating run ("" at the top of a chain)
@@ -264,10 +264,12 @@ func (s *DelegationService) SetExecutor(ex Executor) {
 }
 
 // validate checks a delegation request and returns the child depth.
+// FromAgentID may be empty: supervisor-initiated tasks have no delegator
+// agent (no response routing — the ledger stays the source of truth).
 func (s *DelegationService) validate(req DelegationRequest) (int, error) {
-	if strings.TrimSpace(req.OrgID) == "" || strings.TrimSpace(req.FromAgentID) == "" ||
-		strings.TrimSpace(req.ToAgentID) == "" || strings.TrimSpace(req.Task) == "" {
-		return 0, fmt.Errorf("%w: org_id, from_agent_id, to_agent_id and task are required", ErrInvalidRequest)
+	if strings.TrimSpace(req.OrgID) == "" || strings.TrimSpace(req.ToAgentID) == "" ||
+		strings.TrimSpace(req.Task) == "" {
+		return 0, fmt.Errorf("%w: org_id, to_agent_id and task are required", ErrInvalidRequest)
 	}
 	if req.FromAgentID == req.ToAgentID {
 		return 0, fmt.Errorf("%w: self-delegation is not allowed", ErrInvalidRequest)
@@ -339,9 +341,13 @@ func (s *DelegationService) Prepare(ctx context.Context, req DelegationRequest) 
 
 	// Register the delegator's inbox BEFORE executing so the response has a
 	// delivery target (idempotent when the inbox already exists).
-	if _, err := s.opts.Bus.Receive(ctx, req.OrgID, req.FromAgentID); err != nil {
-		s.fail(ctx, rec, err.Error())
-		return rec, fmt.Errorf("orchestration: delegator inbox unavailable: %w", err)
+	// Supervisor-initiated delegations (empty delegator) have no response
+	// target — the ledger stays the source of truth for their outcome.
+	if req.FromAgentID != "" {
+		if _, err := s.opts.Bus.Receive(ctx, req.OrgID, req.FromAgentID); err != nil {
+			s.fail(ctx, rec, err.Error())
+			return rec, fmt.Errorf("orchestration: delegator inbox unavailable: %w", err)
+		}
 	}
 
 	// Approval gate FIRST (fail closed before any child run exists).
@@ -402,22 +408,26 @@ func (s *DelegationService) Prepare(ctx context.Context, req DelegationRequest) 
 	s.mu.Unlock()
 
 	// Notify the delegated agent's inbox (best-effort: a pure-executor agent
-	// may have no inbox registered; the sub-run executes regardless).
-	notifyPayload, _ := json.Marshal(map[string]any{
-		"delegation_id": rec.ID,
-		"child_run_id":  childID,
-		"parent_run_id": req.ParentRunID,
-		"task":          req.Task,
-		"depth":         childDepth,
-	})
-	_ = s.opts.Bus.Send(ctx, AgentMessage{
-		OrgID:       req.OrgID,
-		FromAgentID: req.FromAgentID,
-		ToAgentID:   req.ToAgentID,
-		RunID:       childID,
-		MessageType: MessageTypeDelegate,
-		Payload:     notifyPayload,
-	})
+	// may have no inbox registered; the sub-run executes regardless). A
+	// supervisor-initiated delegation has no sender identity to notify
+	// with, so the notification is skipped entirely.
+	if req.FromAgentID != "" {
+		notifyPayload, _ := json.Marshal(map[string]any{
+			"delegation_id": rec.ID,
+			"child_run_id":  childID,
+			"parent_run_id": req.ParentRunID,
+			"task":          req.Task,
+			"depth":         childDepth,
+		})
+		_ = s.opts.Bus.Send(ctx, AgentMessage{
+			OrgID:       req.OrgID,
+			FromAgentID: req.FromAgentID,
+			ToAgentID:   req.ToAgentID,
+			RunID:       childID,
+			MessageType: MessageTypeDelegate,
+			Payload:     notifyPayload,
+		})
+	}
 	return rec, nil
 }
 
@@ -544,10 +554,11 @@ func (s *DelegationService) recordParentStep(ctx context.Context, rec *Delegatio
 }
 
 // respond routes the result back to the delegator through the bus
-// (MessageTypeResponse). Delivery failures are recorded on the record; the
+// (MessageTypeResponse). Supervisor-initiated delegations (empty delegator)
+// have no response target. Delivery failures are recorded on the record; the
 // ledger remains the source of truth.
 func (s *DelegationService) respond(ctx context.Context, rec *DelegationRecord, execErr string, tokens Usage) {
-	if s.opts.Bus == nil {
+	if s.opts.Bus == nil || rec.FromAgentID == "" {
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{

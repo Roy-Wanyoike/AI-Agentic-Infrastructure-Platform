@@ -38,6 +38,7 @@ import (
 	"agentos/internal/models"
 	"agentos/internal/notifications"
 	"agentos/internal/observability"
+	"agentos/internal/orchestration"
 	"agentos/internal/organizations"
 	"agentos/internal/queue"
 	"agentos/internal/runs"
@@ -120,6 +121,13 @@ type app struct {
 	// posture; the residency store is the source of truth — org schema
 	// untouched). Audit seam is wired at route registration.
 	residencySvc *tenant.ResidencyService
+
+	// issue #108: agent-to-agent orchestration executor (comm bus +
+	// delegation protocol + supervisor). The bus and the delegation ledger
+	// are in-memory BY DESIGN this round in BOTH modes (no orchestration
+	// migration is assigned); the durable trail lives in the runs rows and
+	// approvals rows the seams write.
+	orchestrationSvc *orchestration.Service
 }
 
 // newApp builds the service graph. When db is non-nil every service is
@@ -220,6 +228,12 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		}
 		mcpReg.SetAuditor(a.auditSvc)
 		a.mcpRegSvc = mcpReg
+		// issue #108: agent-to-agent orchestration executor. The bus and
+		// the delegation ledger stay in-memory in this mode too
+		// (documented scope decision: no orchestration store/migration
+		// this round) — the durable halves are the runs/approvals rows
+		// the seams write.
+		a.orchestrationSvc = newOrchestrationService(a.agentsSvc, a.runsSvc, a.apSvc, logr)
 		a.logr.Info("postgres stores enabled")
 	} else {
 		a.authSvc = auth.NewService(jwtSecretVar)
@@ -272,6 +286,8 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		} else {
 			a.logr.Info("dev api key created", "api_key", key.Value)
 		}
+		// issue #108: agent-to-agent orchestration executor (in-memory mode).
+		a.orchestrationSvc = newOrchestrationService(a.agentsSvc, a.runsSvc, a.apSvc, logr)
 	}
 	// issue #136: A2A Agent Card registry — in-memory default; the Postgres
 	// store is adopted when the database is wired (mirrors the mcpRegSvc
@@ -494,8 +510,9 @@ func (a *app) routes() http.Handler {
 	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #52: organizations & membership management (last-owner guarded)
 	registerOrganizationRoutes(apiMux, a.orgsSvc, a.identities, a.authSvc, a.apiKeysSvc, a.auditSvc)
-	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc)     // issue #140: org region pinning + data-flow residency checks + posture
-	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #122: agent export/import/clone
+	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc)      // issue #140: org region pinning + data-flow residency checks + posture
+	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)  // issue #122: agent export/import/clone
+	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #108: agent-to-agent orchestration executor
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks

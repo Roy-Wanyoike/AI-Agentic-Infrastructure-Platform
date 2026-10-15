@@ -342,8 +342,10 @@ func TestDelegateValidation(t *testing.T) {
 		name string
 		req  DelegationRequest
 	}{
+		// NOTE: a missing from_agent_id is LEGAL (supervisor-initiated
+		// delegations have no delegator agent) — covered positively by
+		// TestDelegateWithoutDelegatorAgent.
 		{"missing org", DelegationRequest{FromAgentID: "a", ToAgentID: "b", Task: "t"}},
-		{"missing from", DelegationRequest{OrgID: "o", ToAgentID: "b", Task: "t"}},
 		{"missing to", DelegationRequest{OrgID: "o", FromAgentID: "a", Task: "t"}},
 		{"missing task", DelegationRequest{OrgID: "o", FromAgentID: "a", ToAgentID: "b"}},
 		{"self delegation", DelegationRequest{OrgID: "o", FromAgentID: "a", ToAgentID: "a", Task: "t"}},
@@ -357,6 +359,29 @@ func TestDelegateValidation(t *testing.T) {
 		if h.executor.callCount() != 0 || len(h.runs.created) != 0 {
 			t.Errorf("%s: rejected request must have no side effects", tc.name)
 		}
+	}
+}
+
+// TestDelegateWithoutDelegatorAgent: supervisor-initiated delegations (empty
+// FromAgentID) execute normally but route no response and register no inbox —
+// the ledger is the only outcome surface.
+func TestDelegateWithoutDelegatorAgent(t *testing.T) {
+	h := newDelegationHarness(t, nil, nil)
+	rec, err := h.svc.Delegate(context.Background(), DelegationRequest{
+		OrgID: "org-a", ToAgentID: "agent-b", Task: "supervised work", ParentRunID: "run-p",
+	})
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if rec.Status != DelegationStatusCompleted || rec.ResponseDelivered {
+		t.Fatalf("record wrong: %+v", rec)
+	}
+	if got := len(h.runs.parentSteps); got != 1 {
+		t.Fatalf("parent attribution steps = %d, want 1", got)
+	}
+	// No inbox may have been created for a non-existent delegator.
+	if h.bus.SubscriberCount() != 0 {
+		t.Fatalf("subscribers = %d, want 0 (no delegator inbox)", h.bus.SubscriberCount())
 	}
 }
 
