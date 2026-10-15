@@ -1,0 +1,512 @@
+# AgentOS API — OpenAPI 3.1 fragment for the unified release quality gates
+# (issue #152).
+#
+# Merge target: api/openapi.yaml. Paths WITHOUT the /api/v1 prefix.
+#
+# Convention note (apikeys.yaml / residency.yaml pattern): security scheme
+# names used by `security:` are declared in this fragment's own
+# components.securitySchemes (verbatim base definitions), so
+# `python3 scripts/check_fragment_refs.py api/fragments/quality-gates.yaml`
+# passes standalone. Folding is last-key-wins (identity re-definition).
+#
+# Contract notes:
+#   * GatePolicy is VERSIONED: create makes version 1; every update and
+#     every exception approval APPENDS a new immutable version (history is
+#     retained; decisions cite the exact policy_version +
+#     policy_evaluation_version content hash they ran against).
+#   * Suite families (SuiteKind): evaluations | synthetic_journeys |
+#     security_adversarial | canary_health. One requirement per kind per
+#     policy.
+#   * STRUCTURAL SECURITY RULE (fail-closed): security_adversarial suites
+#     MUST carry fail_closed=true AND an explicit max_severity_allowed —
+#     they ignore all aggregate score balancing, can never be waived by
+#     exceptions, and any hard finding failure aborts. The API rejects
+#     softer shapes with 422 (they can never be stored).
+#   * Exceptions are time-bounded ONLY (expires_at required, strictly
+#     future at approval), apply to non-security suites only, and
+#     approved_by is ALWAYS the authenticated actor (never read from the
+#     body).
+#   * Decision is a RECOMMENDATION (promote | hold | abort | rollback) and
+#     deterministic for the same policy + evidence + evaluation instant.
+#     Applying it to live traffic is the orchestrator's CanaryAdvisor
+#     wiring (internal/qualitygates/canary_bridge.go) — this API never
+#     mutates canaries as a side effect of evaluation.
+#   * Check statuses: passed | failed | blocked | skipped | stale |
+#     inconclusive. Missing required evidence blocks; stale evidence
+#     blocks per policy (max_age_ms); inconclusive runs block (explicitly
+#     NOT pass/fail).
+#   * Wire unit: max_age_ms is milliseconds (JSON has no duration type).
+#   * RBAC (x-required-permission; issue #152 grants): reads + evaluate
+#     qualitygates.read (OWNER/ADMIN/MEMBER/VIEWER — release verdicts are
+#     org-wide facts); policy writes and exception approval
+#     qualitygates.write (OWNER/ADMIN — same tier as policies.write).
+#   * Cross-tenant access resolves to 404 (never 403): foreign ids are
+#     indistinguishable from unknown ids.
+paths:
+  /quality-gates/policies:
+    post:
+      operationId: createQualityGatePolicy
+      summary: Create quality-gate policy version 1
+      description: >
+        Creates a new versioned release-assurance policy. Validation
+        failures (unknown suite kind, out-of-range thresholds, a
+        security_adversarial requirement without fail_closed=true or
+        without an explicit max_severity_allowed, unbounded exceptions)
+        answer 422 VALIDATION_ERROR.
+      x-required-permission: qualitygates.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QualityGatePolicyInput" }
+      responses:
+        "201":
+          description: Created (version 1).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+    get:
+      operationId: listQualityGatePolicies
+      summary: List the organization's quality-gate policies (latest versions)
+      x-required-permission: qualitygates.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        "200":
+          description: The latest version of every policy (name-sorted).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies:
+                    type: array
+                    items: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+  /quality-gates/policies/{id}:
+    parameters:
+    - $ref: "#/components/parameters/QualityGatesPolicyID"
+    get:
+      operationId: getQualityGatePolicy
+      summary: Read one policy version
+      description: >
+        Returns the latest version by default; `?version=N` pins an exact
+        immutable version. Unknown or foreign ids are 404.
+      x-required-permission: qualitygates.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - name: version
+        in: query
+        required: false
+        description: Pin an exact policy version (positive integer; default latest).
+        schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The policy version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+    put:
+      operationId: updateQualityGatePolicy
+      summary: Append a new immutable version of the policy
+      description: >
+        Validates the input and appends version N+1 (history is retained;
+        prior versions remain readable via `?version=`). Validation
+        failures answer 422.
+      x-required-permission: qualitygates.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QualityGatePolicyInput" }
+      responses:
+        "200":
+          description: The new version.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+    delete:
+      operationId: deleteQualityGatePolicy
+      summary: Delete every version of the policy
+      x-required-permission: qualitygates.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        "200":
+          description: Deleted (id echoed back).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: string }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+  /quality-gates/evaluate:
+    post:
+      operationId: evaluateQualityGate
+      summary: Evaluate a policy against explicit evidence refs
+      description: >
+        Resolves the tenant-scoped evidence records by ref, evaluates the
+        policy deterministically and returns the Decision
+        (recommendation + per-suite check results). The decision is a
+        RECOMMENDATION: applying promote/rollback/abort to live traffic is
+        the orchestrator's CanaryAdvisor wiring — evaluation never mutates
+        canaries. Unknown/foreign refs are 404; inactive policies are 422
+        POLICY_INACTIVE; tampered evidence is 422 EVIDENCE_TAMPERED.
+      x-required-permission: qualitygates.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policy_id]
+              properties:
+                policy_id: { type: string, description: The policy to evaluate (latest version). }
+                evidence_refs:
+                  type: array
+                  items: { type: string }
+                  description: Evidence record ids (as returned by the assurance producers). Missing refs for a required suite leave that check blocked.
+      responses:
+        "200":
+          description: The deterministic decision.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  decision: { $ref: "#/components/schemas/QualityGateDecision" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+  /quality-gates/exceptions:
+    post:
+      operationId: approveQualityGateException
+      summary: Approve a time-bounded exception on a policy
+      description: >
+        Appends a waiver to the policy as a NEW version and emits the
+        qualitygates.exception_approved audit event. expires_at is
+        REQUIRED and must be strictly in the future (exceptions are
+        time-bounded only); suite must be a non-security kind ("" waives
+        every non-security suite). approved_by is ALWAYS the authenticated
+        actor — the request body cannot attribute a waiver to someone
+        else.
+      x-required-permission: qualitygates.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policy_id, reason, expires_at]
+              properties:
+                policy_id: { type: string }
+                suite:
+                  type: string
+                  description: The waived suite kind ("" = every non-security suite). security_adversarial is structurally unwaivable.
+                  enum: [evaluations, synthetic_journeys, canary_health]
+                reason: { type: string, minLength: 1 }
+                expires_at: { type: string, format: date-time, description: RFC3339; must be strictly in the future. }
+      responses:
+        "200":
+          description: The new policy version carrying the exception.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/QualityGatePolicy" }
+        "401": { $ref: "#/components/responses/QualityGatesUnauthorized" }
+        "403": { $ref: "#/components/responses/QualityGatesForbidden" }
+        "404": { $ref: "#/components/responses/QualityGatesNotFound" }
+        "422": { $ref: "#/components/responses/QualityGatesValidation" }
+        "500": { $ref: "#/components/responses/QualityGatesInternal" }
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    QualityGatesPolicyID:
+      name: id
+      in: path
+      required: true
+      description: Quality-gate policy id (UUID, as returned by the create operation).
+      schema:
+        type: string
+        minLength: 1
+  responses:
+    QualityGatesValidation:
+      description: >
+        Validation error (unknown suite kind, out-of-range thresholds, a
+        softened security requirement, unbounded/past exception expiry,
+        inactive policy [code POLICY_INACTIVE], tampered evidence [code
+        EVIDENCE_TAMPERED], malformed version query).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+    QualityGatesUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+    QualityGatesForbidden:
+      description: >
+        Not permitted for this tier (reads/evaluate qualitygates.read —
+        all roles; writes/exceptions qualitygates.write — OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+    QualityGatesNotFound:
+      description: >
+        Unknown id OR an id belonging to another organization (foreign
+        resources are indistinguishable from unknown ones).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+    QualityGatesInternal:
+      description: Internal error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QualityGatesError" }
+  schemas:
+    QualityGateSuiteKind:
+      type: string
+      enum: [evaluations, synthetic_journeys, security_adversarial, canary_health]
+      description: >
+        The assurance suite families whose evidence a release gate
+        consumes (eval runs, synthetic journeys, adversarial/security
+        scenarios, canary health).
+    QualityGateSeverity:
+      type: string
+      enum: [info, low, medium, high, critical]
+    QualityGateSuiteRequirement:
+      type: object
+      required: [kind]
+      properties:
+        kind: { $ref: "#/components/schemas/QualityGateSuiteKind" }
+        min_coverage_pct:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Minimum suite coverage in percent (0 disables the gate).
+        min_pass_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Minimum case pass rate (0 disables the gate).
+        max_p95_ms:
+          type: integer
+          minimum: 0
+          description: Maximum tolerated p95 latency in ms (0 disables the gate).
+        max_severity_allowed:
+          allOf:
+          - { $ref: "#/components/schemas/QualityGateSeverity" }
+          description: >
+            Highest tolerated finding severity (a finding ranked above it
+            fails the check). MANDATORY for security_adversarial suites.
+        max_age_ms:
+          type: integer
+          minimum: 0
+          description: Evidence freshness window in ms — older evidence is stale and blocks (0 = never stale).
+        fail_closed:
+          type: boolean
+          description: >
+            Security-critical marker: ignores aggregate score balancing
+            and exceptions. MUST be true for security_adversarial suites
+            (structurally enforced — softer shapes are rejected with 422).
+    QualityGateException:
+      type: object
+      description: A time-bounded waiver. It overrides ONLY non-security suites and only while unexpired.
+      properties:
+        suite:
+          allOf:
+          - { $ref: "#/components/schemas/QualityGateSuiteKind" }
+          description: The waived suite kind ("" matches every non-security suite).
+        reason: { type: string }
+        approved_by:
+          type: string
+          description: The authenticated actor who approved the waiver (never read from a request body).
+        approved_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    QualityGatePolicy:
+      type: object
+      description: Versioned, tenant-scoped release-assurance policy (immutable versions; decisions cite version + evaluation_version).
+      properties:
+        id: { type: string }
+        org_id: { type: string }
+        name: { type: string }
+        version: { type: integer, minimum: 1 }
+        required_suites:
+          type: array
+          items: { $ref: "#/components/schemas/QualityGateSuiteRequirement" }
+        exceptions:
+          type: array
+          items: { $ref: "#/components/schemas/QualityGateException" }
+        active: { type: boolean }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    QualityGatePolicyInput:
+      type: object
+      required: [name, required_suites]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        required_suites:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/QualityGateSuiteRequirement" }
+        active:
+          type: boolean
+          description: Defaults to true when omitted.
+    QualityGateEvidenceSubject:
+      type: object
+      description: The artifact versions the evidence was collected against.
+      properties:
+        app_version: { type: string }
+        agent_id: { type: string }
+        agent_version: { type: integer }
+        model_id: { type: string }
+        prompt_version: { type: string }
+        tool_versions:
+          type: array
+          items: { type: string }
+        workflow_version: { type: string }
+    QualityGateEvidenceFinding:
+      type: object
+      properties:
+        severity: { $ref: "#/components/schemas/QualityGateSeverity" }
+        title: { type: string }
+    QualityGateEvidenceStatus:
+      type: string
+      enum: [completed, inconclusive]
+      description: inconclusive runs are explicitly NOT pass/fail (they block).
+    QualityGateSuiteResult:
+      type: object
+      properties:
+        status: { $ref: "#/components/schemas/QualityGateEvidenceStatus" }
+        coverage_pct: { type: number, minimum: 0, maximum: 100 }
+        cases: { type: integer, minimum: 0 }
+        passed: { type: integer, minimum: 0 }
+        p95_ms: { type: integer, minimum: 0 }
+        findings:
+          type: array
+          items: { $ref: "#/components/schemas/QualityGateEvidenceFinding" }
+    QualityGateEvidenceRecord:
+      type: object
+      description: >
+        Immutable, content-hashed suite evidence snapshot (app / agent /
+        model / prompt / tool / workflow versions + results + collected_at).
+        The store stamps a SHA-256 content hash; tampered records are
+        rejected (422 EVIDENCE_TAMPERED at evaluation).
+      properties:
+        id: { type: string }
+        org_id: { type: string }
+        suite: { $ref: "#/components/schemas/QualityGateSuiteKind" }
+        subject: { $ref: "#/components/schemas/QualityGateEvidenceSubject" }
+        result: { $ref: "#/components/schemas/QualityGateSuiteResult" }
+        collected_at: { type: string, format: date-time }
+        content_hash:
+          type: string
+          description: SHA-256 hex digest over the canonical record (stamped at write, verified on read).
+    QualityGateCheckStatus:
+      type: string
+      enum: [passed, failed, blocked, skipped, stale, inconclusive]
+      description: >
+        passed = thresholds met; failed = threshold (or hard security)
+        failure; blocked = no evidence for a required suite; skipped =
+        waived by an unexpired non-security exception; stale = evidence
+        older than max_age_ms; inconclusive = interrupted/empty run.
+    QualityGateCheckResult:
+      type: object
+      properties:
+        suite: { type: string }
+        status: { $ref: "#/components/schemas/QualityGateCheckStatus" }
+        reason:
+          type: string
+          description: Deterministic explanation quoting the observed value against the threshold (or the waiver/block cause).
+    QualityGateRecommendation:
+      type: string
+      enum: [promote, hold, abort, rollback]
+      description: >
+        promote = every suite passed (or waived); hold = evidence
+        missing/stale/inconclusive (wait for evidence; the canary keeps
+        running); abort = hard security failure (stop the release AND the
+        in-flight canary); rollback = proven quality regression (revert to
+        baseline). Precedence abort > rollback > hold > promote.
+    QualityGateDecision:
+      type: object
+      description: Deterministic evaluation output (same policy + evidence + instant => same decision).
+      properties:
+        policy_id: { type: string }
+        policy_version: { type: integer }
+        policy_evaluation_version:
+          type: string
+          description: Content hash of the exact rule set the decision ran against (audit-grade pin).
+        recommendation: { $ref: "#/components/schemas/QualityGateRecommendation" }
+        check_results:
+          type: array
+          items: { $ref: "#/components/schemas/QualityGateCheckResult" }
+        evaluated_at: { type: string, format: date-time }
+    QualityGatesError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
