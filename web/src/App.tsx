@@ -43,6 +43,7 @@ import {
 } from './views/uiHelpers'
 import { CommandPalette, type PaletteAction } from './views/commandPalette'
 import { ActivityFeedPanel } from './views/activityFeed'
+import { AgentBuilderView } from './views/agentBuilder'
 import { RunTimeline } from './views/runTimeline'
 import { WorkflowsView } from './views/workflows'
 import { ApprovalsView } from './views/approvals'
@@ -1287,6 +1288,7 @@ export default function App() {
     const items: PaletteAction[] = (
       [
         ['Agents', 'agents fleet catalog'],
+        ['Agent Builder', 'agent builder wizard create template diff deploy'],
         ['Workflows', 'workflows automation dsl'],
         ['Runs', 'runs executions traces'],
         ['Approvals', 'approvals pending review risk'],
@@ -1359,6 +1361,8 @@ export default function App() {
         return (
           <RunsView selectedRunId={selectedRunId} onSelectRun={setSelectedRunId} onNavigate={setActiveView} canWrite={canWriteRole} />
         )
+      case 'Agent Builder':
+        return <AgentBuilderView canWrite={canWriteRole} onNavigate={setActiveView} onOpenRun={openRun} />
       case 'Workflows':
         return <WorkflowsView onOpenRun={openRun} canWrite={canWriteRole} />
       case 'Approvals':
