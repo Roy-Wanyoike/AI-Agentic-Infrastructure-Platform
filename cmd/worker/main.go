@@ -20,6 +20,8 @@ import (
 	"agentos/internal/config"
 	"agentos/internal/database"
 	"agentos/internal/events"
+	"agentos/internal/httpx"
+	"agentos/internal/limiter"
 	"agentos/internal/logger"
 	"agentos/internal/models"
 	"agentos/internal/observability"
@@ -118,6 +120,17 @@ func main() {
 	cfg := config.Load()
 	logr := logger.New(cfg.Env)
 
+	// Issue #114: OTel tracing (default OFF — AGENTOS_TRACING_ENABLED),
+	// mirroring the API wiring: when enabled the SDK tracer provider is
+	// installed before any task runs so worker spans (run.execute →
+	// agent → step → tool/model → provider HTTP) export over OTLP/HTTP.
+	traceShutdown, terr := observability.SetupTracing(context.Background(), observability.TracingConfigFromEnv())
+	if terr != nil {
+		logr.Warn("tracing disabled", "error", terr.Error())
+	} else {
+		defer func() { _ = traceShutdown(context.Background()) }()
+	}
+
 	agentsvc := agents.NewService()
 	_, err := agentSvcCreate(agentsvc)
 	if err != nil {
@@ -168,6 +181,17 @@ func main() {
 	// process-local and is unit-tested, not exposed over HTTP today.
 	metricsSvc := observability.NewMetrics()
 	runsService.SetMetrics(metricsSvc)
+	// issue #116: AGENTOS_MESSAGING task-dispatch plane (memory|nats|hybrid,
+	// default memory). memory keeps the platform queue as the only dispatch
+	// path; nats|hybrid additionally carry run tasks over the JetStream seam
+	// (cmd/worker/messaging.go). nats fails fast when the broker is
+	// unreachable — a silently idling worker would strand published runs.
+	dispatcher, mderr := newMessagingDispatcher(workQueue, logr, metricsSvc)
+	if mderr != nil {
+		logr.Error("messaging dispatcher init failed", "error", mderr)
+		os.Exit(1)
+	}
+	defer func() { _ = dispatcher.Close() }()
 	// issue #107: runner-wide runtime configuration (conversation history +
 	// token budget) from the AGENTOS_RUNTIME_* environment variables — safe
 	// defaults when unset — and the best-effort run lifecycle event seam
@@ -293,6 +317,32 @@ func main() {
 				"key_id", vk.ID, "organization_id", vk.OrganizationID)
 		}
 	}
+	// issue #124: granular rate limits at the runtime tool/model seams
+	// (hook lines; the engine lives in internal/limiter). Dual-mode config
+	// store: Postgres rate_limits when a DSN is configured — durable state
+	// SHARED with the API process so both resolve the same limits —
+	// in-memory otherwise. The engine is Redis-backed when REDIS_ADDR/
+	// REDIS_URL is set (the global limiter's client discovery, imported
+	// from internal/httpx unmodified) and falls back to per-process
+	// in-memory windows otherwise; the fail mode follows
+	// AGENTOS_LIMITER_FAIL_MODE (default open). Wired onto the base runner
+	// and the per-org runners (the path tasks actually execute on) below;
+	// tool denials are recorded on the step and the run continues, model
+	// denials fail the run before the provider call.
+	var limStore limiter.Store = limiter.NewMemoryStore()
+	if quotaDB != nil {
+		limStore = limiter.NewPostgresStore(quotaDB)
+	}
+	// ONE resolver instance serves BOTH the engine's per-check resolution
+	// and the Enforcer's management CRUD: UpsertConfig/DeleteConfig
+	// invalidate this resolver's org cache, so a config change in one
+	// process is never served stale by the engine's TTL cache.
+	limResolver := limiter.NewResolver(limStore)
+	granularLimiter := limiter.NewEnforcer(
+		limiter.NewLimiter(httpx.RedisClientFromEnv(), limResolver),
+		limResolver,
+		limiter.WithMetrics(metricsSvc),
+	)
 	orgRunners := newOrgRunnerCache(agentsvc, provider,
 		stepRecorderAdapter(runsService, agentsvc), metricsSvc,
 		workerPolicyEnforcer(logr, quotaDB), sbExec,
@@ -301,11 +351,40 @@ func main() {
 	// seam (durable when a DSN is configured; nil = disabled in-memory mode).
 	orgRunners.setAgentKeyAudit(workerAudit)
 	runner.SetAgentKeyAudit(workerAudit)
+	// issue #124: granular rate-limit seam on every execution runner (hook
+	// line; see the block above). Nil-safe / unwired without config rows:
+	// resolution yields "no limit configured" and nothing is counted.
+	orgRunners.setGranularLimiter(granularLimiter)
+	runner.SetGranularLimiter(granularLimiter)
 	// issue #107: the per-org runners share the runtime configuration and
 	// the event seam with the base runner (call before any task is
 	// consumed).
 	orgRunners.setRuntimeConfig(runtimeCfg)
 	orgRunners.setEventPublisher(eventPub)
+
+	// issue #115: complete run lifecycle — durable checkpoints + recovery.
+	//   - runCheckpoints: the CheckpointStore (Postgres run_checkpoints table
+	//     in postgres mode, in-memory otherwise) shared by the per-org
+	//     runners' Checkpointer seam (end-of-step snapshots) and the
+	//     in-memory recovery sweep's paused-vs-failed decision.
+	//   - durableRunsSvc: the Postgres-backed runs handle for the ENFORCED
+	//     pre-flight (queued → running through the guarded state machine: a
+	//     run an operator paused or cancelled since enqueueing is refused
+	//     here) and the stale-run recovery sweeper. Nil in memory mode: the
+	//     worker holds no durable runs state to pre-flight or reconcile.
+	var runCheckpoints runs.CheckpointStore
+	var durableRunsSvc *runs.Service
+	if quotaDB != nil {
+		runCheckpoints = runs.NewPostgresCheckpointStore(quotaDB)
+		durableRunsSvc = runs.NewServiceWithStore(runs.NewPostgresStore(quotaDB))
+		durableRunsSvc.SetMetrics(metricsSvc)
+		durableRunsSvc.SetEventPublisher(eventPub)
+	} else {
+		runCheckpoints = runs.NewInMemoryCheckpointStore()
+	}
+	runsService.SetCheckpointStore(runCheckpoints)
+	runsService.SetEventPublisher(eventPub)
+	orgRunners.setCheckpoints(runCheckpoints)
 	recoveryCtx, recoveryStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer recoveryStop()
 	go func() {
@@ -313,12 +392,31 @@ func main() {
 			logr.Warn("workflow recovery loop stopped", "error", err)
 		}
 	}()
+	// issue #115: stale-run recovery sweeper (AGENTOS_RUN_RECOVERY, default
+	// ON; only constructed in postgres mode — the sweep reconciles the
+	// durable runs rows, stale = no checkpoint/heartbeat for
+	// AGENTOS_RUN_STALE_SECONDS, default 300s).
+	if durableRunsSvc != nil && runRecoveryFromEnv(os.Getenv) {
+		sweeper := newRunRecoverySweeper(durableRunsSvc, runStaleAfterFromEnv(os.Getenv), logr)
+		go func() {
+			if err := sweeper.Run(recoveryCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logr.Warn("run recovery sweeper stopped", "error", err)
+			}
+		}()
+		logr.Info("run recovery sweeper enabled",
+			"stale_after_seconds", int(runStaleAfterFromEnv(os.Getenv).Seconds()))
+	}
 
 	processTask := func(task *queue.Task) error {
 		ctx := context.Background()
 		if task == nil || task.Payload == nil {
 			return fmt.Errorf("task payload is required")
 		}
+		// Issue #114: join the producer's trace (the create-run handler
+		// injected traceparent into the task payload) and stamp the queue
+		// delivery attempt for the run span. Both are no-ops disabled.
+		ctx = observability.ExtractTraceFromPayload(ctx, task.Payload)
+		ctx = observability.ContextWithAttempt(ctx, task.Attempts)
 		runID, _ := task.Payload["run_id"].(string)
 		agentID, _ := task.Payload["agent_id"].(string)
 		input, _ := task.Payload["input"].(string)
@@ -329,6 +427,11 @@ func main() {
 		// wave-3 3-c: durable checkpointing of workflow node execution.
 		workflowRunID, _ := task.Payload["workflow_run_id"].(string)
 		nodeID, _ := task.Payload["node_id"].(string)
+		// Issue #114: workflow identity rides the execution context so the
+		// run span carries agentos.workflow.id / agentos.workflow.node.id.
+		if workflowRunID != "" {
+			ctx = observability.ContextWithWorkflow(ctx, workflowRunID, nodeID)
+		}
 		var checkpoint *workflows.NodeRun
 		if workflowRunID != "" && nodeID != "" {
 			nr, nerr := wfSvc.BeginNodeRun(ctx, orgID, workflowRunID, nodeID, runID)
@@ -394,8 +497,54 @@ func main() {
 		// the runtime tool seam; absent for every other caller type).
 		environment, _ := task.Payload["environment"].(string)
 		execCtx := agentKeyContext(runScopeContext(ctx, orgID, environment), task.Payload)
+		// issue #115: the in-flight executor registers its controller in
+		// the runs.RunControlRegistry so an API pause/cancel reaches THIS
+		// execution: the handle cancels the run context and the runtime
+		// unwinds gracefully at the current step boundary (partial
+		// results recorded; ErrRunCancelled). Unregistered on exit; a
+		// run not executing here is controlled through the durable
+		// status transitions alone (not-in-flight → status change only).
+		execCtx, cancelRun := context.WithCancel(execCtx)
+		defer cancelRun()
+		handle := newRunControlHandle(cancelRun)
+		unregister := runsService.Controls().Register(runID, handle)
+		defer unregister()
 		run, rerr := orgRunners.forOrg(ctx, orgID).RunWithID(execCtx, runID, agentID, input)
 		if rerr != nil {
+			// issue #115: a CONTROLLED stop is not a failure. A pause
+			// keeps the run paused (the API already wrote the durable
+			// status; only the halt is relayed) and a cancel confirms
+			// the two-phase unwind — cancelling → cancelled — through
+			// the same enforced transition machine (durable handle
+			// included: the run was in cancelling and the confirming
+			// worker is us).
+			if stop := controlledStopStatus(handle, rerr); stop != "" {
+				task.Payload["status"] = stop
+				if stop == string(runs.StateCancelled) {
+					var output string
+					if run != nil {
+						output = run.Output
+					}
+					_ = runsService.UpdateStatus(runID, runs.StatusCancelled, output)
+					if durableRunsSvc != nil {
+						if terr := durableRunsSvc.TransitionRunStatus(context.WithoutCancel(ctx), "", runID, runs.StateCancelled, ""); terr != nil {
+							logr.Warn("run cancel confirmation failed", "run_id", runID, "error", terr.Error())
+						}
+					}
+					go func() {
+						apiBase := os.Getenv("AGENTOS_API")
+						if apiBase == "" {
+							apiBase = "http://localhost:8080"
+						}
+						payload := map[string]any{"type": "status", "name": "status.changed", "payload": map[string]any{"status": stop, "ts": time.Now().UTC().Format(time.RFC3339)}}
+						_ = postEventWithRetries(apiBase, runID, payload)
+					}()
+				}
+				// Paused runs stay paused: no terminal write here —
+				// resume (paused → queued re-enqueue) is the only
+				// path back into execution.
+				return nil
+			}
 			_ = runsService.UpdateStatus(runID, runs.StatusFailed, "")
 			go func() {
 				apiBase := os.Getenv("AGENTOS_API")
@@ -419,6 +568,17 @@ func main() {
 				fin, code = workflows.RunStatusFailed, "NODE_FAILED"
 			}
 			_ = wfSvc.FinishNodeRun(ctx, checkpoint.OrganizationID, checkpoint.ID, fin, code)
+			// issue #116 req 3: fan the finished node out onto
+			// agentos.workflow.node.completed (no-op in memory mode).
+			publishNodeCompleted(dispatcher, queue.NodeCompletedEnvelope{
+				OrganizationID: checkpoint.OrganizationID,
+				WorkflowRunID:  workflowRunID,
+				NodeID:         checkpoint.NodeID,
+				RunID:          runID,
+				Status:         string(fin),
+				Error:          code,
+				CompletedAt:    time.Now().UTC(),
+			})
 		}
 		_ = runsService.UpdateStatus(runID, runs.StatusCompleted, run.Output)
 		go func() {
@@ -446,6 +606,16 @@ func main() {
 	logr.Info("worker shutdown grace configured", "seconds", int(grace.Seconds()), "env", runtime.EnvShutdownGrace)
 	sigCtx, sigStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer sigStop()
+
+	// issue #116: consume the messaging plane (nats|hybrid) alongside the
+	// platform-queue loop below; memory mode starts nothing. The executor is
+	// processTask adapted to the framework's executor signature — the SAME
+	// task path the queue loop runs. Shares the shutdown signal + grace
+	// window with the queue loop.
+	stopMessaging := startMessagingConsumer(sigCtx, dispatcher,
+		func(_ context.Context, task *queue.Task) error { return processTask(task) },
+		messagingNodeTrigger(wfSvc), grace, logr)
+	defer stopMessaging()
 
 	// If AGENTOS_API_PULL=true, poll the API for tasks (development pull model)
 	if os.Getenv("AGENTOS_API_PULL") == "true" {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agentos/internal/events"
 	"agentos/internal/observability"
 	"agentos/internal/streaming"
 )
@@ -100,6 +101,23 @@ type Service struct {
 	// retries, replays and idempotent control transitions never double
 	// count. Guarded by mu.
 	terminalCounted map[string]bool
+
+	// Issue #115 lifecycle seams (all nil-safe DI; see lifecycle.go):
+	//   - controls/controlOnce: the in-flight RunControlRegistry (lazily
+	//     created via Controls()) the worker registers executors in and the
+	//     API control ops consult;
+	//   - eventPub: the platform event publisher for the run.paused /
+	//     run.resumed / run.cancelled / run.recovered emissions;
+	//   - cascade: the workflow cascade hook (pause/cancel fan-out to the
+	//     owning workflow run and its node executions);
+	//   - checkpoints: the optional checkpoint store used by the in-memory
+	//     recovery sweep to distinguish recoverable (paused) from failed
+	//     stale runs.
+	controlOnce sync.Once
+	controls    *RunControlRegistry
+	eventPub    events.Publisher
+	cascade     WorkflowCascade
+	checkpoints CheckpointStore
 }
 
 func NewService() *Service {

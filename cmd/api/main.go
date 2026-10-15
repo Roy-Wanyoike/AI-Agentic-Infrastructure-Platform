@@ -32,6 +32,7 @@ import (
 	"agentos/internal/events"
 	"agentos/internal/httpx"
 	"agentos/internal/knowledge"
+	"agentos/internal/limiter"
 	"agentos/internal/logger"
 	"agentos/internal/marketplace"
 	"agentos/internal/mcp"
@@ -83,8 +84,13 @@ type app struct {
 	agentsSvc  *agents.Service
 	runsSvc    *runs.Service
 	queueSvc   *queue.Queue
-	metricsSvc *observability.Metrics
-	streamSvc  *streaming.Service
+	// issue #116: AGENTOS_MESSAGING run-dispatch plane (memory|nats|hybrid).
+	// The API process is a PRODUCER + ADMIN on the plane: it never starts the
+	// dispatcher's consumer (worker processes own execution). Always non-nil
+	// after newApp; memory-effective mode makes Dispatch == Enqueue.
+	runDispatcher *queue.Dispatcher
+	metricsSvc    *observability.Metrics
+	streamSvc     *streaming.Service
 
 	// wave-2 verticals
 	wfSvc *workflows.Service
@@ -122,6 +128,15 @@ type app struct {
 	// posture; the residency store is the source of truth — org schema
 	// untouched). Audit seam is wired at route registration.
 	residencySvc *tenant.ResidencyService
+
+	// issue #124: granular rate limits (org/agent/tool/model scopes).
+	// Dual-mode: the config store is Postgres-backed when a DSN is
+	// configured (migration 036 rate_limits) and in-memory otherwise;
+	// the sliding-window engine is Redis-backed when REDIS_ADDR/REDIS_URL
+	// is configured (httpx.RedisClientFromEnv) with the in-memory
+	// fallback otherwise. Wired into the create-run gate
+	// (limiterGateVar) and the /rate-limits management surface below.
+	limiterSvc *limiter.Enforcer
 
 	// issue #108: agent-to-agent orchestration executor (comm bus +
 	// delegation protocol + supervisor). The bus and the delegation ledger
@@ -161,6 +176,24 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		metricsSvc: observability.NewMetrics(),
 		streamSvc:  streaming.NewService(),
 	}
+	// issue #116: AGENTOS_MESSAGING selects the run task-dispatch plane —
+	// memory (default; Dispatch == Enqueue, zero-infra dev unchanged), nats
+	// (broker fail-fast, same policy as queue.NewFromConfig for redis) or
+	// hybrid (memory-queue fallback on broker outage, never loses a run). The
+	// dispatcher's Consumer is deliberately NOT started here: the API is a
+	// producer + admin on the plane, workers own execution. Its
+	// InspectDLQ/RequeueDLQ/ReplayFrom surface backs the messaging admin API.
+	runDispatcher, mderr := queue.NewDispatcherFromEnv(queueSvc,
+		queue.WithDispatcherLogger(logr),
+		queue.WithDispatcherMetrics(a.metricsSvc),
+	)
+	if mderr != nil {
+		logr.Error("messaging dispatcher init failed", "error", mderr)
+		os.Exit(1)
+	}
+	a.runDispatcher = runDispatcher
+	logr.Info("messaging dispatch plane selected",
+		"mode", string(runDispatcher.Mode()), "effective", string(runDispatcher.EffectiveMode()), "degraded", runDispatcher.Degraded())
 	if db != nil {
 		a.authSvc = auth.NewServiceWithStore(jwtSecretVar, auth.NewPostgresStore(db))
 		a.apiKeysSvc = apikeys.NewServiceWithStore(apikeys.NewPostgresStore(db))
@@ -398,6 +431,12 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	a.runsSvc.SetStreamer(a.streamSvc)
 	// issue #12: feed agentos_runs_total from API-side run transitions
 	a.runsSvc.SetMetrics(a.metricsSvc)
+	// issue #115: run pause/resume/cancel — the control-plane events
+	// (run.paused / run.resumed / run.cancelled) flow through the SAME
+	// dual-mode publisher the webhooks/notifications worker subscribes to
+	// (Postgres-backed audit chain in Postgres mode, in-memory store
+	// otherwise; see the publisher construction above).
+	a.runsSvc.SetEventPublisher(a.publisher)
 	// issue #51: eval-gated canary autopromotion (no-op unless
 	// AGENTOS_CANARY_AUTOPROMOTE is truthy)
 	WireCanaryAutoPromotion(a.evalSvc, a.deploymentsSvc, a.auditSvc, a.logr)
@@ -421,6 +460,30 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.gatewaySvc = models.NewGatewayService()
 	}
 	a.gatewaySvc.SetAuditor(a.auditSvc)
+	// issue #124: granular rate limits — dual-mode construction (the
+	// residencySvc pattern): Postgres-backed config store when a DSN is
+	// configured (migration 036 rate_limits; limits resolve
+	// subject-specific > org default > unlimited), in-memory otherwise;
+	// Redis-backed sliding-window engine when REDIS_ADDR/REDIS_URL is
+	// set (reusing the global limiter's client discovery — internal/httpx
+	// is imported, not modified), with the engine's own in-memory
+	// fallback otherwise. The facade feeds BOTH the create-run gate
+	// (org + agent scopes) and the /rate-limits management surface.
+	var limStore limiter.Store = limiter.NewMemoryStore()
+	if a.db != nil {
+		limStore = limiter.NewPostgresStore(a.db)
+	}
+	// ONE resolver instance serves BOTH the engine's per-check resolution
+	// and the management surface: UpsertConfig/DeleteConfig invalidate this
+	// resolver's org cache, so HTTP writes are visible to enforcement
+	// immediately (two instances would stale-cache up to the resolver TTL).
+	limResolver := limiter.NewResolver(limStore)
+	a.limiterSvc = limiter.NewEnforcer(
+		limiter.NewLimiter(httpx.RedisClientFromEnv(), limResolver),
+		limResolver,
+		limiter.WithMetrics(a.metricsSvc),
+	)
+	limiterGateVar = a.limiterSvc // issue #124: create-run gate seam
 	return a
 }
 
@@ -456,7 +519,7 @@ func (a *app) routes() http.Handler {
 		}
 		// default to create (POST); idempotency middleware honors Idempotency-Key
 		idempotent := httpx.NewIdempotencyMiddleware(httpx.NewIdempotencyStoreFromDB(a.db))
-		auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(idempotent(http.HandlerFunc(createRunHandler(a.queueSvc, a.auditSvc)))).ServeHTTP(w, r)
+		auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(idempotent(http.HandlerFunc(createRunHandler(a.queueSvc, a.auditSvc, a.runDispatcher)))).ServeHTTP(w, r)
 	})))
 	// queue pull endpoint for workers to pull tasks (dev-only)
 	apiMux.Handle("/queue/pull", auth.RequireAuthOrAPIKey(a.authSvc, a.apiKeysSvc)(auth.RequirePermission(a.authSvc, auth.PermissionRunsExecute)(http.HandlerFunc(queuePullHandler(a.queueSvc)))))
@@ -530,6 +593,13 @@ func (a *app) routes() http.Handler {
 	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)                // issue #108: agent-to-agent orchestration executor
 	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                                    // issue #109: workflow DSL validation endpoint
 	registerBatchRoutes(apiMux, a.batchSvc, newBatchSeams(a), a.streamSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #123: batch operations
+	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc)         // issue #140: org region pinning + data-flow residency checks + posture
+	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)     // issue #122: agent export/import/clone
+	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #108: agent-to-agent orchestration executor
+	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                     // issue #109: workflow DSL validation endpoint
+	registerLimiterRoutes(apiMux, a.limiterSvc, a.authSvc, a.apiKeysSvc)                         // issue #124: granular rate limits
+	registerRunLifecycleRoutes(apiMux, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)           // issue #115: run pause/resume/cancel
+	registerRunTraceRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)                           // issue #114: run trace exposure
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks

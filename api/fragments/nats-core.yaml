@@ -1,0 +1,464 @@
+# AgentOS API — OpenAPI 3.1 fragment for the NATS messaging core: the
+# AGENTOS_MESSAGING task-dispatch plane and its admin surface (issue #116).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes — copied VERBATIM from
+# api/fragments/apikeys.yaml (bearerToken | apiKey) — so
+# `python3 scripts/check_fragment_refs.py api/fragments/nats-core.yaml`
+# passes. Components carry the track-unique `Nc` prefix to avoid collisions.
+#
+# HONESTY NOTE (what is implemented vs documented here): the Go surface is
+# implemented and tested in internal/queue — the JetStream seam
+# (jetstream.go), the deterministic in-memory simulator backing
+# AGENTOS_MESSAGING=memory (jetstream_sim.go), the production nats.go
+# adapter (jetstream_nats.go, verified against an embedded nats-server in
+# tests), the consumer framework (consumer.go: Subscribe/Start/Stop(grace),
+# in-flight semaphore, ack/nak retry cap -> agentos.dlq, reconnect backoff
+# on an injectable clock), the mode-aware Dispatcher (dispatch.go:
+# memory|nats|hybrid with the hybrid memory-queue fallback) and the admin
+# helpers (InspectDLQ / RequeueDLQ / ReplayFrom). The binary wiring is in
+# cmd/worker/messaging.go (consumer + node-completed fan-out + recovery-seam
+# trigger) and cmd/api (producer: run creation publishes
+# agentos.runs.create; admin surface holder). The three HTTP endpoints below
+# pin the ADMIN CONTRACT for the queue-ops seam follow-up (they mount onto
+# cmd/api/queue_ops.go next to the task-introspection surface); until that
+# wiring lands, the identical operations exist as the tested Go methods on
+# queue.Dispatcher. No endpoint claims a behavior the seam does not
+# implement.
+#
+# MESSAGING MODES (AGENTOS_MESSAGING, default memory):
+#   memory  (default) — the platform *Queue (in-process or Redis) remains the
+#           only task-dispatch path; zero infrastructure, zero behavior
+#           change. The messaging admin endpoints answer 409 (no retained
+#           log exists in this mode; task dead letters ride
+#           /queue/tasks/{id}/requeue instead).
+#   nats    — run creation publishes a RunEnvelope onto agentos.runs.create
+#           (identity fields run_id, organization_id, trace_id + the payload
+#           the existing execution path consumes); workers consume it with
+#           the framework Consumer and execute via the existing task path.
+#           Broker-down fails fast at startup (a silently degraded nats
+#           deployment would split the task flow, same policy as
+#           queue.NewFromConfig for redis) and publish failures surface to
+#           the caller.
+#   hybrid  — nats plus a memory safety net: a broker failure at startup
+#           degrades to memory-effective (log + metric, runs keep flowing
+#           through the queue the worker already drains) and a publish
+#           failure at run creation falls back to the memory queue — a run
+#           is NEVER lost to a broker outage.
+#
+# SUBJECTS / STREAM: one JetStream stream AGENTOS_TASKS retaining
+#   agentos.runs.*            (task dispatch: agentos.runs.create)
+#   agentos.workflow.>        (coordination fan-out:
+#                              agentos.workflow.node.completed)
+#   agentos.dlq               (terminal dead letters)
+# The domain-event plane (agentos.events.>) keeps its own stream
+# (internal/events); JetStream forbids overlapping subject sets across
+# streams, so the planes never collide.
+#
+# WORKFLOW COORDINATION: after each finished node the worker publishes one
+# NodeCompletedEnvelope onto agentos.workflow.node.completed (fan-out: any
+# number of listeners). The framework knows nothing about DSL scheduling —
+# "what runs next" stays a single point of truth in the workflow service;
+# the worker's listener reuses its existing recovery/re-enqueue seam
+# (RecoverIncompleteWorkflowRuns) to enqueue next nodes. Memory mode has no
+# fan-out plane (single-process deployments coordinate through the DAG
+# executor directly); the periodic recovery sweep is the durability net in
+# every mode.
+#
+# REPLAY SAFETY: only the two messaging-plane dispatch/coordination subjects
+# are replayable. The DLQ itself is refused (replaying it would loop dead
+# letters back into the DLQ) and arbitrary subjects are refused so the admin
+# surface can never inject traffic outside the plane. The replay origin is
+# INCLUSIVE (entries with timestamp == from are replayed); the retained log
+# is iterated oldest-first and replay re-publishes payloads verbatim onto
+# their original subject.
+#
+# DLQ PAYLOAD ENCODING: DLQ entries carry the original message bytes
+# base64-encoded (payload_base64). Bytes — not raw JSON — on purpose: the
+# DLQ's most important customer is a MALFORMED payload, which cannot ride as
+# raw JSON (a marshal failure would drop the dead letter exactly when it
+# matters). Base64 always round-trips any bytes losslessly and requeue
+# republishes them verbatim.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (verbatim from api/fragments/apikeys.yaml)
+#   * x-required-permission documents the RBAC permission per operation.
+#     No new permission was introduced — the queue-ops grants are reused
+#     (api/fragments/queue-ops.yaml, internal/auth/permissions_queue.go):
+#       - GET /messaging/dlq (metadata read) -> runs.read
+#       - POST /messaging/dlq/{seq}/requeue, POST /messaging/replay
+#         (traffic injection into the dispatch plane) -> queue.manage
+#         (OWNER/ADMIN only)
+#   * structured error model {"error":{"code","message"}}
+openapi: 3.1.0
+info:
+  title: AgentOS — NATS messaging core (issue #116 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the AGENTOS_MESSAGING task-dispatch plane and its
+  admin surface (issue #116): messaging-mode selection (memory|nats|hybrid,
+  default memory), the retained subjects (agentos.runs.create dispatch,
+  agentos.workflow.node.completed coordination fan-out, agentos.dlq), the
+  dead-letter inspect/requeue operations and replay-from-timestamp over the
+  retained log. The admin endpoints dispatch through the queue.Dispatcher's
+  InspectDLQ / RequeueDLQ / ReplayFrom (implemented + tested in
+  internal/queue); memory-effective mode (the default) has no retained log
+  and answers 409 on all three — task dead letters keep riding the
+  /queue/tasks introspection surface in that mode.
+paths:
+  /messaging/dlq:
+    get:
+      operationId: listMessagingDeadLetters
+      summary: List retained dead letters from agentos.dlq (OWNER/ADMIN/MEMBER/VIEWER)
+      description: |
+        Inspects the messaging plane's dead-letter subject (agentos.dlq),
+        oldest-first, bounded by `limit` (clamped server-side; limit<=0 lists
+        every retained entry). Each entry carries the original subject, the
+        best-effort run/task identity extracted from run-dispatch payloads,
+        the last handler error, the delivery count at dead-letter time and
+        the original payload base64-encoded. Memory-effective mode
+        (AGENTOS_MESSAGING unset or =memory) has no retained log: 409.
+      x-required-permission: runs.read (OWNER/ADMIN/MEMBER/VIEWER)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum entries returned (<=0 or absent = unbounded).
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+          example: 50
+      responses:
+        '200':
+          description: The retained dead letters (oldest-first; empty array when the DLQ is drained).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NcDLQEntry'
+              example:
+                - sequence: 1
+                  subject: agentos.runs.create
+                  task_id: agent.run-2026-09-10T12-00-00-000000000Z
+                  run_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                  organization_id: 6f1c9e52-1c76-4a2f-9a86-9f6d4d3e8a01
+                  error: handler boom
+                  attempts: 4
+                  dead_lettered_at: '2026-09-10T12:04:00Z'
+                  payload_base64: eyJ0YXNrX3R5cGUiOiJhZ2VudC5ydW4iLCJydW5faWQiOiI4YjBlNmY5YSJ9
+        '409':
+          description: Memory-effective messaging mode (no retained log; the messaging DLQ does not exist).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/NcUnauthorized'
+        '403':
+          $ref: '#/components/responses/NcForbidden'
+  /messaging/dlq/{seq}/requeue:
+    post:
+      operationId: requeueMessagingDeadLetter
+      summary: Requeue one dead letter back onto its original subject (OWNER/ADMIN)
+      description: |
+        Republishes the dead letter's original payload (base64-decoded,
+        verbatim) onto its original subject and consumes the DLQ entry
+        (JetStream message delete). The republished message is a fresh
+        delivery: consumers treat it like any new message, so the underlying
+        fault must be fixed first. Unknown or already-requeued sequences
+        answer 404 (an already-requeued entry no longer exists); requeue
+        republishes before deleting, so a delete failure leaves the entry in
+        place and a retry re-publishes (idempotence note: a duplicate
+        republish is preferred over losing the dead letter). Memory-effective
+        mode: 409. The operation writes a queue.task_requeued audit row on
+        the queue-ops seam when the requeued subject is a run dispatch.
+      x-required-permission: queue.manage (OWNER/ADMIN; MEMBER/VIEWER denied 403)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - $ref: '#/components/parameters/NcSeq'
+      responses:
+        '200':
+          description: The consumed dead-letter entry (it is no longer retained).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcDLQEntry'
+        '404':
+          description: Unknown sequence (or already requeued — the entry no longer exists).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '409':
+          description: Memory-effective messaging mode (no retained log).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/NcUnauthorized'
+        '403':
+          $ref: '#/components/responses/NcForbidden'
+  /messaging/replay:
+    post:
+      operationId: replayMessagingSubject
+      summary: Replay a retained dispatch/coordination subject from a timestamp (OWNER/ADMIN)
+      description: |
+        Re-publishes every retained message of `subject` published at or
+        after `from` (INCLUSIVE, oldest-first) back onto that same subject —
+        for redriving a dispatch window after fixing a consumer fault or
+        recovering from a lost consumer cursor. Only the messaging-plane
+        subjects agentos.runs.create and agentos.workflow.node.completed are
+        replayable: the DLQ itself is refused (400 — replaying it would loop
+        dead letters back into the DLQ) and arbitrary subjects are refused so
+        the admin surface can never inject traffic outside the plane. The
+        response reports how many retained entries matched and were
+        re-published. Memory-effective mode: 409.
+      x-required-permission: queue.manage (OWNER/ADMIN; MEMBER/VIEWER denied 403)
+      security:
+        - bearerToken: []
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NcReplayRequest'
+            example:
+              subject: agentos.runs.create
+              from: '2026-09-10T12:00:00Z'
+      responses:
+        '200':
+          description: The replay report (replayed counts every re-published entry).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcReplayResult'
+              example:
+                subject: agentos.runs.create
+                from: '2026-09-10T12:00:00Z'
+                replayed: 2
+        '400':
+          description: The subject is not replayable (DLQ or outside the messaging plane).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '409':
+          description: Memory-effective messaging mode (no retained log).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/NcUnauthorized'
+        '403':
+          $ref: '#/components/responses/NcForbidden'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    NcSeq:
+      name: seq
+      in: path
+      required: true
+      description: The dead letter's 1-based sequence within the agentos.dlq retained log (stable across redeliveries; the requeue key).
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 1
+  responses:
+    NcUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NcErrorEnvelope'
+    NcForbidden:
+      description: Authenticated but lacking the required permission for this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NcErrorEnvelope'
+  schemas:
+    NcMessagingMode:
+      type: string
+      description: |
+        The task-dispatch plane selected by AGENTOS_MESSAGING. memory (the
+        default) keeps the platform queue as the only dispatch path with zero
+        infrastructure; nats dispatches run tasks as JetStream envelopes and
+        fails fast when the broker is unreachable; hybrid is nats with a
+        memory safety net (broker failures fall back to the memory queue, so
+        a run is never lost). The wire value is the lowercase enum member.
+      enum:
+        - memory
+        - nats
+        - hybrid
+      default: memory
+    NcRunEnvelope:
+      type: object
+      description: |
+        The wire shape published to agentos.runs.create when a run task is
+        dispatched through the messaging plane. The top-level identity fields
+        make routing, DLQ inspection and correlation possible without
+        decoding the payload; payload carries the exact keys the existing
+        execution path consumes (agent_id, input, workflow_run_id, node_id,
+        environment, ...).
+      required: [task_id, task_type, created_at]
+      properties:
+        task_id:
+          type: string
+          description: Logical task identity ("<task_type>-<rfc3339nano>", the Queue.Enqueue format).
+        task_type:
+          type: string
+          description: The queue task type (e.g. agent.run).
+        run_id:
+          type: string
+          description: The agent/tool run the task executes (empty when the caller has none yet).
+        organization_id:
+          type: string
+          description: Tenant scope, mirrored into the task's organization stamp.
+        trace_id:
+          type: string
+          description: Distributed-trace correlation id when the caller has one.
+        payload:
+          type: object
+          additionalProperties: true
+          description: The original enqueue payload, republished verbatim.
+        created_at:
+          type: string
+          format: date-time
+    NcNodeCompletedEnvelope:
+      type: object
+      description: |
+        The wire shape fanned out onto agentos.workflow.node.completed after
+        one workflow node reaches a terminal state. Consumers decide what
+        "completed" triggers; the framework guarantees at-least-once delivery
+        of the fact. Memory mode has no fan-out plane (single-process
+        deployments coordinate through the DAG executor directly).
+      required: [organization_id, workflow_run_id, node_id, status, completed_at]
+      properties:
+        organization_id:
+          type: string
+        workflow_run_id:
+          type: string
+        node_id:
+          type: string
+        run_id:
+          type: string
+          description: The node's agent/tool run when it has one.
+        status:
+          type: string
+          description: Terminal node status (completed | failed).
+        output:
+          type: string
+        error:
+          type: string
+          description: Error code for failed nodes (e.g. NODE_FAILED).
+        completed_at:
+          type: string
+          format: date-time
+    NcDLQEntry:
+      type: object
+      description: |
+        The inspected view of one retained dead letter. payload_base64 is the
+        original message bytes base64-encoded (bytes, not raw JSON, so even a
+        malformed payload dead-letters losslessly and requeue republishes it
+        verbatim). run_id/organization_id/task_id are best-effort identity
+        extractions from run-dispatch payloads.
+      required: [sequence, subject, error, attempts, dead_lettered_at]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+          description: The 1-based position in the agentos.dlq retained log (the requeue key).
+        subject:
+          type: string
+          description: The original subject the message was published to.
+        task_id:
+          type: string
+        run_id:
+          type: string
+        organization_id:
+          type: string
+        error:
+          type: string
+          description: The last handler error (or the recovered panic value).
+        attempts:
+          type: integer
+          format: int64
+          description: The delivery count at dead-letter time (the retry cap is 4 by default, mirroring the engine's rule).
+        dead_lettered_at:
+          type: string
+          format: date-time
+        payload_base64:
+          type: string
+          contentEncoding: base64
+          description: The original message bytes, base64-encoded.
+    NcReplayRequest:
+      type: object
+      required: [subject, from]
+      properties:
+        subject:
+          type: string
+          description: The subject to replay. Only agentos.runs.create and agentos.workflow.node.completed are accepted (the DLQ and foreign subjects are refused).
+          enum:
+            - agentos.runs.create
+            - agentos.workflow.node.completed
+        from:
+          type: string
+          format: date-time
+          description: Inclusive replay origin — retained entries with timestamp >= from are re-published, oldest-first.
+      example:
+        subject: agentos.runs.create
+        from: '2026-09-10T12:00:00Z'
+    NcReplayResult:
+      type: object
+      required: [subject, from, replayed]
+      properties:
+        subject:
+          type: string
+        from:
+          type: string
+          format: date-time
+        replayed:
+          type: integer
+          format: int64
+          description: How many retained entries matched the window and were re-published verbatim onto the subject.
+    NcErrorEnvelope:
+      type: object
+      description: Structured error model (mirrors the base spec).
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: not_replayable
+            message:
+              type: string
