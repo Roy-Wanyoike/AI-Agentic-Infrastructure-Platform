@@ -1,0 +1,395 @@
+# AgentOS API — OpenAPI 3.1 fragment for agent portability: export /
+# import / clone (issue #122).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (copied VERBATIM from
+# api/fragments/apikeys.yaml), so
+# `python3 scripts/check_fragment_refs.py api/fragments/agents-portability.yaml`
+# passes.
+#
+# Companion fragment: api/fragments/agents-lifecycle.yaml documents the
+# issue #106 lifecycle state machine (POST /agents/{id}/transition + the
+# 409 AGENT_NOT_ACTIVE run-creation gate); the export/import/clone surface
+# here composes with it — imports and clones always materialize as DRAFT
+# agents that must walk draft -> building -> active before accepting runs.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (verbatim components.securitySchemes).
+#   * x-required-permission documents the RBAC permission per operation:
+#       - export (read)  -> agents.read (every role incl. VIEWER, exactly the
+#         GET /agents/{id} grant);
+#       - import/clone (writes) -> agents.write (exactly OWNER/ADMIN).
+#   * structured error model {"error":{"code","message"}}.
+#
+# SECURITY (credential handling): the export bundle is CONFIGURATION-ONLY by
+# construction — the AgentExportBundle schema has no property for ids,
+# organization, status, version ids, timestamps, API keys or secret values.
+# The tools list carries registry NAMES (catalog references) only. Import
+# reassigns identity server-side (fresh id, caller's organization, fresh
+# created_at, status DRAFT, fresh v1 version): identity-shaped keys smuggled
+# into the payload are dropped by the typed decode and can never be trusted.
+# Audit entries (agent.exported / agent.imported / agent.cloned) carry ids
+# only, never bundle content.
+openapi: 3.1.0
+info:
+  title: "AgentOS — agent portability: export / import / clone (issue #122 fragment)"
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for the agent portability operations added by issue
+  #122. Export renders one agent of the caller's tenant as a versioned,
+  deterministic, configuration-only bundle (schema_version "1") that carries
+  no identity, no credentials and no lifecycle state. Import validates a
+  bundle (bundle schema version, required fields, instructions size cap,
+  KNOWN model ids resolved case-insensitively from the platform model
+  catalog, tool names resolved against the platform tool catalog) and creates
+  a NEW agent in the CALLER's organization — ids, organization and
+  created_at are always reassigned server-side and the status resets to
+  DRAFT. Clone deep-copies one agent within the SAME organization (new id,
+  "-copy" name suffix, status reset DRAFT, fresh v1 version); cross-org
+  clone attempts surface as 404 with no existence leak, the same convention
+  as every tenant-guarded agents surface.
+paths:
+  /agents/{id}/export:
+    get:
+      operationId: exportAgent
+      tags:
+      - agents
+      summary: Export one agent as a portable configuration-only bundle (issue #122)
+      description: |
+        Read operation (agents.read — every role, exactly the GET /agents/{id}
+        grant). Returns the portable ExportBundle for one agent of the
+        caller's tenant: schema_version "1", the configuration (name,
+        description, instructions, model) and the tool-name list. Field order
+        is deterministic; the bundle structurally CANNOT carry the agent id,
+        organization id, lifecycle status, version ids, timestamps, API keys
+        or secret values — only configuration and tool registry NAMES.
+        Cross-organization and unknown agents answer 404 with no existence
+        leak. Success writes an `agent.exported` audit entry (ids only).
+      x-required-permission: agents.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/PortAgentID'
+      responses:
+        '200':
+          description: The portable bundle (configuration only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentExportBundle'
+        '401':
+          $ref: '#/components/responses/PortUnauthorized'
+        '403':
+          $ref: '#/components/responses/PortForbidden'
+        '404':
+          description: Unknown agent or agent of another organization (AGENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+  /agents/import:
+    post:
+      operationId: importAgent
+      tags:
+      - agents
+      summary: Import a bundle as a NEW agent with fresh identity (issue #122)
+      description: |
+        Write operation (agents.write, exactly OWNER/ADMIN). Validates the
+        bundle and creates a NEW agent in the CALLER's organization. The
+        client is NEVER trusted for identity: the typed decode drops unknown
+        payload keys (any id, organization_id, created_at or status smuggled
+        into the bundle is ignored) and the server assigns a fresh agent id,
+        the caller's organization, fresh created_at/updated_at, status DRAFT
+        and a fresh initial v1 version.
+
+        Validation (fail-closed, 422 VALIDATION_ERROR with the typed code in
+        the message): schema_version must be "1"; name/instructions/model are
+        required; instructions are capped at 65536 bytes (INSTRUCTIONS_TOO_LARGE);
+        the model must be a KNOWN model id (resolved case-insensitively from
+        the platform model catalog — vendor-prefixed ids match their bare
+        suffix, UNKNOWN_MODEL); every tool name must exist in the platform
+        tool catalog (UNKNOWN_TOOL). Rejected imports leave no agent behind
+        and audit nothing. Success writes an `agent.imported` audit entry and
+        returns the created agent in the same representation as
+        GET /agents/{id} (status DRAFT — walk the issue #106 lifecycle
+        documented in api/fragments/agents-lifecycle.yaml before it can
+        accept runs).
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentExportBundle'
+            example:
+              schema_version: '1'
+              exported_at: '2026-01-01T00:00:00Z'
+              agent:
+                name: Support Agent
+                description: front-line helper
+                instructions: be helpful
+                model: gpt-4o-mini
+                tools: []
+      responses:
+        '201':
+          description: Agent imported with fresh identity in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortAgent'
+        '400':
+          description: Malformed or missing JSON body (INVALID_REQUEST).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/PortUnauthorized'
+        '403':
+          $ref: '#/components/responses/PortForbidden'
+        '422':
+          description: |
+            Validation error (VALIDATION_ERROR): unsupported schema_version,
+            missing name/instructions/model, oversized instructions, unknown
+            model or unknown tool. The message embeds the typed code
+            (BUNDLE_SCHEMA_VERSION, NAME_REQUIRED, INSTRUCTIONS_REQUIRED,
+            INSTRUCTIONS_TOO_LARGE, MODEL_REQUIRED, UNKNOWN_MODEL,
+            UNKNOWN_TOOL). No agent is created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+  /agents/{id}/clone:
+    post:
+      operationId: cloneAgent
+      tags:
+      - agents
+      summary: Deep-copy one agent within the SAME organization (issue #122)
+      description: |
+        Write operation (agents.write, exactly OWNER/ADMIN). Deep-copies one
+        agent of the caller's tenant: a new agent with a fresh id, the name
+        suffixed "-copy", the copied description/instructions/model, fresh
+        timestamps, status reset to DRAFT and a fresh initial v1 version. The
+        request body is optional and ignored — there is deliberately no
+        client-controlled target tenant or name. The source agent is never
+        mutated (an ACTIVE source stays ACTIVE). Cross-organization clone
+        attempts answer 404 with no existence leak (the source is resolved
+        through the org-scoped lookup). Success writes an `agent.cloned`
+        audit entry carrying the clone id and the source id.
+      x-required-permission: agents.write
+      security:
+      - bearerToken: []
+      - apiKey: []
+      parameters:
+      - $ref: '#/components/parameters/PortAgentID'
+      responses:
+        '201':
+          description: Clone created (DRAFT, "-copy" name suffix) in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortAgent'
+        '401':
+          $ref: '#/components/responses/PortUnauthorized'
+        '403':
+          $ref: '#/components/responses/PortForbidden'
+        '404':
+          description: Unknown source agent or agent of another organization (AGENT_NOT_FOUND).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+        '500':
+          description: Unexpected server failure (details are never surfaced).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  parameters:
+    PortAgentID:
+      name: id
+      in: path
+      required: true
+      description: Agent id (UUID, as returned by create/import/clone/list).
+      schema:
+        type: string
+        minLength: 1
+      example: 3f6c1a5e-8e2b-4c1d-9a7b-2f0d5e6a1b2c
+  responses:
+    PortUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PortErrorEnvelope'
+    PortForbidden:
+      description: Authenticated but lacking the required permission (agents.write is OWNER/ADMIN only; agents.read is granted to every role).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PortErrorEnvelope'
+  schemas:
+    AgentExportAgent:
+      type: object
+      description: |
+        The portable agent projection: configuration only. There is
+        deliberately NO property for the agent id, organization, status,
+        version ids, timestamps or any credential — export can never leak
+        them and import always reassigns them server-side. The tools list
+        carries tool registry NAMES (catalog references), never tool
+        credentials or connection material.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Agent display name (non-blank).
+          examples:
+          - Support Agent
+        description:
+          type: string
+          description: Human-readable description.
+        instructions:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: The agent's system prompt (non-blank, capped at 65536 bytes).
+        model:
+          type: string
+          minLength: 1
+          description: Model identifier; must be a known platform model id on import (resolved case-insensitively, vendor-prefixed ids match their bare suffix).
+          examples:
+          - gpt-4o-mini
+        tools:
+          type: array
+          description: Tool registry NAMES only (catalog references). Every name must exist in the platform tool catalog on import.
+          items:
+            type: string
+          examples:
+          - - calculator
+            - http_request
+      required:
+      - name
+      - description
+      - instructions
+      - model
+      - tools
+    AgentExportBundle:
+      type: object
+      description: |
+        The versioned export/import envelope (schema_version "1"). Field
+        order is deterministic. Identity, lifecycle state and credentials are
+        structurally absent — import reassigns ids/organization/created_at
+        and resets status to DRAFT regardless of anything the payload claims.
+      properties:
+        schema_version:
+          type: string
+          const: '1'
+          description: Bundle schema version; only "1" is written and accepted.
+          examples:
+          - '1'
+        exported_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC export timestamp, informational; import ignores it.
+        agent:
+          $ref: '#/components/schemas/AgentExportAgent'
+      required:
+      - schema_version
+      - agent
+    PortAgent:
+      type: object
+      description: |
+        The created/imported/cloned agent representation — identical to the
+        base spec's Agent schema and the GET /agents/{id} response (legacy
+        PascalCase encoding of the internal agents.Agent struct). Status is
+        always DRAFT for import/clone results.
+      properties:
+        ID:
+          type: string
+          description: Fresh server-assigned agent id (client ids are never trusted).
+        OrganizationID:
+          type: string
+          description: The CALLER's organization (client organization claims are never trusted).
+        Name:
+          type: string
+        Description:
+          type: string
+        Instructions:
+          type: string
+        Model:
+          type: string
+        Status:
+          type: string
+          description: Lifecycle state (issue #106 state machine); always DRAFT for import/clone results.
+          examples:
+          - DRAFT
+        CurrentVersionID:
+          type: string
+          description: Fresh initial v1 version id.
+        CreatedAt:
+          type: string
+          format: date-time
+        UpdatedAt:
+          type: string
+          format: date-time
+      required:
+      - ID
+      - OrganizationID
+      - Name
+      - Model
+      - Status
+      - CreatedAt
+      - UpdatedAt
+    PortErrorEnvelope:
+      type: object
+      description: Structured error envelope {"error":{"code","message"}}.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: One of AGENT_NOT_FOUND, VALIDATION_ERROR, INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR.
+              examples:
+              - AGENT_NOT_FOUND
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
