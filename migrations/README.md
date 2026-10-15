@@ -33,6 +33,7 @@ Current migration structure:
 - 028_a2a_agent_cards.sql (issue #136: A2A Agent Card registry — org-scoped publications of org agents)
 - 029_approval_oversight.sql (issue #137: approvals enterprise HITL v2 — delegation chain, escalation SLA policy, dual-control columns, oversight event log)
 - 030_virtual_keys.sql (wave-9 issue #139: gateway virtual keys with model allow-lists + enforced monthly spend caps)
+- 031_residency_policies.sql (issue #140: org data-residency policies + out-of-region evidence)
 
 Migration conventions:
 

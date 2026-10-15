@@ -1,0 +1,262 @@
+# AgentOS API — OpenAPI 3.1 fragment for org data residency (wave-9, issue #140).
+#
+# Merge target: api/openapi.yaml. Paths WITHOUT the /api/v1 prefix.
+#
+# Convention note (apikeys.yaml pattern): security scheme names used by
+# `security:` are declared in this fragment's own components.securitySchemes
+# (verbatim base definitions), so
+# `python3 scripts/check_fragment_refs.py api/fragments/residency.yaml`
+# passes standalone. Folding is last-key-wins (identity re-definition).
+#
+# Contract notes:
+#   * One residency policy per organization; the residency store is the
+#     source of truth (the organization schema is untouched).
+#   * Region enum: eu-central, eu-west, us-east, us-west, ap-south,
+#     ap-northeast, custom. Empty pin + empty list = "unpinned" (no
+#     enforcement; checks record audit evidence only).
+#   * Enforcement: non-strict policies allow out-of-region flows but flag
+#     them (audit residency.check with flagged=true + posture evidence);
+#     strict policies DENY out-of-region AND unclassifiable endpoints
+#     (fail-closed, reason "unclassifiable_endpoint") with HTTP 403
+#     {"error":{"code":"residency_violation"}} on POST /residency/check.
+#   * Evidence carries url_host ONLY — never the full URL or its query
+#     string (queries can carry secrets).
+#   * RBAC (x-required-permission; documented reuse of EXISTING grants, no
+#     new permission enum): policy reads connectors.read (MEMBER+;
+#     integration topology tier), policy writes / posture / explicit checks
+#     users.manage (OWNER/ADMIN — org security configuration, same tier as
+#     budget ceilings).
+paths:
+  /residency/policy:
+    get:
+      operationId: getResidencyPolicy
+      summary: Get the caller's organization residency policy
+      description: Returns the effective policy. An org without a stored policy is "unpinned" (default, 200).
+      x-required-permission: connectors.read
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        "200":
+          description: The effective policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/ResidencyPolicy" }
+                  mode: { $ref: "#/components/schemas/ResidencyMode" }
+        "401": { $ref: "#/components/responses/ResidencyUnauthorized" }
+        "403": { $ref: "#/components/responses/ResidencyForbidden" }
+        "500": { $ref: "#/components/responses/ResidencyInternal" }
+    put:
+      operationId: updateResidencyPolicy
+      summary: Pin / update the organization residency policy
+      description: >
+        Upserts the policy (OWNER/ADMIN). Validation failures are 400
+        VALIDATION_ERROR; the change is audited as residency.policy_updated.
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResidencyPolicyInput" }
+      responses:
+        "200":
+          description: Updated (mode is computed from the stored policy).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/ResidencyPolicy" }
+                  mode: { $ref: "#/components/schemas/ResidencyMode" }
+        "400": { $ref: "#/components/responses/ResidencyValidationError" }
+        "401": { $ref: "#/components/responses/ResidencyUnauthorized" }
+        "403": { $ref: "#/components/responses/ResidencyForbidden" }
+        "500": { $ref: "#/components/responses/ResidencyInternal" }
+  /residency/posture:
+    get:
+      operationId: getResidencyPosture
+      summary: Residency posture of the caller's organization
+      description: Compliance view — mode, pinning state and the last out-of-region evidence (flagged allow or strict deny).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      responses:
+        "200":
+          description: The posture.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResidencyPosture" }
+        "401": { $ref: "#/components/responses/ResidencyUnauthorized" }
+        "403": { $ref: "#/components/responses/ResidencyForbidden" }
+        "500": { $ref: "#/components/responses/ResidencyInternal" }
+  /residency/check:
+    post:
+      operationId: checkResidency
+      summary: Explicit data-flow residency check for one URL
+      description: >
+        Classifies the URL host against the documented region table and
+        evaluates the org policy. Allowed verdicts are 200; strict denials
+        are 403 with code "residency_violation" (fail-closed for
+        unclassifiable endpoints, reason "unclassifiable_endpoint"). Both
+        outcomes are audited (residency.check / residency.violation).
+      x-required-permission: users.manage
+      security:
+      - bearerToken: []
+      - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, description: The endpoint URL to classify (host used; query strings are never stored). }
+      responses:
+        "200":
+          description: Allowed (in-region, flagged observe-mode, or unpinned).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verdict: { $ref: "#/components/schemas/ResidencyVerdict" }
+        "400": { $ref: "#/components/responses/ResidencyValidationError" }
+        "401": { $ref: "#/components/responses/ResidencyUnauthorized" }
+        "403": { $ref: "#/components/responses/ResidencyViolation" }
+        "500": { $ref: "#/components/responses/ResidencyInternal" }
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  responses:
+    ResidencyValidationError:
+      description: Validation error (invalid region, empty strict policy, empty url).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyError" }
+    ResidencyUnauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyError" }
+    ResidencyForbidden:
+      description: Not permitted for this tier (reads MEMBER+, writes/posture/check OWNER/ADMIN).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyError" }
+    ResidencyViolation:
+      description: >
+        Strict-mode residency denial. error.code is "residency_violation"
+        and the error object carries url_host, region, reason, strict_mode
+        and mode.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyViolationError" }
+    ResidencyInternal:
+      description: Internal error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ResidencyError" }
+  schemas:
+    ResidencyRegion:
+      type: string
+      enum: [eu-central, eu-west, us-east, us-west, ap-south, ap-northeast, custom, unknown]
+      description: >
+        Policy-valid values are the six operating regions plus "custom"
+        (BYOC). "unknown" is the classification sentinel and never a valid
+        policy value.
+    ResidencyMode:
+      type: string
+      enum: [pinned, unpinned]
+    ResidencyPolicyInput:
+      type: object
+      properties:
+        pinned_region:
+          type: string
+          description: One of the policy-valid regions, or "" for no pin.
+        allowed_regions:
+          type: array
+          items: { type: string }
+          description: Additional allowed regions (normalized + deduped).
+        strict_mode:
+          type: boolean
+          description: false = observe (flag only); true = enforce (deny out-of-region + unclassifiable). Requires a pin or allow list.
+    ResidencyPolicy:
+      type: object
+      properties:
+        org_id: { type: string }
+        pinned_region: { type: string }
+        allowed_regions:
+          type: array
+          items: { type: string }
+        strict_mode: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ResidencyVerdict:
+      type: object
+      properties:
+        allowed: { type: boolean }
+        region: { $ref: "#/components/schemas/ResidencyRegion" }
+        reason:
+          type: string
+          enum: [unpinned, in_region, out_of_region, out_of_region_flagged, unclassifiable_endpoint, unclassifiable_endpoint_flagged, policy_unavailable]
+        strict_mode: { type: boolean }
+        mode: { $ref: "#/components/schemas/ResidencyMode" }
+    ResidencyPosture:
+      type: object
+      properties:
+        pinned_region: { type: string }
+        allowed_regions:
+          type: array
+          items: { type: string }
+        strict_mode: { type: boolean }
+        mode: { $ref: "#/components/schemas/ResidencyMode" }
+        last_violation:
+          oneOf:
+            - { $ref: "#/components/schemas/ResidencyViolationEvidence" }
+            - { type: "null" }
+    ResidencyViolationEvidence:
+      type: object
+      properties:
+        at: { type: string, format: date-time }
+        url_host: { type: string, description: The bare host only — never the full URL or query string. }
+        region: { $ref: "#/components/schemas/ResidencyRegion" }
+        reason: { type: string }
+    ResidencyError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    ResidencyViolationError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, enum: [residency_violation] }
+            message: { type: string }
+            url_host: { type: string }
+            verdict: { type: string, enum: [denied] }
+            region: { $ref: "#/components/schemas/ResidencyRegion" }
+            reason: { type: string }
+            strict_mode: { type: boolean }
+            mode: { $ref: "#/components/schemas/ResidencyMode" }
