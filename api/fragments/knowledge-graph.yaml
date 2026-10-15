@@ -1,0 +1,89 @@
+# AgentOS API — OpenAPI 3.1 fragment for the knowledge graph memory surface
+# (issues #130/#131: dynamic knowledge graph memory + ontology-first
+# construction).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). SCHEMA-ONLY: no paths are defined yet — the episode/ontology
+# read+write endpoints land with their owning API track and will reference
+# these components. Schemas carry track-neutral names (ActivityEpisode,
+# Ontology, EntityType, EdgeType, ExtractionResult); a collision on merge
+# requires a Graph prefix on the conflicting MAIN-spec side only, never here.
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes (api/fragments/apikeys.yaml pattern), so
+# `python3 scripts/check_fragment_refs.py api/fragments/knowledge-graph.yaml`
+# passes.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (mirrors base components.securitySchemes)
+#   * structured error model {"error":{"code","message"}}
+#
+# SECURITY (verbatim from api/fragments/apikeys.yaml — same auth posture as
+# every knowledge surface; when paths are added they MUST carry
+# `security: [bearerToken: [], apiKey: []]` per operation):
+openapi: 3.1.0
+info:
+  title: AgentOS — knowledge graph memory schemas (issues #130/#131 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone schema fragment for the dynamic knowledge graph memory (issue
+  #130: agent activity episodes — tool_call / reasoning / decision /
+  observation, timestamped with temporal half-life decay) and ontology-first
+  knowledge construction (issue #131: org-scoped ontologies with typed
+  entity/edge types and schema-validated extraction). Episodes are ORG-SCOPED
+  memory: every record carries organization_id and every future read path
+  filters on it (tenant isolation by construction, mirroring the
+  knowledge_documents surface).
+paths: {}
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    ActivityEpisode:
+      type: object
+      description: |
+        One agent activity captured from a run (issue #130). Episodes are the
+        temporal layer of the knowledge graph: persisted timestamped with
+        episode content chunked like documents and embedded via the knowledge
+        embedder; retrieval weights raw relevance by exponential half-life
+        decay (24h default). action_type is one of tool_call | reasoning |
+        decision | observation.
+      required: [agent_id, run_id, action_type, content, timestamp]
+      properties:
+        agent_id:
+          type: string
+          description: Agent that produced the activity (authoritative from the recorder).
+        run_id:
+          type: string
+          description: Run the activity belongs to (authoritative from the recorder).
+        organization_id:
+          type: string
+          description: Owning organization (tenant guard; stamped server-side).
+        action_type:
+          type: string
+          enum: [tool_call, reasoning, decision, observation]
+        content:
+          type: string
+          minLength: 1
+          description: Activity payload; chunked at ~800 runes on boundaries at ingest.
+        entities:
+          type: array
+          description: Entity surface forms mentioned by the activity (graph seeds).
+          items:
+            type: string
+        timestamp:
+          type: string
+          format: date-time
+          description: |
+            When the activity happened (NOT insert time). Zero timestamps are
+            stamped with the ingest time by the episode ingestor.
