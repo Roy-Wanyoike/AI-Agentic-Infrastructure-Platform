@@ -7,8 +7,10 @@ import type { Run } from '../lib/api/types'
 export const navItems = [
   'Overview',
   'Agents',
+  'Agent Builder',
   'Runs',
   'Workflows',
+  'Workflow Builder',
   'Approvals',
   'Evaluations',
   'Versions',
@@ -40,8 +42,10 @@ export type ViewName = (typeof navItems)[number]
 export const navIcons: Record<ViewName, string> = {
   Overview: '◎',
   Agents: '⬡',
+  'Agent Builder': '✦',
   Runs: '▷',
   Workflows: '⑂',
+  'Workflow Builder': '◈',
   Approvals: '✓',
   Evaluations: '⚗',
   Versions: '⎌',

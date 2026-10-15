@@ -1,0 +1,421 @@
+/* Workflow Builder (issue #120) — three-column DAG editor.
+   Tokens mirror App.css: dark navy surfaces, slate borders, indigo/cyan
+   accents, text-first monochrome styling. No new design system — these rules
+   only style elements rendered by workflowBuilder.tsx. */
+
+.builder-grid {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr) 320px;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.builder-panel {
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 16px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.builder-palette {
+  max-height: 82vh;
+}
+
+.builder-panel h3 {
+  margin: 0;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #7dd3fc;
+}
+
+/* --- Palette (left column) --- */
+
+.builder-palette-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.builder-palette-group > p {
+  margin: 0 0 2px;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #7c8db0;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  background: rgba(2, 8, 23, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #dfe7ff;
+  cursor: grab;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.palette-item:hover {
+  border-color: rgba(129, 140, 248, 0.5);
+  background: rgba(129, 140, 248, 0.08);
+}
+
+.palette-item:active {
+  cursor: grabbing;
+}
+
+.palette-item .palette-text {
+  min-width: 0;
+}
+
+.palette-item .palette-text strong {
+  display: block;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.palette-item .palette-text span {
+  font-size: 0.68rem;
+  color: #7c8db0;
+  display: block;
+}
+
+.palette-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.builder-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  padding-top: 12px;
+}
+
+.builder-hint {
+  color: #7c8db0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* --- Canvas (center column) --- */
+
+.builder-canvas-panel {
+  padding: 12px;
+  gap: 10px;
+}
+
+.builder-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.builder-toolbar .spacer {
+  flex: 1;
+}
+
+.builder-stat {
+  color: #7c8db0;
+  font-size: 0.75rem;
+}
+
+.builder-canvas-wrap {
+  position: relative;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0c1220;
+  min-height: 520px;
+  flex: 1;
+}
+
+.builder-canvas-wrap svg.builder-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.builder-canvas-wrap svg.builder-canvas.panning {
+  cursor: grabbing;
+}
+
+.builder-canvas-wrap svg.builder-canvas.linking {
+  cursor: crosshair;
+}
+
+.builder-minimap {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 176px;
+  height: 108px;
+  background: rgba(2, 8, 23, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.builder-canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: #7c8db0;
+  font-size: 0.85rem;
+}
+
+/* --- DSL drawer (import / export round-trip) --- */
+
+.builder-drawer {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(2, 8, 23, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.builder-drawer .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.builder-drawer textarea {
+  width: 100%;
+  background: rgba(2, 8, 23, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  color: #dfe7ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  padding: 10px 12px;
+  outline: none;
+  resize: vertical;
+}
+
+.builder-drawer textarea:focus {
+  border-color: rgba(129, 140, 248, 0.55);
+}
+
+.builder-file-label {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #dfe7ff;
+  cursor: pointer;
+}
+
+.builder-file-label input {
+  display: none;
+}
+
+/* --- Inspector (right column) --- */
+
+.builder-inspector {
+  overflow-y: auto;
+  max-height: calc(100vh - 150px);
+}
+
+.builder-inspector .field {
+  margin-bottom: 10px;
+}
+
+.builder-inspector .field label {
+  display: block;
+}
+
+.builder-inspector .field input,
+.builder-inspector .field textarea,
+.builder-inspector .field select {
+  font-size: 0.85rem;
+  padding: 8px 10px;
+}
+
+.builder-inspector .field input[type='number'] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.inspector-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.inspector-title code {
+  color: #7c8db0;
+  font-size: 0.72rem;
+}
+
+.inspector-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.case-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.case-row input,
+.case-row select {
+  background: rgba(2, 8, 23, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: #e5ecff;
+  font-size: 0.78rem;
+  outline: none;
+  min-width: 0;
+}
+
+.case-row .remove-case {
+  background: transparent;
+  border: 0;
+  color: #f87171;
+  cursor: pointer;
+  font-size: 0.95rem;
+  padding: 2px 4px;
+}
+
+.body-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.body-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #dfe7ff;
+}
+
+.preserved-keys {
+  margin: 0;
+  font-size: 0.7rem;
+  color: #7c8db0;
+  word-break: break-all;
+}
+
+.inspector-note {
+  color: #7c8db0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* --- Validation list --- */
+
+.builder-validation {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.validation-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.validation-item:hover {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.validation-item.error { color: #fca5a5; }
+.validation-item.warning { color: #fbbf24; }
+.validation-item.ok { color: #6ee7b7; cursor: default; }
+
+.validation-item code {
+  font-size: 0.7rem;
+  color: #93a4c4;
+  flex: none;
+}
+
+.validation-item em {
+  font-style: normal;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #7c8db0;
+  flex: none;
+}
+
+/* --- Canvas SVG primitives (attribute-styled; classes only for state) --- */
+
+.builder-node rect.node-body {
+  cursor: move;
+}
+
+.builder-node.selected rect.node-body {
+  filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.45));
+}
+
+.builder-node text {
+  pointer-events: none;
+  user-select: none;
+}
+
+.builder-port {
+  cursor: crosshair;
+}
+
+.builder-edge-hit {
+  cursor: pointer;
+}
+
+@media (max-width: 1180px) {
+  .builder-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .builder-inspector {
+    max-height: none;
+  }
+}
