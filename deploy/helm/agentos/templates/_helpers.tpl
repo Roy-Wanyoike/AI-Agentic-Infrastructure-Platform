@@ -41,9 +41,19 @@ app.kubernetes.io/name: {{ include "agentos.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
-{{/* Component selector labels: include "agentos.componentSelectorLabels" (list $ "api") */}}
+{{/*
+Component selector labels: include "agentos.componentSelectorLabels" (list $ "api")
+
+NOTE (issue #117 fixup): app.kubernetes.io/name MUST be the per-component name
+(fullname-component), NOT the chart-level name. Every selector in this chart --
+Deployment/StatefulSet spec.selector, Service/PDB selectors, NetworkPolicy
+podSelectors and the data-tier default-deny -- matches on this value, and
+spec.selector is REQUIRED to match the pod template labels (the API server
+rejects the object otherwise). Keep them in lockstep.
+*/}}
 {{- define "agentos.componentSelectorLabels" -}}
-{{ include "agentos.selectorLabels" (index . 0) }}
+app.kubernetes.io/name: {{ include "agentos.componentName" . }}
+app.kubernetes.io/instance: {{ (index . 0).Release.Name }}
 app.kubernetes.io/component: {{ index . 1 }}
 {{- end -}}
 

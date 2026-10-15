@@ -52,6 +52,42 @@ def strip_comments_and_strings(text: str) -> str:
     return "".join(out)
 
 
+def strip_comments_keep_strings(text: str) -> str:
+    """Remove # / // line comments and /* */ block comments while KEEPING
+    quoted strings intact, so `\${var.x}` interpolations inside strings still
+    scan. Used for var-reference/declaration cross-checks: reference scans on
+    raw text false-positive on prose like '# no var.aws_region here on purpose'
+    (this exact bug hit modules/database after the aws_region var was removed)."""
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if not in_str and c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if in_str:
+            out.append(c)
+            if c == '"' and text[i - 1] != "\\":
+                in_str = False
+            i += 1
+            continue
+        if c == "#" or (c == "/" and nxt == "/"):
+            j = text.find("\n", i)
+            i = n if j == -1 else j
+            continue
+        if c == "/" and nxt == "*":
+            j = text.find("*/", i)
+            i = n if j == -1 else j + 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def check_file(path: Path):
     errs = []
     raw = path.read_text(encoding="utf-8")
@@ -74,7 +110,7 @@ def check_file(path: Path):
 def declared_vars(dirpath: Path):
     names = set()
     for tf in dirpath.glob("*.tf"):
-        text = tf.read_text(encoding="utf-8")
+        text = strip_comments_keep_strings(tf.read_text(encoding="utf-8"))
         for m in re.finditer(r'variable\s+"([^"]+)"\s*\{', text):
             names.add(m.group(1))
     return names
@@ -83,7 +119,7 @@ def declared_vars(dirpath: Path):
 def referenced_vars(dirpath: Path):
     refs = set()
     for tf in dirpath.glob("*.tf"):
-        text = tf.read_text(encoding="utf-8")
+        text = strip_comments_keep_strings(tf.read_text(encoding="utf-8"))
         refs |= {m.group(1) for m in re.finditer(r"\bvar\.([A-Za-z_][A-Za-z0-9_]*)", text)}
     return refs
 
@@ -107,9 +143,10 @@ def main() -> int:
         missing = sorted(referenced - declared)
         for m in missing:
             failures.append(f"{d.relative_to(TFROOT)}: var.{m} referenced but not declared")
-        # module source existence
+        # module source existence (comment-stripped so commented-out sources
+        # don't false-fail; strings are kept so the quoted path still matches)
         for tf in d.glob("*.tf"):
-            text = tf.read_text(encoding="utf-8")
+            text = strip_comments_keep_strings(tf.read_text(encoding="utf-8"))
             for m in re.finditer(r'source\s*=\s*"([^"]+)"', text):
                 src = m.group(1)
                 if src.startswith(("./", "../")):

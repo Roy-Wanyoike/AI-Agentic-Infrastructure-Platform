@@ -29,6 +29,12 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "agentos.serviceAccountName" (list . "web") }}
+      {{- /* nginx:alpine's master process runs as root (official image default),
+           so runAsNonRoot is deliberately NOT set here -- setting it would
+           CrashLoop the pod. For a fully non-root variant switch the image to
+           nginxinc/nginx-unprivileged (listens on 8080) and adjust
+           web.port + readOnlyRootFilesystem mounts. Everything else stays
+           hardened (seccomp, no privilege escalation, RO rootfs, caps dropped). */ -}}
       securityContext:
         seccompProfile:
           type: RuntimeDefault

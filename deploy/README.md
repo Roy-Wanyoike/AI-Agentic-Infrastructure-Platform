@@ -219,6 +219,7 @@ Worker rollouts: queue work is re-delivered if a pod dies
 in CI too:
 
 ```bash
+python3 deploy/validation/validate_all.py       # runs everything below + secrets scan
 python3 deploy/validation/validate_yaml.py     # every .yaml/.yml parses
 python3 deploy/validation/validate_helm.py     # templates render-parse + values cross-check
 python3 deploy/validation/validate_kustomize.py

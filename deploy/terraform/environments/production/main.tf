@@ -86,7 +86,6 @@ module "database" {
 
   flavor            = "aws"
   name              = "agentos-prod-pg"
-  aws_region        = var.aws_region
   aws_vpc_id        = var.vpc_id
   aws_subnet_ids    = var.private_subnet_ids
   aws_allowed_security_group_ids = [var.cluster_node_security_group_id]

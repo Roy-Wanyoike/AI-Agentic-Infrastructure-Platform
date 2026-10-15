@@ -41,12 +41,10 @@ variable "name" {
 }
 
 # --- AWS flavor inputs ---
-variable "aws_region" {
-  description = "AWS region (flavor=aws)."
-  type        = string
-  default     = null
-}
-
+# NOTE: no aws_region variable here on purpose -- RDS resources inherit the
+# region from the provider configured in the environment root (provider "aws"
+# { region = var.aws_region }); passing a region through a shared module would
+# require a module-scoped provider block (anti-pattern for shared modules).
 variable "aws_vpc_id" {
   description = "VPC id for the DB security group (flavor=aws)."
   type        = string
