@@ -134,8 +134,10 @@ func TestToolsListCatalog(t *testing.T) {
 	if !ok {
 		t.Fatalf("tools/list result must carry a tools array: %v", res)
 	}
-	if len(list) != 2 {
-		t.Fatalf("default registry exposes calculator + http_request, got %d: %v", len(list), res)
+	// issue #111: DefaultRegistry now exposes calculator + http_request plus
+	// the six expanded-catalog tools (8 entries).
+	if len(list) != 8 {
+		t.Fatalf("default registry exposes calculator + http_request + the six issue-111 tools, got %d: %v", len(list), res)
 	}
 	byName := map[string]map[string]any{}
 	for _, raw := range list {

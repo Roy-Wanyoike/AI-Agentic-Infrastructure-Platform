@@ -92,8 +92,10 @@ func TestToolsListReturnsBuiltInCatalog(t *testing.T) {
 	if !ok {
 		t.Fatalf("response must carry a tools array: %v", decoded)
 	}
-	if len(list) != 2 {
-		t.Fatalf("the built-in registry exposes calculator + http_request, got %d: %v", len(list), decoded)
+	// issue #111: the built-in registry exposes calculator + http_request
+	// plus the six expanded-catalog tools (8 entries).
+	if len(list) != 8 {
+		t.Fatalf("the built-in registry exposes calculator + http_request + the six issue-111 tools, got %d: %v", len(list), decoded)
 	}
 	byName := make(map[string]map[string]any, len(list))
 	for _, raw := range list {
