@@ -42,6 +42,7 @@ import (
 	"agentos/internal/observability"
 	"agentos/internal/orchestration"
 	"agentos/internal/organizations"
+	"agentos/internal/qualitygates"
 	"agentos/internal/queue"
 	"agentos/internal/runs"
 	"agentos/internal/runtime"
@@ -151,6 +152,14 @@ type app struct {
 	// batch migration is assigned); the batch.Store seam keeps the service
 	// dual-mode-ready.
 	batchSvc *batch.Service
+
+	// issue #152: unified release quality gates — versioned, tenant-scoped
+	// assurance policies combining evaluations, synthetic journeys,
+	// security/adversarial suites and canary health into deterministic
+	// promote/hold/abort/rollback recommendations. In-memory policy/evidence
+	// stores in BOTH modes this round (no migration assigned; the Postgres
+	// store is a documented follow-up — orchestrator pre-assigns it).
+	qualityGateSvc *qualitygates.Service
 }
 
 // newApp builds the service graph. When db is non-nil every service is
@@ -347,6 +356,11 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	a.batchSvc = batch.NewService()
 	a.batchSvc.SetStreamer(a.streamSvc)
 	a.batchSvc.SetAuditor(a.auditSvc)
+	// issue #152: unified release quality gates — one service for BOTH API
+	// modes (in-memory policy/evidence stores by design this round; the
+	// Postgres store is a documented follow-up with a pre-assigned
+	// migration, see the qualitygates package header).
+	a.qualityGateSvc = qualitygates.NewService(qualitygates.NewInMemoryPolicyStore(), qualitygates.NewInMemoryEvidenceStore())
 	// wave-2: evaluation runner + service. Issue #15: the API process now
 	// shares the worker's env-driven provider construction — when
 	// OPENAI_API_KEY is set, eval cases execute against the configured
@@ -594,6 +608,7 @@ func (a *app) routes() http.Handler {
 	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                                    // issue #109: workflow DSL validation endpoint
 	registerBatchRoutes(apiMux, a.batchSvc, newBatchSeams(a), a.streamSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #123: batch operations
 	registerLimiterRoutes(apiMux, a.limiterSvc, a.authSvc, a.apiKeysSvc)                                        // issue #124: granular rate limits
+	registerQualityGateRoutes(apiMux, a.qualityGateSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)                    // issue #152: unified release quality gates
 	registerRunLifecycleRoutes(apiMux, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)                          // issue #115: run pause/resume/cancel
 	registerRunTraceRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)                                          // issue #114: run trace exposure
 	// issue #28: agent marketplace
