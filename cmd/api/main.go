@@ -45,6 +45,7 @@ import (
 	"agentos/internal/secrets"
 	"agentos/internal/sso"
 	"agentos/internal/streaming"
+	"agentos/internal/tenant"
 	"agentos/internal/tools"
 	"agentos/internal/webhooks"
 	"agentos/internal/workflows"
@@ -104,6 +105,11 @@ type app struct {
 	notifSvc       *notifications.Service
 	publisher      events.Publisher
 	eventsLister   events.PagedStore
+
+	// issue #140: org data-residency (region pinning + data-flow checks +
+	// posture; the residency store is the source of truth — org schema
+	// untouched). Audit seam is wired at route registration.
+	residencySvc *tenant.ResidencyService
 }
 
 // newApp builds the service graph. When db is non-nil every service is
@@ -134,6 +140,8 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.apiKeysSvc = apikeys.NewServiceWithStore(apikeys.NewPostgresStore(db))
 		a.orgsSvc = organizations.NewServiceWithStore(organizations.NewPostgresStore(db))
 		a.auditSvc = audit.NewServiceWithStore(audit.NewPostgresStore(db))
+		// issue #140: org data-residency in Postgres mode (migration 031)
+		a.residencySvc = tenant.NewResidencyServiceWithStore(tenant.NewPostgresStore(db))
 		a.agentsSvc = agents.NewServiceWithStore(agents.NewPostgresStore(db))
 		a.apiKeysSvc.SetAgentChecker(a.agentsSvc) // wave-8: agent-membership seam for agent keys
 		a.runsSvc = runs.NewServiceWithStore(runs.NewPostgresStore(db))
@@ -200,6 +208,7 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.apiKeysSvc = apikeys.NewService()
 		a.orgsSvc = organizations.NewService()
 		a.auditSvc = audit.NewService()
+		a.residencySvc = tenant.NewResidencyService() // issue #140: org data-residency (in-memory mode)
 		a.agentsSvc = agents.NewService()
 		a.apiKeysSvc.SetAgentChecker(a.agentsSvc) // wave-8: agent-membership seam for agent keys
 		a.runsSvc = runs.NewService()
@@ -428,6 +437,7 @@ func (a *app) routes() http.Handler {
 	registerScimRoutes(apiMux, a.scimSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #52: organizations & membership management (last-owner guarded)
 	registerOrganizationRoutes(apiMux, a.orgsSvc, a.identities, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	registerResidencyRoutes(apiMux, a.residencySvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #140: org region pinning + data-flow residency checks + posture
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks
