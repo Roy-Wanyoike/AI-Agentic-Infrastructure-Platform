@@ -164,9 +164,17 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		a.schedSvc = scheduler.NewServiceWithStore(scheduler.NewPostgresStore(db))
 		// issue #75: governance enforcement seam (Postgres mode)
 		policyEnforcementVar = newRunPolicyEnforcement(a.db, a.apSvc)
-		// wave-3 3-d: knowledge/RAG + memory persistence (org-scoped)
+		// wave-3 3-d: knowledge/RAG + memory persistence (org-scoped).
+		// Issue #113: AGENTOS_EMBEDDING_PROVIDER=openai swaps BOTH services
+		// onto the real embeddings provider seam (one provider instance, so
+		// knowledge chunks and memory snippets share the same vector space);
+		// offline/unset keeps the legacy constructors — bit-identical default.
 		a.knowledgeSvc = knowledge.NewServiceWithStore(db)
 		a.memorySvc = memory.NewServiceWithStore(db)
+		if provider := embeddingsProviderOrNil(a.logr); provider != nil {
+			a.knowledgeSvc = knowledge.NewServiceWithStoreAndEmbeddingProvider(db, provider)
+			a.memorySvc = memory.NewServiceWithStoreAndEmbeddingProvider(db, provider)
+		}
 		// issue #24: billing (plans/subscriptions/invoices) billed from the runs cost ledger
 		a.billingSvc = billing.NewServiceWithStore(billing.NewPostgresStore(db), billing.NewRunsUsageSource(a.runsSvc))
 		// issue #25: encrypted org-scoped secrets; FAIL FAST without a valid
@@ -230,9 +238,16 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 		// issue #75: governance enforcement seam — ONE policies service
 		// shared between the CRUD routes and run/tool enforcement
 		policyEnforcementVar = newRunPolicyEnforcement(a.db, a.apSvc)
-		// wave-3 3-d: zero-infrastructure knowledge/memory (offline hash embedder)
+		// wave-3 3-d: zero-infrastructure knowledge/memory (offline hash
+		// embedder). Issue #113: an explicit AGENTOS_EMBEDDING_PROVIDER=openai
+		// selection swaps both services onto the provider seam (offline/unset
+		// keeps the legacy constructors — bit-identical default).
 		a.knowledgeSvc = knowledge.NewService()
 		a.memorySvc = memory.NewService()
+		if provider := embeddingsProviderOrNil(a.logr); provider != nil {
+			a.knowledgeSvc = knowledge.NewServiceWithEmbeddingProvider(provider)
+			a.memorySvc = memory.NewServiceWithEmbeddingProvider(provider)
+		}
 		// issue #24/#25: zero-infrastructure billing + secrets (no master key needed)
 		a.billingSvc = billing.NewService()
 		a.secretsSvc = secrets.NewService()
