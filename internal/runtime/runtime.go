@@ -235,6 +235,11 @@ type Runner struct {
 	runtimeCfg  RuntimeConfig
 	agentCfgSrc func(agentID string) json.RawMessage
 	summarizer  Summarizer
+	// checkpointer is optional (nil-safe DI, issue #115): when wired, a
+	// snapshot (history + token usage + step index) is saved after each
+	// completed step and a re-executed run resumes from the latest one
+	// (pause/resume/recovery contract). See checkpoint.go.
+	checkpointer Checkpointer
 	// Shutdown gate (issue #107): stopping refuses new runs
 	// (ErrShuttingDown); inflight counts executing runs; drained is the
 	// one-shot channel Shutdown waits on. Guarded by gateMu.
@@ -511,6 +516,15 @@ func (r *Runner) RunWithID(ctx context.Context, runID, agentID, input string) (*
 		UpdatedAt: started,
 	}
 
+	// Issue #114: execution trace hierarchy root (run span + agent span).
+	// Disabled -> context unchanged and a nil trace, so the fast path
+	// stays byte-identical; enabled -> the loop runs under the run trace
+	// and the spans close with the terminal run status (deferred end runs
+	// after the run fields are final).
+	runCtx, tr := r.startRunTrace(ctx, run, agent)
+	ctx = runCtx
+	defer tr.end(run)
+
 	output, err := r.execute(ctx, run, agent, input)
 	run.UpdatedAt = time.Now().UTC()
 	if err != nil {
@@ -599,7 +613,28 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 	history := NewConversationHistory(cfg.ConversationHistory.MaxTokens, cfg.ConversationHistory.Strategy)
 	history.Summarizer = r.summarizer
 	systemPrompt := buildSystemPrompt(agent, r.toolRegistry)
-	history.Append(models.Message{Role: "user", Content: input})
+
+	// Issue #115: checkpoint resume. When a previous execution of this run
+	// saved a snapshot (pause, cancel or a lost worker), the loop continues
+	// from the step AFTER the checkpoint: history and token accounting are
+	// restored, the user input is NOT appended again (the checkpointed
+	// history already carries it) and the max-steps bound still covers the
+	// cumulative step count. A corrupt or empty snapshot degrades to a
+	// fresh start.
+	resumeStart := 0
+	if state, ok := r.resumeFromCheckpoint(ctx, run.ID); ok {
+		resumeStart = state.StepIndex
+		run.Steps = resumeStart
+		if run.Tokens.TotalTokens == 0 && run.Tokens.PromptTokens == 0 && run.Tokens.CompletionTokens == 0 {
+			run.Tokens = state.Usage
+		}
+		if budget != nil {
+			budget.Record(state.Usage)
+		}
+		history.Messages = append(history.Messages, state.Messages...)
+	} else {
+		history.Append(models.Message{Role: "user", Content: input})
+	}
 
 	type lastCall struct {
 		tool string
@@ -607,8 +642,11 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 	}
 	var last lastCall
 	var lastRepeat int
+	// Issue #114: the tenant id stamped on the execution context rides
+	// on every execution span (agentos.org.id); resolved once per run.
+	orgID := runScopeOrgID(ctx)
 
-	for stepIndex := 1; stepIndex <= r.maxSteps; stepIndex++ {
+	for stepIndex := resumeStart + 1; stepIndex <= r.maxSteps; stepIndex++ {
 		if err := ctx.Err(); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				return "", fmt.Errorf("%w: %v", ErrMaxRuntimeExceeded, err)
@@ -638,14 +676,20 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			})
 			return "", merr
 		}
+		// Issue #114: per-step span; the model/tool spans hang off it.
+		stepCtx, st := r.startStepTrace(ctx, orgID, agent.ID, run.ID, stepIndex)
 
 		promptView := history.Prompt(ctx)
 		callStart := time.Now()
-		resp, err := r.provider.Complete(ctx, models.CompletionRequest{
+		modelCtx, modelSpan := r.startModelTrace(stepCtx, orgID, agent.ID, run.ID, agent.Model)
+		resp, err := r.provider.Complete(modelCtx, models.CompletionRequest{
 			System:   systemPrompt,
 			Messages: promptView,
 			Model:    agent.Model,
 		})
+		// Issue #114: usage + cost land on the model span right after the
+		// call (mirrors the runs ledger pricing); nil-safe when disabled.
+		r.endModelTrace(modelSpan, agent.Model, resp, err)
 		modelStep := Step{
 			Index:      stepIndex,
 			Type:       StepTypeModel,
@@ -678,14 +722,17 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			// Never auto-retry here: transient handling belongs to the
 			// provider/router layer. Surface typed causes.
 			if errors.Is(err, context.DeadlineExceeded) {
+				st.end(err)
 				return "", fmt.Errorf("%w: %v", ErrMaxRuntimeExceeded, err)
 			}
 			// Issue #107: a caller cancellation fails the CURRENT step
 			// (recorded above) and then unwinds gracefully — partial
 			// results marker + run.cancelled event + typed outcome.
 			if isCancellation(err) {
+				st.end(err)
 				return "", r.unwindCancelled(ctx, run, err)
 			}
+			st.end(err)
 			return "", fmt.Errorf("runtime: model call failed: %w", err)
 		}
 
@@ -705,11 +752,24 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 		if bstate.Exceeded != nil {
 			r.record(ctx, run.ID, budgetAnnotationStep(stepIndex, bstate.Snapshot, StepFailed, bstate.Exceeded.Error()))
 			r.emitRunEvent(ctx, events.EventRunTokenBudgetExceeded, run.ID, budgetEventPayload(run, bstate.Exceeded))
+			st.end(bstate.Exceeded)
 			return "", bstate.Exceeded
 		}
 
 		toolName, toolArgs, isTool := parseToolCall(text)
 		if !isTool {
+			// Issue #115: the final answer is a completed step too — the
+			// end-of-step snapshot carries the whole conversation (input,
+			// reasoning trail and the answer), so a worker lost between
+			// this return and the terminal status write resumes with the
+			// full context instead of replaying the run.
+			history.Append(models.Message{Role: "assistant", Content: text})
+			r.saveCheckpoint(ctx, run.ID, CheckpointState{
+				StepIndex: stepIndex,
+				Messages:  history.Messages,
+				Usage:     run.Tokens,
+			})
+			st.end(nil)      // final answer: close the step span
 			return text, nil // final answer
 		}
 
@@ -722,10 +782,16 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			last = lastCall{tool: toolName, args: argsKey}
 		}
 		if lastRepeat >= MaxLoopRepeats {
-			return "", fmt.Errorf("%w: tool %q called identically %d times", ErrLoopDetected, toolName, lastRepeat)
+			loopErr := fmt.Errorf("%w: tool %q called identically %d times", ErrLoopDetected, toolName, lastRepeat)
+			st.end(loopErr)
+			return "", loopErr
 		}
 
-		observation, toolErr := r.executeTool(ctx, toolName, toolArgs)
+		// Issue #114: the tool invocation is a child of the step span
+		// (governance checks included) and carries agentos.tool.name.
+		toolCtx, toolSpan := r.startToolTrace(stepCtx, orgID, agent.ID, run.ID, toolName)
+		observation, toolErr := r.executeTool(toolCtx, toolName, toolArgs)
+		r.endToolTrace(toolSpan, toolErr)
 		toolStep := Step{
 			Index:      stepIndex,
 			Type:       StepTypeTool,
@@ -765,6 +831,7 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 		// the current step completed above, so unwind gracefully now
 		// instead of feeding the observation back into a dead run.
 		if cerr := ctx.Err(); cerr != nil && isCancellation(cerr) {
+			st.end(cerr)
 			return "", r.unwindCancelled(ctx, run, cerr)
 		}
 
@@ -772,6 +839,17 @@ func (r *Runner) execute(ctx context.Context, run *Run, agent *agents.Agent, inp
 			models.Message{Role: "assistant", Content: text},
 			models.Message{Role: "tool", Name: toolName, Content: observation},
 		)
+
+		// Issue #115: end-of-step checkpoint — the snapshot reflects every
+		// completed iteration (model reply + tool observation + budget
+		// accounting), so a pause/cancel/worker-loss here resumes with the
+		// next model call instead of replaying the step.
+		r.saveCheckpoint(ctx, run.ID, CheckpointState{
+			StepIndex: stepIndex,
+			Messages:  history.Messages,
+			Usage:     run.Tokens,
+		})
+		st.end(nil)
 	}
 	return "", fmt.Errorf("%w: budget was %d steps", ErrMaxStepsExceeded, r.maxSteps)
 }

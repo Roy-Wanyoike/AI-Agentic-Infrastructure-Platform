@@ -32,6 +32,10 @@ func wfTestSetup(t *testing.T) (*http.ServeMux, *auth.Service, *runs.Service, *w
 
 	mux := http.NewServeMux()
 	registerWorkflowsRoutes(mux, wfSvc, apSvc, runsSvc, q, authSvc, apiKeysSvc)
+	// issue #115: the run control endpoints moved to their own registration
+	// (run_lifecycle.go); the workflow tests keep exercising them through
+	// the same middleware chain.
+	registerRunLifecycleRoutes(mux, runsSvc, q, authSvc, apiKeysSvc)
 	return mux, authSvc, runsSvc, wfSvc, apSvc
 }
 
@@ -440,13 +444,14 @@ func TestRunControlEndpoints(t *testing.T) {
 		t.Fatalf("expected paused status, got %s", rr.Body.String())
 	}
 
-	// resume -> pending
+	// resume -> queued (issue #115: the resume endpoint re-enqueues the run;
+	// the durable row reflects the enqueued state, not pending).
 	rr = wfDo(t, mux, http.MethodPost, "/runs/"+run.ID+"/resume", token, "")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("resume: expected %d, got %d body=%s", http.StatusOK, rr.Code, rr.Body.String())
 	}
-	if wfDecode(t, rr)["Status"] != "pending" {
-		t.Fatalf("expected pending status after resume, got %s", rr.Body.String())
+	if wfDecode(t, rr)["Status"] != "queued" {
+		t.Fatalf("expected queued status after resume, got %s", rr.Body.String())
 	}
 
 	// cancel (idempotent)

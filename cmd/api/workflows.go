@@ -52,9 +52,10 @@ func registerWorkflowsRoutes(apiMux *http.ServeMux, wfSvc *workflows.Service, ap
 	apiMux.Handle("GET /approvals/{id}", wf(auth.PermissionApprovalsRead, getApprovalHandler(apSvc)))
 	apiMux.Handle("POST /approvals/{id}/decide", wf(auth.PermissionApprovalsDecide, decideApprovalHandler(apSvc)))
 
-	apiMux.Handle("POST /runs/{id}/cancel", wf(auth.PermissionRunsControl, runControlHandler(runsSvc, "cancel")))
-	apiMux.Handle("POST /runs/{id}/pause", wf(auth.PermissionRunsControl, runControlHandler(runsSvc, "pause")))
-	apiMux.Handle("POST /runs/{id}/resume", wf(auth.PermissionRunsControl, runControlHandler(runsSvc, "resume")))
+	// Run control (POST /runs/{id}/pause|resume|cancel) moved to
+	// run_lifecycle.go (issue #115): same middleware chain (runs.control),
+	// plus the enforced state machine, the queue re-enqueue on resume and
+	// the 409 optimistic-race mapping.
 }
 
 // ---------------------------------------------------------------------------
@@ -459,51 +460,4 @@ func writeApprovalErrorWF(w http.ResponseWriter, err error) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Run control handlers (cancel / pause / resume)
-// ---------------------------------------------------------------------------
-
-func runControlHandler(runsSvc *runs.Service, action string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := wfPathID(r)
-		if id == "" {
-			writeErrorWF(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
-			return
-		}
-		orgID, _, ok := wfClaims(w, r)
-		if !ok {
-			return
-		}
-		if runsSvc == nil {
-			writeErrorWF(w, http.StatusServiceUnavailable, "RUNS_SERVICE_UNAVAILABLE", "runs service is not available")
-			return
-		}
-		var (
-			run *runs.Run
-			err error
-		)
-		switch action {
-		case "cancel":
-			run, err = runsSvc.CancelRun(r.Context(), orgID, id)
-		case "pause":
-			run, err = runsSvc.PauseRun(r.Context(), orgID, id)
-		case "resume":
-			run, err = runsSvc.ResumeRun(r.Context(), orgID, id)
-		default:
-			writeErrorWF(w, http.StatusInternalServerError, "INTERNAL_ERROR", "unknown run control action")
-			return
-		}
-		if err != nil {
-			switch {
-			case errors.Is(err, runs.ErrRunNotFound):
-				writeErrorWF(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
-			case errors.Is(err, runs.ErrInvalidTransition):
-				writeErrorWF(w, http.StatusConflict, "INVALID_STATE", err.Error())
-			default:
-				writeErrorWF(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
-			}
-			return
-		}
-		writeJSONWF(w, http.StatusOK, run)
-	}
-}
+// (Run control handlers moved to run_lifecycle.go — issue #115.)

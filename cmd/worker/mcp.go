@@ -34,6 +34,7 @@ import (
 	"agentos/internal/models"
 	"agentos/internal/observability"
 	"agentos/internal/policies"
+	"agentos/internal/runs"
 	"agentos/internal/runtime"
 	"agentos/internal/secrets"
 	"agentos/internal/tools"
@@ -53,6 +54,10 @@ type orgRunnerCache struct {
 	agentKeyAudit *audit.Service          // wave-8: agent-key tool-denial audit sink (nil-safe)
 	runtimeCfg    runtime.RuntimeConfig   // issue #107: runner-wide conversation-history/budget defaults (nil-safe)
 	eventPub      events.Publisher        // issue #107: run lifecycle event seam (nil-safe)
+	agentKeyAudit *audit.Service        // wave-8: agent-key tool-denial audit sink (nil-safe)
+	runtimeCfg    runtime.RuntimeConfig // issue #107: runner-wide conversation-history/budget defaults (nil-safe)
+	eventPub      events.Publisher      // issue #107: run lifecycle event seam (nil-safe)
+	checkpoints   runs.CheckpointStore  // issue #115: durable-checkpoint store (nil-safe; org-bound per runner)
 	sandbox       tools.SandboxExecutor
 	mcpReg        *mcp.Registry
 	stopped       bool // issue #107: set by stopAll; runners built afterwards refuse runs
@@ -127,6 +132,12 @@ func (c *orgRunnerCache) forOrg(ctx context.Context, orgID string) *runtime.Runn
 		runtime.WithRuntimeConfig(c.runtimeCfg), // issue #107: zero value = safe defaults
 		runtime.WithEventPublisher(c.eventPub),  // issue #107: nil = event-free legacy behavior
 	)
+	if c.checkpoints != nil {
+		// issue #115: end-of-step durable checkpoints, org-scoped (the adapter
+		// binds the org this runner serves; a paused/cancelled/lost run
+		// resumes from the latest snapshot).
+		runner.SetCheckpointer(runsCheckpointAdapter{store: c.checkpoints, orgID: orgID})
+	}
 	runner.SetPolicyEnforcer(c.enforcer)
 	runner.SetAgentKeyAudit(c.agentKeyAudit) // wave-8: best-effort agentkey.tool_denied rows
 	runner.SetGranularLimiter(c.limiter)     // issue #124: granular rate-limit seam (nil = disabled)
@@ -197,6 +208,15 @@ func (c *orgRunnerCache) setEventPublisher(pub events.Publisher) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.eventPub = pub
+}
+
+// setCheckpoints wires the durable-checkpoint store (issue #115) for every
+// runner built by this cache. Call once at startup before task consumption;
+// guarded by the cache mutex.
+func (c *orgRunnerCache) setCheckpoints(store runs.CheckpointStore) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.checkpoints = store
 }
 
 // stopAll marks the cache as shutting down (issue #107): every cached runner
