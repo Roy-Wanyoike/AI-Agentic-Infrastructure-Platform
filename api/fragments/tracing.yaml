@@ -1,0 +1,143 @@
+# AgentOS API — OpenAPI 3.1 fragment for the run trace exposure surface
+# (issue #114, wave t9): GET /v1/runs/{id}/trace returns the W3C trace id of
+# the distributed trace carrying the run's execution spans (run → agent →
+# step → tool/model → provider HTTP), so operators can jump from the run
+# timeline into the tracing backend (Tempo/Jaeger/...).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Paths are written WITHOUT the /api/v1 prefix, matching the
+# existing spec (routes mount on apiMux and are served under both /v1 and
+# /api/v1).
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names used by `security:` are declared in this fragment's
+# own components.securitySchemes — copied VERBATIM from
+# api/fragments/apikeys.yaml — so
+# `python3 scripts/check_fragment_refs.py api/fragments/tracing.yaml`
+# passes. Components carry the track-unique `Tr` prefix to avoid collisions.
+#
+# Conventions reused from the base spec:
+#   * security: bearerToken | apiKey (verbatim schemes from apikeys.yaml).
+#   * x-required-permission: runs.read — the trace id is run metadata, so the
+#     full base role matrix (OWNER/ADMIN/MEMBER/VIEWER and the AGENT principal)
+#     that already holds runs.read may read it.
+#   * structured error model {"error":{"code","message"}}.
+#
+# SEMANTICS (documented choice for issue #114): the trace id is served from
+# the in-process observability run-trace registry populated wherever the
+# run's root span is created (API create-run → "run.enqueue"; worker
+# execution → "run.execute", which joins the SAME trace through the queue
+# task's traceparent). The registry is in-memory and bounded: entries exist
+# only for runs whose trace started in the API process and survive no
+# restart. A miss (tracing disabled via AGENTOS_TRACING_ENABLED, registry
+# eviction, or a run started in another process) answers 404
+# trace_not_available. Unknown AND foreign-org runs answer the SAME 404 —
+# no existence leak, no error contract change for the run resource itself.
+openapi: 3.1.0
+info:
+  title: AgentOS — run trace exposure API (issue #114 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone fragment for GET /v1/runs/{id}/trace (issue #114): the W3C trace
+  id linking a run's end-to-end execution span hierarchy
+  (run → agent → step → tool/model → provider HTTP). The tenant scope is
+  derived exclusively from the auth claims — the run is resolved within the
+  caller's organization first, so foreign runs are indistinguishable from
+  trace misses.
+paths:
+  /runs/{id}/trace:
+    get:
+      operationId: getRunTrace
+      summary: Get the W3C trace id of a run's distributed execution trace
+      description: |
+        Returns the trace id of the distributed trace that carries the run's
+        execution spans, for lookup in the tracing backend. Requires the
+        runs.read permission (any base role). Answers 404
+        trace_not_available when the run is unknown, foreign-org, or no
+        trace was recorded for it in this process (tracing disabled,
+        registry eviction, cross-process start).
+      x-required-permission: runs.read
+      security:
+        - bearerToken: []
+        - apiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Run id (as returned by POST /runs).
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: The run's trace id (the run exists in the caller's org and a trace was recorded for it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrRunTraceResponse'
+              examples:
+                happy:
+                  summary: A run with a recorded execution trace
+                  value:
+                    run_id: 8b0e6f9a-2b0d-4f0e-8a58-6f9b2c3d4e5f
+                    trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+        '401':
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrErrorEnvelope'
+        '403':
+          description: Authenticated but lacking the runs.read permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrErrorEnvelope'
+        '404':
+          description: Unknown run, foreign-org run, or no trace recorded for it in this process (error.code trace_not_available — identical shape for all three, no existence leak).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrErrorEnvelope'
+        '500':
+          description: Unexpected server failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrErrorEnvelope'
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    TrRunTraceResponse:
+      type: object
+      required: [run_id, trace_id]
+      properties:
+        run_id:
+          type: string
+          description: The run id (echo of the path parameter).
+        trace_id:
+          type: string
+          description: W3C trace id (32 hex chars) of the run's distributed execution trace.
+    TrErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [trace_not_available, internal_error]
+            message:
+              type: string

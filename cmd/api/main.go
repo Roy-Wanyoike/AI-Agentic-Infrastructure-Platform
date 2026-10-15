@@ -406,6 +406,12 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 	a.runsSvc.SetStreamer(a.streamSvc)
 	// issue #12: feed agentos_runs_total from API-side run transitions
 	a.runsSvc.SetMetrics(a.metricsSvc)
+	// issue #115: run pause/resume/cancel — the control-plane events
+	// (run.paused / run.resumed / run.cancelled) flow through the SAME
+	// dual-mode publisher the webhooks/notifications worker subscribes to
+	// (Postgres-backed audit chain in Postgres mode, in-memory store
+	// otherwise; see the publisher construction above).
+	a.runsSvc.SetEventPublisher(a.publisher)
 	// issue #51: eval-gated canary autopromotion (no-op unless
 	// AGENTOS_CANARY_AUTOPROMOTE is truthy)
 	WireCanaryAutoPromotion(a.evalSvc, a.deploymentsSvc, a.auditSvc, a.logr)
@@ -537,6 +543,8 @@ func (a *app) routes() http.Handler {
 	registerAgentPortabilityRoutes(apiMux, a.agentsSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)     // issue #122: agent export/import/clone
 	registerOrchestrationRoutes(apiMux, a.orchestrationSvc, a.authSvc, a.apiKeysSvc, a.auditSvc) // issue #108: agent-to-agent orchestration executor
 	registerWorkflowValidateRoutes(apiMux, a.wfSvc, a.authSvc, a.apiKeysSvc)                     // issue #109: workflow DSL validation endpoint
+	registerRunLifecycleRoutes(apiMux, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc)           // issue #115: run pause/resume/cancel
+	registerRunTraceRoutes(apiMux, a.runsSvc, a.authSvc, a.apiKeysSvc)                           // issue #114: run trace exposure
 	// issue #28: agent marketplace
 	registerMarketplaceRoutes(apiMux, a.mktSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #30: connectors CRUD + health checks
