@@ -20,7 +20,9 @@ package main
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"agentos/internal/apikeys"
@@ -187,6 +189,23 @@ func searchKnowledgeHandler(svc *knowledge.Service) http.HandlerFunc {
 			return
 		}
 		writeJSONKnb(w, http.StatusOK, map[string]any{"results": results})
+	}
+}
+
+// embeddingsProviderOrNil resolves the issue #113 embeddings provider seam
+// for the API process: an explicit AGENTOS_EMBEDDING_PROVIDER=openai selects
+// the OpenAI-compatible provider (configured from AGENTOS_EMBEDDING_* and
+// logged at startup); offline/unset — and any unknown value, which the
+// selection helper fails safe — returns nil so the callers keep the legacy
+// constructors and the deterministic offline hash embedder stays the default.
+func embeddingsProviderOrNil(logr *slog.Logger) knowledge.EmbeddingProvider {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(knowledge.EnvEmbeddingProvider))) {
+	case knowledge.ProviderOpenAI:
+		provider := knowledge.EmbeddingProviderFromEnv()
+		logr.Info("embeddings provider enabled", "provider", provider.Name(), "dimensions", provider.Dimensions())
+		return provider
+	default:
+		return nil
 	}
 }
 

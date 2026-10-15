@@ -34,6 +34,7 @@ Current migration structure:
 - 029_approval_oversight.sql (issue #137: approvals enterprise HITL v2 — delegation chain, escalation SLA policy, dual-control columns, oversight event log)
 - 030_virtual_keys.sql (wave-9 issue #139: gateway virtual keys with model allow-lists + enforced monthly spend caps)
 - 031_residency_policies.sql (issue #140: org data-residency policies + out-of-region evidence)
+- 033_pgvector.sql (issue #113: pgvector for knowledge_chunks — embedding_vec vector(1536) + HNSW cosine index; PGVECTOR-OPTIONAL: a pg_available_extensions guard keeps it a no-op NOTICE on plain Postgres)
 
 Migration conventions:
 
