@@ -1,6 +1,7 @@
 package models
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,6 +34,23 @@ const (
 	// defaults to DefaultOpenAIBaseURL. Only read when
 	// ProviderFallbackAPIKeyEnvVar is set.
 	ProviderFallbackBaseURLEnvVar = "AGENTOS_FALLBACK_BASE_URL"
+	// RoutingPolicyEnvVar enables the advanced model router (issue #112) with
+	// the named policy (cost_optimize, latency_optimize, task_complexity,
+	// round_robin, weighted) as the organization-wide default. When set, the
+	// env-built provider is wrapped in a PolicyProvider over
+	// RoutingCandidatesEnvVar model ids (served by the same OpenAI-compatible
+	// endpoint as the primary); routing SUPERSEDES failover chaining — the
+	// router fails over across its own candidates. Per-agent
+	// runtime_config `routing` objects override the policy per request via
+	// CompletionRequest.Routing.
+	RoutingPolicyEnvVar = "AGENTOS_ROUTING_POLICY"
+	// RoutingCandidatesEnvVar is the comma-separated list of model ids the
+	// router rotates across (e.g. "gpt-4o-mini,gpt-4o"). Every id must be
+	// known to the capability registry (built-ins or AGENTOS_MODELS_JSON
+	// overrides) — unknown ids are skipped with a startup warning. Blank
+	// defaults to the single AGENTOS_WORKER_MODEL id (only read when
+	// RoutingPolicyEnvVar is set).
+	RoutingCandidatesEnvVar = "AGENTOS_ROUTING_CANDIDATES"
 )
 
 // providerHTTPTimeout bounds a single HTTP attempt for env-configured
@@ -96,6 +114,77 @@ func ProviderFromEnv(logr *slog.Logger) (Provider, bool) {
 		// the primary stays effective unchanged.
 	}
 
+	// Advanced model routing (issue #112): AGENTOS_ROUTING_POLICY wraps the
+	// env-built chain in a PolicyProvider. Candidates are model ids on the
+	// SAME OpenAI-compatible endpoint as the primary (the common gateway
+	// shape); each id becomes its own provider instance so the router can
+	// fail over across models. Routing supersedes failover chaining: when
+	// routing is enabled the router replaces the chain (its candidate
+	// order is the failover path). Misconfiguration NEVER breaks the run
+	// path — an invalid policy or unregistered candidate logs a warning
+	// and keeps the unwrapped provider.
+	if policyName := strings.TrimSpace(os.Getenv(RoutingPolicyEnvVar)); policyName != "" {
+		if router, rerr := routingProviderFromEnv(policyName, apiKey, baseURL, model, client, logr); rerr == nil {
+			provider = router
+		}
+	}
+
 	logr.Info("model provider configured", "base_url", baseURL, "model", model)
 	return provider, true
+}
+
+// routingProviderFromEnv builds the PolicyProvider for the routing env vars
+// (called only when AGENTOS_ROUTING_POLICY is set). Errors are logged as
+// warnings by ProviderFromEnv's caller contract: the function returns the
+// error and the caller keeps the unwrapped provider.
+func routingProviderFromEnv(policyName, apiKey, baseURL, model string, client *http.Client, logr *slog.Logger) (Provider, error) {
+	policy, err := ParseRoutingPolicy(policyName)
+	if err != nil {
+		logr.Warn("model routing disabled: invalid AGENTOS_ROUTING_POLICY", "error", err.Error())
+		return nil, err
+	}
+	registry := DefaultCapabilityRegistry()
+
+	candidates := make([]string, 0, 4)
+	for _, id := range strings.Split(os.Getenv(RoutingCandidatesEnvVar), ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			candidates = append(candidates, id)
+		}
+	}
+	if len(candidates) == 0 && strings.TrimSpace(model) != "" {
+		candidates = []string{strings.TrimSpace(model)}
+	}
+	if len(candidates) == 0 {
+		err := fmt.Errorf("no routing candidates: set %s or %s", RoutingCandidatesEnvVar, ProviderModelEnvVar)
+		logr.Warn("model routing disabled", "error", err.Error())
+		return nil, err
+	}
+
+	routable := make([]Candidate, 0, len(candidates))
+	for _, id := range candidates {
+		caps, ok := registry.Lookup(id)
+		if !ok {
+			logr.Warn("model routing candidate skipped: unknown to the capability registry",
+				"model", id, "env", CapabilitiesEnvVar)
+			continue
+		}
+		routable = append(routable, Candidate{
+			Model:    caps.Model,
+			Provider: NewOpenAIProvider("route:"+caps.Model, apiKey, baseURL, caps.Model, client),
+			Caps:     caps,
+		})
+	}
+	if len(routable) == 0 {
+		err := fmt.Errorf("no routable candidates registered (register models via %s)", CapabilitiesEnvVar)
+		logr.Warn("model routing disabled", "error", err.Error())
+		return nil, err
+	}
+	router, err := NewPolicyProvider(registry, policy, routable)
+	if err != nil {
+		logr.Warn("model routing disabled", "error", err.Error())
+		return nil, err
+	}
+	logr.Info("model routing enabled", "policy", string(policy),
+		"candidates", strings.Join(modelIDs(routable), ","))
+	return router, nil
 }
