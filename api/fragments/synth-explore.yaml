@@ -1,0 +1,311 @@
+# AgentOS API — OpenAPI 3.1 fragment for the Synthetic Assurance
+# exploration surface (issue #155, wave-10 track 10-v).
+#
+# Merge target: api/openapi.yaml (orchestrator-owned; this fragment does not
+# modify it). Schema-only fragment: #155 ships no HTTP surface of its own —
+# exploration plans, scope ledgers and candidate journeys are produced by the
+# internal/synth engine (explore.go) and surfaced through the owner track's
+# endpoints. The #156 follow-up (production schedules, release comparisons)
+# appends SynthProductionSchedule / SynthComparisonReport to this fragment.
+#
+# Standalone-valid: every local $ref resolves inside this fragment and the
+# security scheme names are declared in this fragment's own
+# components.securitySchemes (copied VERBATIM from api/fragments/apikeys.yaml),
+# so `python3 scripts/check_fragment_refs.py api/fragments/synth-explore.yaml`
+# passes. Components carry the track-unique `Synth` prefix to avoid collisions.
+#
+# SECURITY (untrusted content isolation): page-derived strings (observations,
+# links, titles) are DATA ONLY. They are sanitized server-side
+# (SanitizeUntrusted: control characters stripped, whitespace collapsed,
+# length-capped) before entering any schema below, and the scope decision
+# path (SynthScopeDecision) consumes only server-pinned policy inputs —
+# allowlisted domains, environment mode, budgets, kill switches — never page
+# content. Untrusted content can propose; it can never authorize.
+#
+# Conventions reused from the base spec:
+#   * structured error model {"error":{"code","message"}} (reserved for the
+#     owner track's HTTP surface; no paths are defined in this fragment)
+openapi: 3.1.0
+info:
+  title: AgentOS — synthetic assurance exploration (issue #155 fragment)
+  version: 3.0.0-fragment
+description: |
+  Standalone schema fragment for issue #155: safety-bounded autonomous
+  exploration of a REGISTERED (verified) target. ExplorePlanner turns
+  allowlisted routes + persona role hints + goals into an ordered
+  ExplorationPlan; every proposed action is re-checked server-side
+  (SynthScopeDecision) against the pinned environment before execution; the
+  run records a SynthScopeLedger and emits draft candidate journeys that
+  REMAIN drafts until explicit human approval (approval records ApprovedBy /
+  ApprovedAt and converts draft → reviewed). Drafts are never schedulable.
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: HS256-HMAC
+      description: HMAC-SHA256 JWT-style token from POST /auth/login (see main spec).
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Pre-provisioned API key (see main spec).
+  schemas:
+    SynthScopeDecision:
+      type: object
+      description: |
+        Server-side scope/policy verdict for one proposed exploration action
+        (issue #155). Decisions are computed from SERVER-PINNED inputs only
+        (allowlisted domains, environment mode/kind, per-run step/time
+        budgets, rate caps, window policy, kill switches, context
+        cancellation). Page-derived content is structurally excluded from
+        the decision inputs. Reason vocabulary (illustrative):
+        allowed | allowlisted_domain | write_denied_readonly |
+        write_requires_synthetic_account | rate_capped | quiet_window |
+        invalid_window_policy | step_budget | time_budget | kill_switch |
+        context_cancelled | invalid_action | invalid_url | unregistered_run.
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the action may execute.
+        reason:
+          type: string
+          description: Machine-readable denial/allow reason (see description).
+        at:
+          type: string
+          format: date-time
+          description: Decision timestamp (server clock).
+      required:
+      - allowed
+      - reason
+      - at
+    SynthExplorationAction:
+      type: object
+      description: |
+        One proposed exploration action (browser-agent seam vocabulary,
+        mirroring journey steps). Explorers fill kind/url/target/value only;
+        write/synthetic-account context is enforced server-side.
+      properties:
+        kind:
+          type: string
+          enum: [navigate, click, fill, select, wait, api_call, assert, extract]
+        url:
+          type: string
+          description: Absolute target URL for navigate actions (else empty).
+        target:
+          type: string
+          description: Selector for click/fill/select/extract actions.
+        value:
+          type: string
+          description: Input value for fill/select actions.
+        write_op:
+          type: boolean
+          description: True when the action is state-changing.
+        synthetic_account:
+          type: string
+          description: |
+            Isolated synthetic account reference. REQUIRED for write
+            operations under the release_comparison environment mode;
+            writes are denied otherwise (read-only default is enforced
+            server-side, not by convention).
+      required:
+      - kind
+      - write_op
+    SynthExplorationObservation:
+      type: object
+      description: |
+        Page-derived fact captured after an executed action. Title/content
+        are sanitized (control characters stripped, whitespace collapsed,
+        length-capped) and are DATA ONLY: they never feed scope decisions.
+      properties:
+        url:
+          type: string
+        title:
+          type: string
+        links:
+          type: array
+          description: Raw hrefs seen on the page (data only; navigating one is re-checked).
+          items:
+            type: string
+        content:
+          type: string
+          description: Sanitized page text excerpt (data only).
+        at:
+          type: string
+          format: date-time
+      required:
+      - url
+      - at
+    SynthExplorationPlanStep:
+      type: object
+      description: One planned navigation. goal_id "seed" marks the landing navigation.
+      properties:
+        index:
+          type: integer
+        path:
+          type: string
+          description: Route path (starts with "/").
+        goal_id:
+          type: string
+      required:
+      - index
+      - path
+      - goal_id
+    SynthExplorationPlan:
+      type: object
+      description: |
+        Ordered candidate navigations built deterministically from a
+        registered app's allowlisted routes, persona role hints and goals:
+        seed landing first, then each goal's persona-permitted routes in
+        registration order (deduplicated by path). Identical inputs produce
+        an identical plan id.
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        project_id:
+          type: string
+        environment_id:
+          type: string
+        persona_id:
+          type: string
+        target_base_url:
+          type: string
+        goal_ids:
+          type: array
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/SynthExplorationPlanStep'
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - org_id
+      - project_id
+      - environment_id
+      - persona_id
+      - steps
+      - created_at
+    SynthExplorationCost:
+      type: object
+      description: Exploration cost accounting (applied steps, denied proposals, wall clock).
+      properties:
+        steps:
+          type: integer
+          description: Applied (scope-allowed) actions.
+        denied:
+          type: integer
+          description: Proposals denied by scope/loop checks.
+        duration_ms:
+          type: number
+          description: Run wall-clock duration in milliseconds.
+      required:
+      - steps
+      - denied
+      - duration_ms
+    SynthScopeLedger:
+      type: object
+      description: |
+        Coverage ledger of one exploration run: planned vs discovered vs
+        tested routes, gaps, uncertainty (denied/unparseable proposals,
+        sanitized), safety flags (risky_write / loop_detected) and cost.
+        coverage_percent = share of planned routes with at least one
+        executed in-scope action (0 when nothing was planned).
+      properties:
+        planned_routes:
+          type: array
+          items:
+            type: string
+        discovered_routes:
+          type: array
+          description: Unique paths reached by executed navigations.
+          items:
+            type: string
+        tested_routes:
+          type: array
+          description: Unique paths with at least one executed in-scope action.
+          items:
+            type: string
+        gaps:
+          type: array
+          description: Planned routes never tested.
+          items:
+            type: string
+        uncertainty:
+          type: array
+          description: Sanitized denial/unparseability details.
+          items:
+            type: string
+        flags:
+          type: array
+          description: Sanitized risky_write / loop_detected flags.
+          items:
+            type: string
+        visited_states:
+          type: integer
+          description: Executed unique visited-state hashes.
+        coverage_percent:
+          type: number
+        cost:
+          $ref: '#/components/schemas/SynthExplorationCost'
+      required:
+      - planned_routes
+      - discovered_routes
+      - tested_routes
+      - gaps
+      - uncertainty
+      - flags
+      - visited_states
+      - coverage_percent
+      - cost
+    SynthCandidateJourney:
+      type: object
+      description: |
+        Draft journey candidate produced by exploration (journey source
+        "exploration", status draft, version 1, explicit assertions).
+        Drafts require EXPLICIT human approval: approved_by/approved_at stay
+        empty and the status remains draft (ineligible for scheduling)
+        until the approval converts draft → reviewed. The approval ledger
+        lives beside the pinned journey contract, not inside it.
+      properties:
+        journey_id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [draft, reviewed]
+        risk:
+          type: string
+          enum: [low, medium, high, critical]
+        goal_id:
+          type: string
+        coverage_ref:
+          type: string
+          description: Originating exploration plan id.
+        step_count:
+          type: integer
+        assertion_count:
+          type: integer
+        approved_by:
+          type: string
+          description: Empty until explicit approval.
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+      - journey_id
+      - name
+      - status
+      - risk
+      - goal_id
+      - coverage_ref
+      - step_count
+      - assertion_count
+      - approved_by
