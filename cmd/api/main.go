@@ -15,6 +15,7 @@ import (
 	// tzdata ensures time.LoadLocation works in scratch/distroless containers.
 	_ "time/tzdata"
 
+	"agentos/internal/a2a"
 	"agentos/internal/agents"
 	"agentos/internal/apikeys"
 	"agentos/internal/approvals"
@@ -100,6 +101,7 @@ type app struct {
 	mktSvc         *marketplace.Service
 	connSvc        *connectors.Service
 	mcpRegSvc      *mcp.Registry
+	a2aSvc         *a2a.Service // issue #136: A2A Agent Card registry + delegation
 	whSvc          *webhooks.Service
 	notifSvc       *notifications.Service
 	publisher      events.Publisher
@@ -239,6 +241,16 @@ func newApp(cfg config.Config, logr *slog.Logger, db *sql.DB) *app {
 			a.logr.Info("dev api key created", "api_key", key.Value)
 		}
 	}
+	// issue #136: A2A Agent Card registry — in-memory default; the Postgres
+	// store is adopted when the database is wired (mirrors the mcpRegSvc
+	// dual-mode construction). Governance seams: agent-link validation
+	// against the agents service + best-effort delegation auditing.
+	a.a2aSvc = a2a.NewService()
+	if a.db != nil {
+		a.a2aSvc.SetStore(a2a.NewPostgresStore(a.db))
+	}
+	a.a2aSvc.SetAgentChecker(a.agentsSvc)
+	a.a2aSvc.SetAuditor(a.auditSvc)
 	// wave-2: evaluation runner + service. Issue #15: the API process now
 	// shares the worker's env-driven provider construction — when
 	// OPENAI_API_KEY is set, eval cases execute against the configured
@@ -443,6 +455,7 @@ func (a *app) routes() http.Handler {
 	registerAgentKeyRoutes(apiMux, a.apiKeysSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 	// issue #50: MCP server endpoint (JSON-RPC 2.0) — tenant tools over MCP
 	registerMcpRoutes(apiMux, a.authSvc, a.apiKeysSvc, a.auditSvc)
+	registerA2ARoutes(apiMux, a.a2aSvc, a.runsSvc, a.queueSvc, a.authSvc, a.apiKeysSvc, a.auditSvc)
 
 	apiMux.HandleFunc("/", serviceInfoHandler)
 
