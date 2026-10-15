@@ -14,7 +14,7 @@ func TestValidateDSLValidGraphReturnsNil(t *testing.T) {
 		Nodes: []Node{
 			validAgentNode("n1", "agent-1"),
 			{ID: "n2", Type: NodeTool, Config: map[string]any{"tool_id": "tool-1", "agent_id": "agent-1"}},
-			{ID: "n3", Type: NodeCondition, Config: map[string]any{"expression": "ok"}},
+			{ID: "n3", Type: NodeCondition, Config: map[string]any{"expression": "$.input != ''"}},
 			{ID: "n4", Type: NodeParallel},
 			{ID: "n5", Type: NodeApproval},
 			{ID: "n6", Type: NodeDelay, Config: map[string]any{"seconds": 5}},

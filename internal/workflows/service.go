@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -21,7 +22,9 @@ const (
 // Workflow run statuses. pending|running|waiting_approval are control-plane
 // states; completed|failed|cancelled are terminal. timeout is the terminal
 // state assigned by the recovery watchdog when deadline_at passes
-// (wave-3 track 3-c).
+// (wave-3 track 3-c). skipped is the terminal state recorded for nodes whose
+// branch was not taken by a condition/switch decision or that became
+// unreachable after dynamic branch pruning (issue #109).
 const (
 	RunStatusPending         = "pending"
 	RunStatusRunning         = "running"
@@ -30,6 +33,7 @@ const (
 	RunStatusFailed          = "failed"
 	RunStatusCancelled       = "cancelled"
 	RunStatusTimeout         = "timeout"
+	RunStatusSkipped         = "skipped"
 )
 
 var (
@@ -92,21 +96,34 @@ type WorkflowRun struct {
 // OrganizationID is the tenant scope of the row; it is persisted in the
 // organization_id column (via the store's orgID argument) but excluded from
 // the JSON wire shape for backwards compatibility.
+//
+// Output (issue #109) is the node's JSON output document — populated by the
+// synchronous step executor for work nodes and by condition/switch/loop/
+// wait_until nodes for their decision/iteration values; it feeds
+// $.nodes.<id>.output.<path> expressions of downstream nodes.
+// Metadata carries execution bookkeeping (skip reasons, loop iteration
+// checkpoints, retry attempts, wait_until poll counters). Both fields travel
+// with the NodeRun JSON wire shape; the in-memory store keeps them verbatim,
+// while the durable store's checkpoint schema persists the existing columns
+// only (status/error/attempt/...) — control-flow bookkeeping is therefore
+// fully available in in-memory deployments and on the live node-run cache.
 type NodeRun struct {
-	ID             string     `json:"id"`
-	WorkflowRunID  string     `json:"workflow_run_id"`
-	NodeID         string     `json:"node_id"`
-	RunID          string     `json:"run_id,omitempty"`
-	Status         string     `json:"status"`
-	Error          string     `json:"error,omitempty"`
-	Attempt        int        `json:"attempt"`
-	LockedAt       *time.Time `json:"locked_at,omitempty"`
-	HeartbeatAt    *time.Time `json:"heartbeat_at,omitempty"`
-	ErrorCode      string     `json:"error_code,omitempty"`
-	StartedAt      *time.Time `json:"started_at,omitempty"`
-	FinishedAt     *time.Time `json:"finished_at,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	OrganizationID string     `json:"-"`
+	ID             string          `json:"id"`
+	WorkflowRunID  string          `json:"workflow_run_id"`
+	NodeID         string          `json:"node_id"`
+	RunID          string          `json:"run_id,omitempty"`
+	Status         string          `json:"status"`
+	Error          string          `json:"error,omitempty"`
+	Attempt        int             `json:"attempt"`
+	LockedAt       *time.Time      `json:"locked_at,omitempty"`
+	HeartbeatAt    *time.Time      `json:"heartbeat_at,omitempty"`
+	ErrorCode      string          `json:"error_code,omitempty"`
+	StartedAt      *time.Time      `json:"started_at,omitempty"`
+	FinishedAt     *time.Time      `json:"finished_at,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	Output         json.RawMessage `json:"output,omitempty"`
+	Metadata       map[string]any  `json:"metadata,omitempty"`
+	OrganizationID string          `json:"-"`
 }
 
 // Service is the dual-mode workflow service: in-memory maps by default,
@@ -122,6 +139,7 @@ type Service struct {
 	engine          Engine
 	staleAfter      time.Duration
 	defaultDeadline time.Duration
+	clock           Clock // injectable time for retry/wait_until (nil = real clock)
 }
 
 func NewService() *Service {
@@ -261,6 +279,18 @@ func (s *Service) ValidateWorkflow(ctx context.Context, orgID, id string) ([]Val
 		return nil, err
 	}
 	return ValidateDSL(wf.DSL), nil
+}
+
+// ValidateWorkflowDSL validates an ad-hoc DSL document (POST /workflows/validate,
+// issue #109): users pre-validate a workflow definition — including the
+// control-flow rules for condition/switch/loop/retry/wait_until nodes and the
+// expression syntax — before saving it. It returns the typed validation errors
+// (rendered as 422) or nil when the DSL is valid.
+func (s *Service) ValidateWorkflowDSL(ctx context.Context, orgID string, dsl DSL) []ValidationError {
+	if strings.TrimSpace(orgID) == "" {
+		return []ValidationError{{Code: "missing_organization", Message: "organization id is required"}}
+	}
+	return ValidateDSL(dsl)
 }
 
 // Publish snapshots the workflow's current DSL as the next immutable version
