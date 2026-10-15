@@ -87,3 +87,149 @@ components:
           description: |
             When the activity happened (NOT insert time). Zero timestamps are
             stamped with the ingest time by the episode ingestor.
+    AttributeDef:
+      type: object
+      description: One typed attribute of an entity or edge type. Name is snake_case; reserved names (uuid, name, created_at) cannot be redefined with another type.
+      required: [name, type]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z][a-z0-9_]*$'
+        type:
+          type: string
+          enum: [string, number, integer, boolean, datetime]
+        required:
+          type: boolean
+          default: false
+        description:
+          type: string
+    EntityType:
+      type: object
+      description: |
+        One node type of the knowledge graph. Name is PascalCase. fallback
+        marks the guaranteed types (Person, Organization) present in every
+        generated ontology. cues are lowercase trigger words the
+        deterministic extractor matches against a candidate's context.
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: '^[A-Z][A-Za-z0-9]*$'
+        attributes:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttributeDef'
+        fallback:
+          type: boolean
+          description: True for the guaranteed fallback types (Person, Organization).
+        cues:
+          type: array
+          items:
+            type: string
+    EdgeType:
+      type: object
+      description: One relationship type; UPPER_SNAKE_CASE name, endpoints referencing declared entity types. The (name, source_type, target_type) triple is the edge identity.
+      required: [name, source_type, target_type]
+      properties:
+        name:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]*$'
+        source_type:
+          type: string
+        target_type:
+          type: string
+        attributes:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttributeDef'
+    Ontology:
+      type: object
+      description: |
+        Org-scoped schema of one knowledge graph (issue #131). Generated via
+        the LLMGateway seam or the deterministic RuleBasedGenerator;
+        validation errors are typed (ErrOntologyValidation) and carry field
+        paths — schema violations are never silently fixed.
+      required: [entity_types]
+      properties:
+        id:
+          type: string
+        organization_id:
+          type: string
+          description: Owning organization (tenant guard).
+        entity_types:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/EntityType'
+        edge_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeType'
+        attribute_defs:
+          type: array
+          description: Shared attribute library (canonical reserved attributes ship by default).
+          items:
+            $ref: '#/components/schemas/AttributeDef'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ExtractionResult:
+      type: object
+      description: |
+        Outcome of one schema-driven extraction query. Entities are typed
+        against the ontology; edges connect co-occurring typed entities
+        through declared edge types only; every schema violation (unknown
+        type filter, undeclared or mistyped attribute value) is collected in
+        rejected — type errors are NEVER silent.
+      required: [entities]
+      properties:
+        entities:
+          type: array
+          items:
+            type: object
+            required: [type, name]
+            properties:
+              type:
+                type: string
+                description: Declared EntityType name.
+              name:
+                type: string
+                description: Surface form of the entity mention.
+              attributes:
+                type: object
+                additionalProperties: true
+                description: Validated attribute values keyed by declared attribute name.
+              position:
+                type: integer
+                description: Token offset of the first mention (deterministic ordering).
+        edges:
+          type: array
+          items:
+            type: object
+            required: [type, source, target]
+            properties:
+              type:
+                type: string
+                description: Declared EdgeType name.
+              source:
+                type: string
+              target:
+                type: string
+        rejected:
+          type: array
+          description: Collected schema violations (never silent).
+          items:
+            type: object
+            required: [surface, reason]
+            properties:
+              surface:
+                type: string
+                description: The offending candidate, value or filter.
+              type:
+                type: string
+                description: Entity type the violation relates to, when known.
+              reason:
+                type: string
