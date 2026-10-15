@@ -169,7 +169,7 @@ components:
         approval, condition (if/else), switch, loop, retry, wait_until,
         delay, webhook, parallel, end. Control-flow types are described by
         the dedicated schemas (WfConditionNode, WfSwitchNode, WfLoopNode,
-        WfRetryNode, WfWaitNode).
+        WfRetryNode, WfWaitNode, WfParallelNode).
       properties:
         id:
           type: string
@@ -410,6 +410,104 @@ components:
       required:
       - id
       - type
+    WfParallelNode:
+      type: object
+      description: |
+        True concurrent fan-out (DSL type "parallel"). The direct edge
+        successors of the node that are executable work nodes (agent/tool/
+        delay/webhook/end), have no other active predecessors and no
+        interdependencies form the branch wave; every branch runs in its own
+        goroutine under the composed concurrency limits (see
+        WfParallelLimits) and results combine per config.strategy (see
+        WfAggregationStrategy). config.fail_fast selects the failure mode:
+        fail_fast (default) cancels the remaining branches on the decision
+        event; collect_all lets every branch run to completion before
+        aggregating. Aggregate failure fails the workflow run. Per-branch
+        duration/wait/utilization, the completion order, the in-flight
+        high-water mark and the resolved limits are recorded in the node-run
+        metadata ("parallel" key) and in each branch node-run's metadata.
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: parallel
+        config:
+          type: object
+          properties:
+            strategy:
+              $ref: '#/components/schemas/WfAggregationStrategy'
+            max_concurrency:
+              type: integer
+              minimum: 1
+              description: Per-workflow concurrency override; the effective cap is the minimum of this, the AGENTOS_MAX_WORKFLOW_PARALLELISM global (default 8) and the org quota (default unlimited).
+            fail_fast:
+              type: boolean
+              default: true
+              description: 'false selects the collect_all failure mode (every branch runs to completion before aggregation).'
+            branch_timeout_seconds:
+              type: number
+              exclusiveMinimum: 0
+              description: Per-branch wall-time cap; the timed-out branch is cancelled (status timeout) without affecting the other branches' clocks. Unset means unbounded.
+      required:
+      - id
+      - type
+    WfAggregationStrategy:
+      type: string
+      enum:
+      - all
+      - any
+      - race
+      - majority
+      description: |
+        How parallel branch results combine (issue #110).
+
+        all — every branch must succeed; any failure (fail_fast) or any
+        terminal failure (collect_all) fails the aggregate. Output: object
+        mapping branch id -> successful output.
+
+        any — first successful completion wins and the remaining branches
+        are cancelled; fails only when every branch fails.
+
+        race — first completion wins regardless of status and the remaining
+        branches are cancelled; a failing first completion fails the
+        aggregate.
+
+        majority — plurality vote over the successful outputs: the most
+        frequently occurring serialized output wins; equal counts are broken
+        by the lexicographically smallest serialized output (documented tie
+        rule). Failures do not vote; the aggregate fails only when no branch
+        succeeded.
+      default: all
+    WfParallelLimits:
+      type: object
+      description: |
+        Composed parallelism caps for one parallel wave (issue #110). The
+        effective cap is the minimum of the components that are set; at
+        least the global ceiling is always set, so the effective value is
+        >= 1. In-flight branches never exceed the effective cap (enforced by
+        a counting semaphore; the high-water mark is reported as
+        max_in_flight).
+      properties:
+        global:
+          type: integer
+          minimum: 1
+          default: 8
+          description: Deployment-wide ceiling from AGENTOS_MAX_WORKFLOW_PARALLELISM (default 8; unset/invalid/non-positive values fall back to the default).
+        per_workflow:
+          type: integer
+          minimum: 0
+          default: 0
+          description: The parallel node's config.max_concurrency override; 0 means unset.
+        org_quota:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Per-organization quota resolved through the OrgParallelQuota hook; 0 means unlimited (the default hook).
+        effective:
+          type: integer
+          minimum: 1
+          description: Resolved cap actually enforced for the wave (min of the set components).
     WfExpression:
       type: string
       description: |
